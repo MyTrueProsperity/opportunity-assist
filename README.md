@@ -12,6 +12,8 @@ opportunity-assist-site/
 ├── assets/
 │   ├── styles.css      # Styles
 │   └── app.js          # Mobile nav + footer year
+├── netlify/functions/  # Scheduled Supabase availability checks
+├── docs/               # One-time Supabase health-check setup SQL
 ├── robots.txt          # Crawl directives + sitemap reference
 ├── sitemap.xml         # Sitemap (update as pages are added)
 ├── netlify.toml        # Netlify config + security/cache headers
@@ -29,6 +31,24 @@ Just open `index.html` in a browser, or serve it:
 ```bash
 python3 -m http.server 8080   # then visit http://localhost:8080
 ```
+
+## Supabase health checks
+
+The `supabase-healthcheck` Netlify Function runs at 02:00, 10:00, and 18:00 UTC
+each day. It performs one read-only query against the `healthcheck` table in
+Opportunity Assist and Classroom Credit Score.
+
+Before the function can succeed:
+
+1. Run `docs/supabase-healthcheck.sql` once in each Supabase project's SQL Editor.
+2. Add these environment variables in the Netlify UI with Functions access:
+   - `OPPORTUNITY_SUPABASE_PUBLISHABLE_KEY`
+   - `CCS_SUPABASE_PUBLISHABLE_KEY`
+3. Trigger a new production deploy after adding the variables.
+4. Open the function in Netlify and select **Run now** to verify both queries.
+
+Use each project's publishable key, or its legacy `anon` key. Never use a
+`service_role` or Supabase secret key for this health check.
 
 ## Deploy: GitHub → Netlify (recommended)
 1. Create an empty GitHub repo named `opportunity-assist`.
