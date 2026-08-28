@@ -3,6 +3,9 @@
   publish = "."
   # No build step needed for static HTML/CSS/JS
 
+[functions."sam-gov-crawler-background"]
+  schedule = "0 9 * * *"
+
 [[headers]]
   for = "/*"
   [headers.values]
