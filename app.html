@@ -164,12 +164,33 @@ window.OA_CONFIG = {
     user: null,
     profile: null,
     org: null,
+    subscription: null, // { status, plan } from the subscriptions table -- read-only to the client
+    isAdmin: false,
     view: "dashboard",
     opps: [],
-    fit: {},        // opportunity_id -> {headline, rec, factors}
+    fit: {},        // opportunity_id -> {headline, rec, factors, pending, paywalled}
     pipeline: [],
+    contracts: [],
+    alertRules: [],
+    chat: [],       // {role, content} -- AI Assistant conversation, in memory only
     currentOpp: null
   };
+
+  // Stripe Payment Links -- fill these in once created in the Stripe Dashboard.
+  // Each link should have "client_reference_id" and "prefilled_email" passed as
+  // URL params at click time (handled in billingLinkFor() below) so the webhook
+  // knows which organization to activate.
+  var PLAN_LINKS = {
+    professional: "https://buy.stripe.com/REPLACE_WITH_PROFESSIONAL_LINK",
+    team: "https://buy.stripe.com/REPLACE_WITH_TEAM_LINK"
+  };
+  function billingLinkFor(planKey) {
+    var base = PLAN_LINKS[planKey];
+    if (!base) return null;
+    var params = "?client_reference_id=" + encodeURIComponent(state.org.id) + "&prefilled_email=" + encodeURIComponent(state.user.email || "");
+    return base + params;
+  }
+  function isSubscribed() { return !!(state.subscription && state.subscription.status === "active"); }
 
   /* ---------- helpers ---------- */
   function esc(s) {
@@ -230,19 +251,82 @@ window.OA_CONFIG = {
       .order("sort_order", { ascending: true })
       .then(function (r) { state.pipeline = r.data || []; });
   }
+  function loadSubscription() {
+    // Read-only to the client by RLS -- only the Stripe webhook (service role) can write this.
+    return sb.from("subscriptions").select("status, plan").eq("org_id", state.org.id).maybeSingle()
+      .then(function (r) { state.subscription = r.data || { status: "inactive", plan: null }; })
+      .catch(function () { state.subscription = { status: "inactive", plan: null }; });
+  }
+  function loadAdminStatus() {
+    // Read-only to the client by RLS -- only the service role can grant this (see docs/admin-setup.sql).
+    return sb.from("admins").select("profile_id").eq("profile_id", state.user.id).maybeSingle()
+      .then(function (r) { state.isAdmin = !!r.data; })
+      .catch(function () { state.isAdmin = false; });
+  }
+  function loadContracts() {
+    return sb.from("contracts").select("*").order("end_date", { ascending: true })
+      .then(function (r) { state.contracts = r.data || []; });
+  }
+  function loadAlertRules() {
+    return sb.from("alert_rules").select("*").order("created_at", { ascending: false })
+      .then(function (r) { state.alertRules = r.data || []; });
+  }
   function ensureFitScores() {
-    // compute + upsert any missing scores for current org
-    var have = state.fit;
-    var toUpsert = [];
-    state.opps.forEach(function (o) {
-      if (!have[o.id]) {
-        var f = computeFit(state.org, o);
-        have[o.id] = f;
-        toUpsert.push({ org_id: state.org.id, opportunity_id: o.id, headline_score: f.headline, recommendation: f.rec, factors: f.factors });
-      }
+    var missingIds = state.opps.filter(function (o) { return !state.fit[o.id]; }).map(function (o) { return o.id; });
+    if (!missingIds.length) return Promise.resolve();
+
+    // Instant local estimate so the Funding Radar isn't empty while the real AI score loads.
+    missingIds.forEach(function (id) {
+      var o = state.opps.filter(function (x) { return x.id === id; })[0];
+      state.fit[id] = computeFit(state.org, o);
     });
-    if (!toUpsert.length) return Promise.resolve();
-    return sb.from("fit_scores").upsert(toUpsert, { onConflict: "org_id,opportunity_id" }).then(function () {});
+
+    // Guests, and orgs without an active subscription, get the free estimate only --
+    // never a paid AI call. The server enforces this too; this just saves the round trip.
+    if (state.user.is_anonymous || !isSubscribed()) {
+      missingIds.forEach(function (id) { state.fit[id].paywalled = true; });
+      return Promise.resolve();
+    }
+
+    missingIds.forEach(function (id) { state.fit[id].pending = true; });
+
+    return sb.auth.getSession().then(function (s) {
+      var token = s.data.session && s.data.session.access_token;
+      if (!token) return;
+      var chunks = [];
+      for (var i = 0; i < missingIds.length; i += 15) chunks.push(missingIds.slice(i, i + 15));
+      return chunks.reduce(function (p, chunk) {
+        return p.then(function () { return scoreChunk(chunk, token); });
+      }, Promise.resolve());
+    });
+  }
+
+  function scoreChunk(ids, token) {
+    return fetch("/.netlify/functions/score-opportunities", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Authorization": "Bearer " + token },
+      body: JSON.stringify({ opportunity_ids: ids })
+    }).then(function (r) {
+      if (r.status === 402) {
+        ids.forEach(function (id) { if (state.fit[id]) { state.fit[id].pending = false; state.fit[id].paywalled = true; } });
+        paint();
+        return null;
+      }
+      return r.json();
+    }).then(function (data) {
+      if (!data) return;
+      (data.results || []).forEach(function (res) {
+        state.fit[res.opportunity_id] = { headline: res.headline_score, rec: res.recommendation, factors: res.factors || [] };
+        if (res.ai_summary) {
+          var o = state.opps.filter(function (x) { return x.id === res.opportunity_id; })[0];
+          if (o) o.ai_summary = res.ai_summary;
+        }
+      });
+      paint();
+    }).catch(function (err) {
+      console.error("AI scoring failed:", err);
+      ids.forEach(function (id) { if (state.fit[id]) state.fit[id].pending = false; });
+    });
   }
   function loadFitScores() {
     return sb.from("fit_scores").select("*").then(function (r) {
@@ -399,8 +483,12 @@ window.OA_CONFIG = {
       ["dashboard", "📊", "Dashboard"],
       ["radar", "📡", "Funding Radar"],
       ["pipeline", "🗂️", "Capture Pipeline"],
+      ["contracts", "📄", "Contract Watch"],
+      ["alerts", "🔔", "Alerts"],
+      ["assistant", "💬", "AI Assistant"],
       ["profile", "🏢", "Organization"]
     ];
+    if (state.isAdmin) nav.push(["admin", "🛠️", "Admin"]);
     var shell = el(
       '<div class="layout">' +
       '<aside class="sidebar">' +
@@ -431,7 +519,11 @@ window.OA_CONFIG = {
     if (state.view === "dashboard") return renderDashboard(main);
     if (state.view === "radar") return renderRadar(main);
     if (state.view === "pipeline") return renderPipeline(main);
+    if (state.view === "contracts") return renderContracts(main);
+    if (state.view === "alerts") return renderAlerts(main);
+    if (state.view === "assistant") return renderAssistant(main);
     if (state.view === "profile") return renderProfile(main);
+    if (state.view === "admin" && state.isAdmin) return renderAdmin(main);
   }
 
   /* ---------- dashboard ---------- */
@@ -445,6 +537,8 @@ window.OA_CONFIG = {
     var strong = state.opps.filter(function (o) { return state.fit[o.id] && state.fit[o.id].headline >= 75; }).length;
     var closing = state.opps.filter(function (o) { var d = daysUntil(o.deadline); return d != null && d >= 0 && d <= 30; })
       .sort(function (a, b) { return new Date(a.deadline) - new Date(b.deadline); }).slice(0, 5);
+    var renewing = state.contracts.filter(function (c) { var d = daysUntil(c.end_date); return d != null && d >= 0 && d <= 60; }).length;
+    var alertMatches = state.alertRules.reduce(function (sum, rule) { return sum + state.opps.filter(function (o) { return matchesRule(rule, o); }).length; }, 0);
 
     main.innerHTML =
       '<div class="topbar"><div><h1>Dashboard</h1><p class="sub">Your opportunity pipeline at a glance</p></div></div>' +
@@ -454,6 +548,12 @@ window.OA_CONFIG = {
       tile(state.pipeline.length, "In capture pipeline") +
       tile(money(pipelineValue), "Pipeline value") +
       "</div>" +
+      (state.alertRules.length || state.contracts.length
+        ? '<div class="row" style="margin-top:14px">' +
+          (state.alertRules.length ? '<div class="card" style="flex:1;min-width:220px">🔔 <strong>' + alertMatches + '</strong> opportunit' + (alertMatches === 1 ? "y matches" : "ies match") + ' your alert rules</div>' : "") +
+          (state.contracts.length ? '<div class="card" style="flex:1;min-width:220px">📄 <strong>' + renewing + '</strong> contract' + (renewing === 1 ? "" : "s") + ' renewing in the next 60 days</div>' : "") +
+          "</div>"
+        : "") +
       '<h2 class="section-title">Closing soon</h2>' +
       (closing.length ? '<div class="opp-list" id="closing"></div>' : '<div class="empty">No deadlines in the next 30 days.</div>');
 
@@ -516,7 +616,7 @@ window.OA_CONFIG = {
       (d != null ? "<span>" + (d < 0 ? "Closed" : "Due in " + d + " days") + "</span>" : "") +
       "</div>" +
       '<p class="summary">' + esc(o.summary || "") + "</p></div>" +
-      '<div class="score-badge ' + scoreClass(f.headline) + '"><div class="score-num">' + f.headline + "%</div><div class=\"score-rec\">" + esc(f.rec) + "</div></div>" +
+      '<div class="score-badge ' + scoreClass(f.headline) + '"><div class="score-num">' + f.headline + "%</div><div class=\"score-rec\">" + esc(f.pending ? "Scoring…" : f.paywalled ? "Estimate — upgrade for AI" : f.rec) + "</div></div>" +
       "</div>"
     );
     row.addEventListener("click", function () { state.currentOpp = o; paint(); });
@@ -544,15 +644,19 @@ window.OA_CONFIG = {
       (o.source_url ? '<div><a href="' + esc(o.source_url) + '" target="_blank" rel="noopener">View source ↗</a></div>' : "") +
       "</div></div>" +
       '<div class="card score-side"><h2>AI Fit Score</h2>' +
-      '<div class="score-badge ' + scoreClass(f.headline) + '" style="margin:6px 0 4px"><div class="score-num" style="font-size:2.4rem">' + f.headline + '%</div><div class="score-rec">' + esc(f.rec) + "</div></div>" +
+      '<div class="score-badge ' + scoreClass(f.headline) + '" style="margin:6px 0 4px"><div class="score-num" style="font-size:2.4rem">' + f.headline + '%</div><div class="score-rec">' + esc(f.pending ? "Scoring…" : f.paywalled ? "Estimate only" : f.rec) + "</div></div>" +
       '<ul class="factors" style="padding:0">' +
       (f.factors || []).map(function (fc) { return "<li>" + esc(fc.label) + " — " + fc.val + '%<i class="bar"><b style="width:' + fc.val + '%"></b></i></li>'; }).join("") +
       "</ul>" +
       '<button class="btn ' + (inPipeline ? "btn-ghost" : "btn-primary") + '" style="width:100%" id="addPipe"' + (inPipeline ? " disabled" : "") + ">" + (inPipeline ? "Already in pipeline" : "Add to Capture Pipeline") + "</button>" +
-      '<p class="hint" style="margin-top:.6rem">Fit Score is computed from your organization profile. Connect an AI key to enable narrative scoring.</p>' +
+      (f.paywalled
+        ? '<p class="hint" style="margin-top:.6rem">This is a free estimate. <a href="#" data-nav="profile">Upgrade your plan</a> for the full AI Fit Score and Opportunity Summary.</p>'
+        : '<p class="hint" style="margin-top:.6rem">Fit Score is generated by AI from your organization profile and updates automatically when you edit it.</p>') +
       "</div></div>";
 
     main.querySelector("#back").addEventListener("click", function () { state.currentOpp = null; paint(); });
+    var upgradeLink = main.querySelector('[data-nav="profile"]');
+    if (upgradeLink) upgradeLink.addEventListener("click", function (e) { e.preventDefault(); state.view = "profile"; state.currentOpp = null; paint(); });
     var addBtn = main.querySelector("#addPipe");
     if (addBtn && !inPipeline) {
       addBtn.addEventListener("click", function () {
@@ -606,10 +710,32 @@ window.OA_CONFIG = {
   }
 
   /* ---------- organization profile ---------- */
+  function planLabel(p) { return p === "professional" ? "Professional" : p === "team" ? "Team" : p === "enterprise" ? "Enterprise" : "Active"; }
+  function renderBillingCard() {
+    var sub = state.subscription || { status: "inactive", plan: null };
+    if (sub.status === "active") {
+      return '<div class="card" style="max-width:680px;margin-bottom:18px">' +
+        '<h2 style="margin-bottom:.3rem">Plan &amp; Billing</h2>' +
+        '<p class="hint" style="margin:0 0 .8rem">Active — ' + esc(planLabel(sub.plan)) + ' plan. AI Fit Scoring and Opportunity Summaries are unlocked.</p>' +
+        '<p class="hint">To change or cancel your plan, email <a href="mailto:bill@mytrueprosperity.com">bill@mytrueprosperity.com</a>.</p>' +
+        "</div>";
+    }
+    return '<div class="card" style="max-width:680px;margin-bottom:18px">' +
+      '<h2 style="margin-bottom:.3rem">Plan &amp; Billing</h2>' +
+      '<p class="hint" style="margin:0 0 .8rem">' +
+      (sub.status === "past_due" ? "Payment past due — AI Fit Scoring is paused until this is resolved." : "Fit Scores currently show a free estimate only. Upgrade to unlock real AI Fit Scoring and Opportunity Summaries.") +
+      "</p>" +
+      '<div class="row">' +
+      '<a class="btn btn-primary btn-sm" href="' + esc(billingLinkFor("professional") || "#") + '" target="_blank" rel="noopener">Professional — $149/mo</a>' +
+      '<a class="btn btn-teal btn-sm" href="' + esc(billingLinkFor("team") || "#") + '" target="_blank" rel="noopener">Team — $249/mo</a>' +
+      '<a class="btn btn-ghost btn-sm" href="mailto:bill@mytrueprosperity.com?subject=Opportunity%20Assist%20Enterprise">Enterprise — Contact us</a>' +
+      "</div></div>";
+  }
   function renderProfile(main) {
     var o = state.org;
     main.innerHTML =
       '<div class="topbar"><div><h1>Organization</h1><p class="sub">Updates here re-score your opportunities</p></div></div>' +
+      renderBillingCard() +
       '<div class="card" style="max-width:680px"><form id="pf">' +
       field("p_name", "Organization name", o.name) +
       '<div class="two-col">' + field("p_areas", "Service areas", o.service_areas) + field("p_pops", "Target populations", o.target_populations) + "</div>" +
@@ -648,6 +774,260 @@ window.OA_CONFIG = {
   function field(id, label, val) { return '<div class="field"><label>' + esc(label) + '</label><input id="' + id + '" value="' + esc(val || "") + '" /></div>'; }
   function area(id, label, val) { return '<div class="field"><label>' + esc(label) + '</label><textarea id="' + id + '" rows="2">' + esc(val || "") + "</textarea></div>"; }
 
+  /* ---------- contract watch ---------- */
+  function renderContracts(main) {
+    var rows = state.contracts.slice().sort(function (a, b) { return new Date(a.end_date || "2999") - new Date(b.end_date || "2999"); });
+    main.innerHTML =
+      '<div class="topbar"><div><h1>Contract Watch</h1><p class="sub">Track renewal dates on contracts you already hold</p></div><button class="btn btn-primary" id="cAdd">Add contract</button></div>' +
+      (rows.length ? '<div class="opp-list" id="cList"></div>' : '<div class="empty">No contracts tracked yet. Add one to get renewal visibility.</div>');
+    if (rows.length) {
+      var wrap = main.querySelector("#cList");
+      rows.forEach(function (c) {
+        var d = daysUntil(c.end_date);
+        var row = el(
+          '<div class="opp">' +
+          '<div><h3>' + esc(c.title) + "</h3>" +
+          '<div class="meta"><span class="tag">' + esc(c.agency || "—") + "</span>" +
+          (c.contract_number ? "<span>#" + esc(c.contract_number) + "</span>" : "") +
+          (c.value ? "<span>" + money(c.value) + "</span>" : "") +
+          (d != null ? "<span>" + (d < 0 ? "Expired" : "Renews in " + d + " days") + "</span>" : "") +
+          "</div>" +
+          (c.notes ? '<p class="summary">' + esc(c.notes) + "</p>" : "") +
+          "</div>" +
+          '<button class="btn btn-ghost btn-sm" data-del="' + c.id + '">Remove</button>' +
+          "</div>"
+        );
+        row.querySelector("[data-del]").addEventListener("click", function () {
+          sb.from("contracts").delete().eq("id", c.id).then(function (r) {
+            if (r.error) { alert(r.error.message); return; }
+            state.contracts = state.contracts.filter(function (x) { return x.id !== c.id; });
+            paint();
+          });
+        });
+        wrap.appendChild(row);
+      });
+    }
+    main.querySelector("#cAdd").addEventListener("click", function () { renderContractForm(main); });
+  }
+  function renderContractForm(main) {
+    main.innerHTML =
+      '<span class="back" id="cBack">← Back to Contract Watch</span>' +
+      '<div class="topbar"><div><h1>Add contract</h1></div></div>' +
+      '<div class="card" style="max-width:680px"><form id="cForm">' +
+      field("c_title", "Contract title *", "") +
+      '<div class="two-col">' + field("c_agency", "Agency / funder", "") + field("c_number", "Contract number", "") + "</div>" +
+      '<div class="two-col">' + field("c_start", "Start date", "") + field("c_end", "End / renewal date", "") + "</div>" +
+      field("c_value", "Contract value", "") +
+      area("c_notes", "Notes", "") +
+      '<div id="cMsg"></div>' +
+      '<button class="btn btn-primary" type="submit">Save contract</button>' +
+      "</form></div>";
+    main.querySelector("#c_start").type = "date";
+    main.querySelector("#c_end").type = "date";
+    main.querySelector("#cBack").addEventListener("click", function () { renderContracts(main); });
+    main.querySelector("#cForm").addEventListener("submit", function (e) {
+      e.preventDefault();
+      var msg = main.querySelector("#cMsg");
+      var payload = {
+        org_id: state.org.id,
+        title: main.querySelector("#c_title").value.trim(),
+        agency: main.querySelector("#c_agency").value.trim(),
+        contract_number: main.querySelector("#c_number").value.trim(),
+        start_date: main.querySelector("#c_start").value || null,
+        end_date: main.querySelector("#c_end").value || null,
+        value: main.querySelector("#c_value").value ? Number(main.querySelector("#c_value").value) : null,
+        notes: main.querySelector("#c_notes").value.trim()
+      };
+      if (!payload.title) { msg.innerHTML = '<p class="error">Contract title is required.</p>'; return; }
+      sb.from("contracts").insert(payload).select().single().then(function (r) {
+        if (r.error) { msg.innerHTML = '<p class="error">' + esc(r.error.message) + "</p>"; return; }
+        state.contracts.push(r.data);
+        renderContracts(main);
+      });
+    });
+  }
+
+  /* ---------- alerts ---------- */
+  function matchesRule(rule, o) {
+    if (rule.type === "keyword") {
+      var kw = (rule.keyword || "").toLowerCase();
+      if (!kw) return false;
+      var hay = ((o.title || "") + " " + (o.summary || "") + " " + (o.category || "")).toLowerCase();
+      return hay.indexOf(kw) !== -1;
+    }
+    if (rule.type === "score") {
+      var f = state.fit[o.id];
+      return f && !f.pending && f.headline >= (rule.min_score || 0);
+    }
+    return false;
+  }
+  function renderAlerts(main) {
+    main.innerHTML =
+      '<div class="topbar"><div><h1>Alerts</h1><p class="sub">In-app notifications when matching opportunities appear</p></div><button class="btn btn-primary" id="aAdd">Add alert rule</button></div>' +
+      (state.alertRules.length ? '<div class="opp-list" id="aList"></div>' : '<div class="empty">No alert rules yet. Add one to track keywords or high fit scores.</div>');
+    if (state.alertRules.length) {
+      var wrap = main.querySelector("#aList");
+      state.alertRules.forEach(function (rule) {
+        var count = state.opps.filter(function (o) { return matchesRule(rule, o); }).length;
+        var label = rule.type === "keyword" ? 'Keyword: "' + rule.keyword + '"' : "Fit score \u2265 " + rule.min_score + "%";
+        var row = el(
+          '<div class="opp">' +
+          '<div><h3>' + esc(label) + "</h3>" +
+          '<p class="summary">' + count + (count === 1 ? " match" : " matches") + " in your current Funding Radar</p></div>" +
+          '<button class="btn btn-ghost btn-sm" data-del="' + rule.id + '">Remove</button>' +
+          "</div>"
+        );
+        row.querySelector("[data-del]").addEventListener("click", function () {
+          sb.from("alert_rules").delete().eq("id", rule.id).then(function (r) {
+            if (r.error) { alert(r.error.message); return; }
+            state.alertRules = state.alertRules.filter(function (x) { return x.id !== rule.id; });
+            paint();
+          });
+        });
+        wrap.appendChild(row);
+      });
+    }
+    main.querySelector("#aAdd").addEventListener("click", function () { renderAlertForm(main); });
+  }
+  function renderAlertForm(main) {
+    main.innerHTML =
+      '<span class="back" id="aBack">← Back to Alerts</span>' +
+      '<div class="topbar"><div><h1>Add alert rule</h1></div></div>' +
+      '<div class="card" style="max-width:480px"><form id="aForm">' +
+      '<div class="field"><label>Rule type</label><select id="a_type"><option value="keyword">Keyword match</option><option value="score">Fit score threshold</option></select></div>' +
+      '<div id="a_kw_wrap">' + field("a_keyword", "Keyword", "") + "</div>" +
+      '<div id="a_score_wrap" style="display:none">' + field("a_score", "Minimum fit score (0-100)", "75") + "</div>" +
+      '<div id="aMsg"></div>' +
+      '<button class="btn btn-primary" type="submit">Save rule</button>' +
+      "</form></div>";
+    var typeSel = main.querySelector("#a_type");
+    typeSel.addEventListener("change", function () {
+      main.querySelector("#a_kw_wrap").style.display = typeSel.value === "keyword" ? "" : "none";
+      main.querySelector("#a_score_wrap").style.display = typeSel.value === "score" ? "" : "none";
+    });
+    main.querySelector("#aBack").addEventListener("click", function () { renderAlerts(main); });
+    main.querySelector("#aForm").addEventListener("submit", function (e) {
+      e.preventDefault();
+      var msg = main.querySelector("#aMsg");
+      var type = typeSel.value;
+      var payload = { org_id: state.org.id, type: type };
+      if (type === "keyword") {
+        payload.keyword = main.querySelector("#a_keyword").value.trim();
+        if (!payload.keyword) { msg.innerHTML = '<p class="error">Enter a keyword.</p>'; return; }
+      } else {
+        payload.min_score = Number(main.querySelector("#a_score").value) || 0;
+      }
+      sb.from("alert_rules").insert(payload).select().single().then(function (r) {
+        if (r.error) { msg.innerHTML = '<p class="error">' + esc(r.error.message) + "</p>"; return; }
+        state.alertRules.push(r.data);
+        renderAlerts(main);
+      });
+    });
+  }
+
+  /* ---------- AI assistant ---------- */
+  function renderAssistant(main) {
+    main.innerHTML =
+      '<div class="topbar"><div><h1>AI Assistant</h1><p class="sub">Ask about your pipeline, opportunities, or what to prioritize</p></div></div>' +
+      '<div class="card" style="max-width:760px;display:flex;flex-direction:column;height:60vh">' +
+      '<div id="chatLog" style="flex:1;overflow:auto;margin-bottom:12px"></div>' +
+      '<form id="chatForm" style="display:flex;gap:8px">' +
+      '<input id="chatInput" placeholder="Ask a question…" style="flex:1" autocomplete="off" />' +
+      '<button class="btn btn-primary" type="submit" id="chatBtn">Send</button>' +
+      "</form></div>";
+    var log = main.querySelector("#chatLog");
+    function drawLog() {
+      log.innerHTML = state.chat.length
+        ? state.chat.map(function (m) {
+            return '<div style="margin-bottom:10px"><div style="font-weight:600;color:' + (m.role === "user" ? "var(--navy)" : "var(--teal)") + '">' + (m.role === "user" ? "You" : "Assistant") + '</div><div style="white-space:pre-wrap">' + esc(m.content) + "</div></div>";
+          }).join("")
+        : '<div class="empty">Ask something like "what should I prioritize this week?" or "summarize my pipeline."</div>';
+      log.scrollTop = log.scrollHeight;
+    }
+    drawLog();
+
+    if (state.user.is_anonymous || !isSubscribed()) {
+      main.querySelector("#chatForm").outerHTML = '<div class="notice">' + (state.user.is_anonymous ? "Sign up for a real account, then subscribe, to use the AI Assistant." : "Upgrade your plan on the Organization page to use the AI Assistant.") + "</div>";
+      return;
+    }
+
+    main.querySelector("#chatForm").addEventListener("submit", function (e) {
+      e.preventDefault();
+      var input = main.querySelector("#chatInput");
+      var btn = main.querySelector("#chatBtn");
+      var text = input.value.trim();
+      if (!text) return;
+      state.chat.push({ role: "user", content: text });
+      input.value = "";
+      btn.disabled = true;
+      drawLog();
+      sb.auth.getSession().then(function (s) {
+        var token = s.data.session && s.data.session.access_token;
+        return fetch("/.netlify/functions/ai-assistant", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "Authorization": "Bearer " + token },
+          body: JSON.stringify({ message: text, history: state.chat.slice(0, -1).slice(-10) })
+        });
+      }).then(function (r) {
+        if (r.status === 402) { state.chat.push({ role: "assistant", content: "The AI Assistant requires an active subscription. Visit the Organization page to upgrade." }); return; }
+        return r.json().then(function (d) { state.chat.push({ role: "assistant", content: (d && d.reply) || "Sorry, something went wrong." }); });
+      }).catch(function () {
+        state.chat.push({ role: "assistant", content: "Sorry, something went wrong reaching the assistant." });
+      }).then(function () {
+        btn.disabled = false;
+        drawLog();
+      });
+    });
+  }
+
+  /* ---------- admin ---------- */
+  function renderAdmin(main) {
+    main.innerHTML = '<div class="topbar"><div><h1>Admin</h1><p class="sub">Loading organizations…</p></div></div>';
+    sb.from("organizations").select("id, name, subscriptions(status, plan)").order("name").then(function (r) {
+      if (r.error) { main.innerHTML = '<div class="topbar"><div><h1>Admin</h1></div></div><p class="error">' + esc(r.error.message) + "</p>"; return; }
+      var orgs = r.data || [];
+      main.innerHTML =
+        '<div class="topbar"><div><h1>Admin</h1><p class="sub">' + orgs.length + " organizations</p></div></div>" +
+        '<div class="grid" id="adminList" style="gap:12px"></div>';
+      var wrap = main.querySelector("#adminList");
+      orgs.forEach(function (o) {
+        var sub = (o.subscriptions && o.subscriptions[0]) || { status: "inactive", plan: null };
+        var card = el(
+          '<div class="card">' +
+          '<div class="row" style="justify-content:space-between;align-items:center;flex-wrap:wrap">' +
+          "<div><strong>" + esc(o.name) + '</strong><div class="hint">' + esc(sub.status) + (sub.plan ? " · " + esc(sub.plan) : "") + "</div></div>" +
+          '<div class="row">' +
+          '<select class="adm-plan"><option value="professional">Professional</option><option value="team">Team</option><option value="enterprise">Enterprise</option></select>' +
+          '<button class="btn btn-primary btn-sm adm-activate">Activate</button>' +
+          '<button class="btn btn-ghost btn-sm adm-deactivate">Deactivate</button>' +
+          "</div></div></div>"
+        );
+        card.querySelector(".adm-activate").addEventListener("click", function () {
+          adminSetSubscription(o.id, "active", card.querySelector(".adm-plan").value);
+        });
+        card.querySelector(".adm-deactivate").addEventListener("click", function () {
+          adminSetSubscription(o.id, "inactive", null);
+        });
+        wrap.appendChild(card);
+      });
+    });
+  }
+  function adminSetSubscription(orgId, status, plan) {
+    sb.auth.getSession().then(function (s) {
+      var token = s.data.session && s.data.session.access_token;
+      return fetch("/.netlify/functions/admin-set-subscription", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Authorization": "Bearer " + token },
+        body: JSON.stringify({ org_id: orgId, status: status, plan: plan })
+      });
+    }).then(function (r) { return r.json().then(function (d) { return { ok: r.ok, data: d }; }); })
+      .then(function (res) {
+        if (!res.ok) { alert((res.data && res.data.error) || "Failed to update."); return; }
+        renderAdmin(document.getElementById("main"));
+        if (state.org.id === orgId) loadSubscription();
+      }).catch(function () { alert("Network error."); });
+  }
+
   /* ---------- boot ---------- */
   function boot() {
     root.innerHTML = '<div class="boot">Loading Opportunity Assist…</div>';
@@ -661,7 +1041,7 @@ window.OA_CONFIG = {
         return sb.from("organizations").select("*").eq("id", state.profile.org_id).single().then(function (orgR) {
           if (orgR.error || !orgR.data) { renderOnboarding(); return; }
           state.org = orgR.data;
-          return Promise.all([loadOpps(), loadFitScores(), loadPipeline()]).then(function () {
+          return Promise.all([loadOpps(), loadFitScores(), loadPipeline(), loadSubscription(), loadContracts(), loadAlertRules(), loadAdminStatus()]).then(function () {
             return ensureFitScores();
           }).then(function () { renderShell(); });
         });
