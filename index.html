@@ -353,12 +353,82 @@
       <div class="container narrow center">
         <h2>Find the money that funds the mission.</h2>
         <p>Opportunity Assist is rolling out to a founding cohort of mission-driven organizations. Request early access and we’ll be in touch.</p>
-        <a class="btn btn-primary btn-lg" href="mailto:bill@mytrueprosperity.com?subject=Opportunity%20Assist%20early%20access">Request early access</a>
-        <p class="cta-sub">Or call <a href="tel:+13212094377">321-209-4377</a></p>
+
+        <form id="eaForm" class="ea-form" novalidate>
+          <div class="ea-field"><input type="text" id="ea_name" placeholder="Your name" autocomplete="name" /></div>
+          <div class="ea-field"><input type="email" id="ea_email" placeholder="Email address *" required autocomplete="email" /></div>
+          <div class="ea-field"><input type="text" id="ea_org" placeholder="Organization" autocomplete="organization" /></div>
+          <div class="ea-field"><textarea id="ea_message" rows="2" placeholder="What are you hoping to find funding for? (optional)"></textarea></div>
+          <!-- Honeypot: hidden from real visitors, most bots fill every field -->
+          <div class="ea-hp" aria-hidden="true"><input type="text" id="ea_website" tabindex="-1" autocomplete="off" /></div>
+          <div id="eaMsg" class="ea-msg" role="status"></div>
+          <button class="btn btn-primary btn-lg" type="submit" id="eaBtn">Request early access</button>
+        </form>
+
+        <p class="cta-sub">Or call <a href="tel:+13212094377">321-209-4377</a>, or email <a href="mailto:bill@mytrueprosperity.com?subject=Opportunity%20Assist%20early%20access">bill@mytrueprosperity.com</a> directly.</p>
       </div>
     </section>
 
   </main>
+
+  <style>
+    /* Early access form — self-contained so it doesn't depend on assets/styles.css conventions not visible here. */
+    .ea-form{max-width:420px;margin:1.4rem auto 0;text-align:left}
+    .ea-field{margin-bottom:.7rem}
+    .ea-form input,.ea-form textarea{width:100%;box-sizing:border-box;padding:.65rem .8rem;border:1px solid #d7dee1;border-radius:9px;font:inherit;font-size:.95rem;color:#16242c}
+    .ea-form input:focus,.ea-form textarea:focus{outline:2px solid #2c7a7b;outline-offset:1px}
+    .ea-hp{position:absolute;left:-9999px;width:1px;height:1px;overflow:hidden}
+    .ea-msg{font-size:.88rem;margin:0 0 .6rem;min-height:1.1em}
+    .ea-msg.ok{color:#1f8a52}
+    .ea-msg.err{color:#b4452f}
+    .ea-form button[disabled]{opacity:.6;cursor:not-allowed}
+  </style>
+  <script>
+    (function () {
+      var form = document.getElementById("eaForm");
+      if (!form) return;
+      form.addEventListener("submit", function (e) {
+        e.preventDefault();
+        var btn = document.getElementById("eaBtn");
+        var msg = document.getElementById("eaMsg");
+        var email = document.getElementById("ea_email").value.trim();
+        msg.className = "ea-msg";
+        msg.textContent = "";
+        if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+          msg.className = "ea-msg err";
+          msg.textContent = "Please enter a valid email address.";
+          return;
+        }
+        btn.disabled = true;
+        fetch("/.netlify/functions/request-early-access", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            name: document.getElementById("ea_name").value.trim(),
+            email: email,
+            organization: document.getElementById("ea_org").value.trim(),
+            message: document.getElementById("ea_message").value.trim(),
+            website: document.getElementById("ea_website").value // honeypot
+          })
+        }).then(function (r) { return r.json().then(function (d) { return { ok: r.ok, data: d }; }); })
+          .then(function (res) {
+            btn.disabled = false;
+            if (!res.ok) {
+              msg.className = "ea-msg err";
+              msg.textContent = (res.data && res.data.error) || "Something went wrong. Please email bill@mytrueprosperity.com directly.";
+              return;
+            }
+            form.reset();
+            msg.className = "ea-msg ok";
+            msg.textContent = "Thanks — we'll be in touch soon.";
+          }).catch(function () {
+            btn.disabled = false;
+            msg.className = "ea-msg err";
+            msg.textContent = "Something went wrong. Please email bill@mytrueprosperity.com directly.";
+          });
+      });
+    })();
+  </script>
 
   <footer class="site-footer">
     <div class="container footer-grid">
