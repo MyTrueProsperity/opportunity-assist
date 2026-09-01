@@ -167,6 +167,18 @@ performance, deadline, set-aside, and a direct link to the full posting on
 SAM.gov — enough for AI Fit Scoring to work with. Pulling in full description
 text is a reasonable Phase 2 addition if it turns out to matter.
 
+## Opportunity Sourcing: Grants.gov
+
+SAM.gov is almost entirely contract and procurement solicitations, not grants — a real limitation for a nonprofit-heavy audience. `grants-gov-crawler-background` fills that gap, using Grants.gov's public `search2` API. No API key needed, unlike SAM.gov, so this one has zero setup blocker beyond running the SQL below.
+
+Deliberately does not filter by Grants.gov's eligibility or funding-category codes: the sourcing on those exact values was inconsistent enough that guessing wrong risked silently filtering out every nonprofit-eligible grant. Searches by keyword only instead, and leans on the AI Fit Scoring every org already gets to sort eligibility fit per organization. Same reasoning as SAM.gov applies to skipping the full-text `fetchOpportunity` call per notice: keeps the crawl fast, title + agency + dates + a direct link is enough for AI Fit Scoring to work with.
+
+No new SQL migration needed — this reuses the `external_id` column and unique index already added by `docs/sam-gov-crawler-setup.sql`. Reuses the same `SUPABASE_SERVICE_ROLE_KEY` env var as the SAM.gov crawler; nothing new to add there either.
+
+**Keywords.** The crawl is scoped to `KEYWORDS` at the top of the function — a starter list matching workforce development, financial capability, youth employment, and community-prosperity work. Same role as SAM.gov's NAICS list: the single biggest lever on relevance, edit freely.
+
+Runs daily at 09:10 UTC (see `netlify.toml`), ten minutes after the SAM.gov crawler, so the two don't hit Supabase at the same moment.
+
 ## Paywall / Billing
 
 AI Fit Scoring is gated behind an active subscription. Account creation,
