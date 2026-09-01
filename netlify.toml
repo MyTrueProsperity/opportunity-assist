@@ -6,6 +6,9 @@
 [functions."sam-gov-crawler-background"]
   schedule = "0 9 * * *"
 
+[functions."grants-gov-crawler-background"]
+  schedule = "10 9 * * *"
+
 [[headers]]
   for = "/*"
   [headers.values]
