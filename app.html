@@ -520,6 +520,7 @@ window.OA_CONFIG = {
     if (state.currentOpp) return renderOppDetail(main);
     if (state.view === "dashboard") return renderDashboard(main);
     if (state.view === "radar") return renderRadar(main);
+      if (state.view === "foundations") return renderFoundationLeads(main);
     if (state.view === "pipeline") return renderPipeline(main);
     if (state.view === "contracts") return renderContracts(main);
     if (state.view === "alerts") return renderAlerts(main);
@@ -1043,7 +1044,7 @@ window.OA_CONFIG = {
         return sb.from("organizations").select("*").eq("id", state.profile.org_id).single().then(function (orgR) {
           if (orgR.error || !orgR.data) { renderOnboarding(); return; }
           state.org = orgR.data;
-          return Promise.all([loadOpps(), loadFitScores(), loadPipeline(), loadSubscription(), loadContracts(), loadAlertRules(), loadAdminStatus()]).then(function () {
+          return Promise.all([loadOpps(), loadFitScores(), loadPipeline(), loadSubscription(), loadContracts(), loadAlertRules(), loadFoundationLeads(), loadAdminStatus()]).then(function () {
             return ensureFitScores();
           }).then(function () { renderShell(); });
         });
