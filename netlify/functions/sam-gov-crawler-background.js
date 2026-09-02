@@ -6,6 +6,25 @@
 // several sequential SAM.gov + Supabase calls can run past the 10s limit on
 // a regular synchronous function, and background functions get up to 15 min.
 //
+// TWO SEARCH AXES. NAICS_CODES searches by industry classification -- broad,
+// but only as relevant as the fixed 6 codes chosen. A second axis now also
+// searches by TITLE using each organization's own keywords (the same field
+// grants-gov-crawler-background.js already draws from), the same fix
+// applied there for the same reason: Fit Scoring can only rank what the
+// crawl actually fetched, so a fixed, generic filter means an org outside
+// that narrow starter list sees nothing relevant no matter how good their
+// profile is. `title` is a real, documented SAM.gov v2 parameter (see
+// open.gsa.gov/api/get-opportunities-public-api/), not a guess.
+//
+// Worth being upfront about a real limitation: SAM.gov contract titles tend
+// to be procurement-generic ("IT Support Services," "Facility Maintenance
+// Contract") rather than mission-descriptive the way Grants.gov program
+// titles often are. A phrase like "youth employment" is less likely to
+// literally appear in a SAM.gov title than in a grant program's name, so
+// this axis will likely surface fewer hits per keyword than the same
+// approach did on Grants.gov. Still worth having -- just not a guaranteed
+// parallel yield.
+//
 // This does NOT fetch each opportunity's full description text -- that's a
 // second authenticated SAM.gov call per notice and adds real cost/time for a
 // crawl this size. What's stored here (title, agency, type, NAICS, place of
@@ -18,7 +37,9 @@
 //   SUPABASE_URL
 //   SUPABASE_SERVICE_ROLE_KEY  writing to `opportunities` is a shared, global
 //                              write, not something any signed-in user's own
-//                              session should be able to do.
+//                              session should be able to do. Also used here
+//                              to read every org's keywords -- a read no
+//                              single signed-in session should have either.
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -26,8 +47,8 @@ const SAM_API_KEY = process.env.SAM_GOV_API_KEY;
 
 // Starter NAICS list matching workforce development, financial capability,
 // youth employment, VITA/CRA-adjacent, and community-prosperity work. Edit
-// freely -- this is the single biggest lever on how relevant the Funding
-// Radar feels, more than anything else in this file.
+// freely -- still a real, useful axis on its own, complementary to the
+// title-keyword search below, not replaced by it.
 const NAICS_CODES = [
   "611430", // Professional and Management Development Training
   "611710", // Educational Support Services
@@ -36,6 +57,24 @@ const NAICS_CODES = [
   "813219", // Other Grantmaking and Giving Services
   "813319", // Other Social Advocacy Organizations
 ];
+
+// Baseline floor for the title-keyword axis, same role and same terms as
+// grants-gov-crawler-background.js for consistency -- always searched in
+// addition to whatever real organizations' own keywords add.
+const BASELINE_KEYWORDS = [
+  "workforce development",
+  "youth employment",
+  "financial capability",
+  "financial literacy",
+  "community development",
+  "self-sufficiency",
+];
+
+// Lower than Grants.gov's equivalent caps: this axis runs alongside the
+// existing NAICS loop (roughly doubling total request volume), and SAM.gov
+// is more heavily rate-limited than Grants.gov's unauthenticated API.
+const MAX_KEYWORDS = 40;
+const BATCH_SIZE = 5;
 
 // o=Solicitation, p=Presolicitation, k=Combined Synopsis/Solicitation,
 // r=Sources Sought, s=Special Notice. Deliberately excludes "a" (Award
@@ -53,24 +92,47 @@ exports.handler = async () => {
   }
 
   const { postedFrom, postedTo } = dateWindow(LOOKBACK_DAYS);
-  console.log("SAM.gov crawl:", postedFrom, "to", postedTo, "across", NAICS_CODES.length, "NAICS codes");
 
-  const results = await Promise.allSettled(NAICS_CODES.map((code) => fetchNaicsCode(code, postedFrom, postedTo)));
+  let orgKeywords = [];
+  try {
+    orgKeywords = await fetchOrgKeywords();
+  } catch (err) {
+    console.error("Could not fetch organization keywords, continuing with baseline only:", err.message);
+  }
+
+  const seen = new Set();
+  const keywords = [];
+  BASELINE_KEYWORDS.concat(orgKeywords).forEach((kw) => {
+    const clean = (kw || "").trim().toLowerCase();
+    if (clean && !seen.has(clean)) { seen.add(clean); keywords.push(clean); }
+  });
+  const truncated = keywords.length > MAX_KEYWORDS;
+  const finalKeywords = keywords.slice(0, MAX_KEYWORDS);
+
+  console.log("SAM.gov crawl:", postedFrom, "to", postedTo, "--", NAICS_CODES.length, "NAICS codes +",
+    finalKeywords.length, "title keywords (", BASELINE_KEYWORDS.length, "baseline +", orgKeywords.length,
+    "raw from org profiles, deduped)", truncated ? "-- truncated to MAX_KEYWORDS" : "");
+
+  const naicsResults = await Promise.allSettled(
+    NAICS_CODES.map((code) => fetchByParam({ ncode: code }, postedFrom, postedTo, 5))
+  );
+  const keywordResults = await runInBatches(
+    finalKeywords, BATCH_SIZE, (kw) => fetchByParam({ title: kw }, postedFrom, postedTo, 2)
+  );
 
   let fetched = 0;
   let failed = 0;
   const rows = [];
-  results.forEach((r, i) => {
-    if (r.status === "fulfilled") {
-      fetched += r.value.length;
-      rows.push(...r.value);
-    } else {
-      failed++;
-      console.error("NAICS", NAICS_CODES[i], "fetch failed:", r.reason && r.reason.message);
-    }
+  naicsResults.forEach((r, i) => {
+    if (r.status === "fulfilled") { fetched += r.value.length; rows.push(...r.value); }
+    else { failed++; console.error("NAICS", NAICS_CODES[i], "fetch failed:", r.reason && r.reason.message); }
+  });
+  keywordResults.forEach((r, i) => {
+    if (r.status === "fulfilled") { fetched += r.value.length; rows.push(...r.value); }
+    else { failed++; console.error("Title keyword", finalKeywords[i], "fetch failed:", r.reason && r.reason.message); }
   });
 
-  // De-dupe across overlapping NAICS matches within this run before upserting.
+  // De-dupe across overlapping NAICS/keyword matches within this run before upserting.
   const byId = {};
   rows.forEach((row) => { byId[row.external_id] = row; });
   const unique = Object.values(byId);
@@ -90,24 +152,47 @@ exports.handler = async () => {
   console.log("SAM.gov crawl done:", { fetched, unique: unique.length, upserted, failed });
 };
 
-async function fetchNaicsCode(ncode, postedFrom, postedTo) {
+// Pulls every organization's own keywords, same helper/table/column as
+// grants-gov-crawler-background.js. Service role, since reading every org's
+// keywords isn't something any single signed-in user's session should do.
+async function fetchOrgKeywords() {
+  const r = await fetch(SUPABASE_URL + "/rest/v1/organizations?select=keywords", {
+    headers: { apikey: SERVICE_KEY, Authorization: "Bearer " + SERVICE_KEY },
+  });
+  if (!r.ok) throw new Error("organizations fetch failed: " + (await r.text()));
+  const orgs = await r.json();
+  const out = [];
+  orgs.forEach((org) => { (org.keywords || []).forEach((k) => { if (k) out.push(k); }); });
+  return out;
+}
+
+async function runInBatches(items, batchSize, fn) {
+  const results = [];
+  for (let i = 0; i < items.length; i += batchSize) {
+    const batch = items.slice(i, i + batchSize);
+    const batchResults = await Promise.allSettled(batch.map(fn));
+    results.push(...batchResults);
+  }
+  return results;
+}
+
+// extraParams is either { ncode } or { title } -- the one axis-specific
+// filter, everything else about the request is shared between both axes.
+async function fetchByParam(extraParams, postedFrom, postedTo, maxPages) {
   const rows = [];
   let offset = 0;
   const limit = 1000;
-  // Defensive cap: bail after 5 pages (5,000 records) for a single NAICS
-  // code in one run rather than looping indefinitely on a bad response.
-  for (let page = 0; page < 5; page++) {
+  for (let page = 0; page < maxPages; page++) {
     const url =
       "https://api.sam.gov/opportunities/v2/search?" +
-      new URLSearchParams({
+      new URLSearchParams(Object.assign({
         api_key: SAM_API_KEY,
         postedFrom,
         postedTo,
-        ncode,
         ptype: PTYPES,
         limit: String(limit),
         offset: String(offset),
-      }).toString();
+      }, extraParams)).toString();
 
     const r = await fetch(url);
     if (!r.ok) throw new Error("SAM.gov API error (" + r.status + "): " + (await r.text()).slice(0, 300));
