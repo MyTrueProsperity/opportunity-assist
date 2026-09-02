@@ -179,6 +179,20 @@ No new SQL migration needed — this reuses the `external_id` column and unique 
 
 Runs daily at 09:10 UTC (see `netlify.toml`), ten minutes after the SAM.gov crawler, so the two don't hit Supabase at the same moment.
 
+## Weekly Foundation Scan
+
+SAM.gov and Grants.gov are both structured government APIs -- reliable, but they cover federal funding only. Individual foundations, community foundations, and bank charitable trusts have no API at all, just a webpage, and most explicitly aren't always-open the way a government posting is (invitation-only, relationship-driven, LOI-gated). `foundation-scan-background` covers this different kind of source with a fundamentally different approach: instead of a structured API response, Claude reads each funder's page directly and reports back what's actually there.
+
+That's exactly why results land in their own table, `foundation_scan_hits`, never mixed into `opportunities`. Rows in `opportunities` are structured government data and treated as authoritative. Rows here are Claude's best read of a webpage at scan time -- genuinely useful, but a different kind of claim, and the app should label them accordingly wherever they're shown rather than presenting both with the same confidence.
+
+The system prompt is explicit that nothing gets invented: a deadline or amount not actually written on the page comes back null, never a guess. A fabricated number is a worse failure than a missing one -- a practitioner acting on a deadline that was never real is a real harm, an empty field is just a reason to click through and check the source.
+
+**Watchlist.** `FUNDER_WATCHLIST` at the top of the function is a starting set of 20 funders -- Florida and Central Florida funders first, then national financial-capability and workforce funders -- pulled from a much larger source list. Same role as the NAICS/keyword lists in the other two crawlers: the biggest lever on relevance, and meant to be edited, not treated as final.
+
+Runs weekly, Monday 10:00 UTC (see `netlify.toml`), separate from the two daily crawlers -- each item here is a full fetch-plus-Claude-read, a heavier operation than a single structured API request, so it doesn't need or want a daily cadence.
+
+Setup: run `docs/foundation-scan-setup.sql` once in the Supabase SQL Editor. No new env vars -- reuses `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, and `ANTHROPIC_API_KEY`, all already set for the other functions.
+
 ## Paywall / Billing
 
 AI Fit Scoring is gated behind an active subscription. Account creation,
