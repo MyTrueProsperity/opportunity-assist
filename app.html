@@ -928,7 +928,44 @@ window.OA_CONFIG = {
     });
   }
 
-  /* ---------- AI assistant ---------- */
+    /* ---------- foundation leads (weekly AI scan) ---------- */
+  function loadFoundationLeads() {
+    return sb.from("foundation_scan_hits").select("*").order("scanned_at", { ascending: false })
+      .then(function (r) { state.foundationLeads = r.data || []; });
+  }
+  function verifyBadge(mentioned, verified) {
+    if (!mentioned) return "";
+    return verified
+      ? ' <span style="color:var(--good);font-size:.78rem">\u2713 verified</span>'
+      : ' <span style="color:var(--warn);font-size:.78rem">\u26a0 unverified \u2014 check source</span>';
+  }
+  function foundationRow(lead) {
+    return el(
+      '<div class="opp">' +
+      '<div><h3>' + esc(lead.funder_name) + (lead.program_name ? ": " + esc(lead.program_name) : "") + '</h3>' +
+      (lead.relevance_note ? '<p class="summary" style="font-style:italic;color:var(--muted)">' + esc(lead.relevance_note) + '</p>' : "") +
+      (lead.summary ? '<p class="summary">' + esc(lead.summary) + '</p>' : "") +
+      '<div class="meta">' +
+      (lead.deadline_mentioned ? "<span>Deadline: " + esc(lead.deadline_mentioned) + verifyBadge(lead.deadline_mentioned, lead.deadline_verified) + "</span>" : "") +
+      (lead.amount_mentioned ? "<span>Amount: " + esc(lead.amount_mentioned) + verifyBadge(lead.amount_mentioned, lead.amount_verified) + "</span>" : "") +
+      (lead.requires_loi ? "<span>LOI required</span>" : "") +
+      "</div></div>" +
+      '<div><a class="btn btn-ghost btn-sm" href="' + esc(lead.application_url || lead.source_url) + '" target="_blank" rel="noopener">View source \u2197</a></div>' +
+      "</div>"
+    );
+  }
+  function renderFoundationLeads(main) {
+    main.innerHTML =
+      '<div class="topbar"><div><h1>Foundation Leads</h1><p class="sub">AI-read from funder websites each week \u2014 not a structured database like the rest of your Funding Radar</p></div></div>' +
+      '<div class="card" style="margin-bottom:18px"><p class="hint" style="margin:0">Claude reads each funder\u2019s page directly and reports what it finds \u2014 genuinely useful, but not the same as an official government posting. \u201cVerified\u201d means the exact deadline or amount text was found on the page; unverified means double-check before you rely on it.</p></div>' +
+      (state.foundationLeads.length ? '<div class="opp-list" id="foundationList"></div>' : '<div class="empty">No relevant leads found yet. The weekly scan runs Monday mornings.</div>');
+    if (state.foundationLeads.length) {
+      var wrap = main.querySelector("#foundationList");
+      state.foundationLeads.forEach(function (lead) { wrap.appendChild(foundationRow(lead)); });
+    }
+  }
+
+/* ---------- AI assistant ---------- */
   function renderAssistant(main) {
     main.innerHTML =
       '<div class="topbar"><div><h1>AI Assistant</h1><p class="sub">Ask about your pipeline, opportunities, or what to prioritize</p></div></div>' +
