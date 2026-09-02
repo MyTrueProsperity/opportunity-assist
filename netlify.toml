@@ -9,6 +9,9 @@
 [functions."grants-gov-crawler-background"]
   schedule = "10 9 * * *"
 
+[functions."foundation-scan-background"]
+  schedule = "0 10 * * 1"
+
 [[headers]]
   for = "/*"
   [headers.values]
