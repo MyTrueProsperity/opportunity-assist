@@ -10,7 +10,7 @@
   schedule = "10 9 * * *"
 
 [functions."foundation-scan-background"]
-  schedule = "0 10 * * 1"
+  schedule = "0 10 * * *"
 
 [[headers]]
   for = "/*"
