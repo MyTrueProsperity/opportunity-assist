@@ -42,6 +42,26 @@ test('job lease prevents a second scheduler from claiming running work',async()=
 test('publication switch is required even for approved programs',async()=>{const p=await review(await candidate());assert.equal(await scalar('select source_publish_cycle($1,$2,$3,$4,$5)',[p,'FL','rolling',JSON.stringify({title:'Impact Grant',source_url:'https://example.org/apply'}),'{}']),null);assert.equal(await scalar('select count(*)::int from opportunities'),0);});
 test('cycle publication is idempotent and closure preserves opportunity IDs',async()=>{const p=await review(await candidate());await pg.exec("update source_engine_settings set engine_enabled=true;update source_state_settings set publication_enabled=true where state_code='FL'");const args=[p,'FL','rolling',JSON.stringify({title:'Impact Grant',source_url:'https://example.org/apply',category:'Foundation Grant'}),'{}'];const a=await scalar('select source_publish_cycle($1,$2,$3,$4,$5)',args);const b=await scalar('select source_publish_cycle($1,$2,$3,$4,$5)',args);assert.equal(a,b);assert.equal(await scalar('select count(*)::int from opportunities'),1);await pg.query('update funding_programs set current_cycle_open=false where id=$1',[p]);await scalar('select source_publish_cycle($1,$2,$3,$4,$5)',args);assert.equal(await scalar('select source_active from opportunities where id=$1',[a]),false);assert.equal(await scalar('select count(*)::int from opportunities'),1);});
 test('incomplete clean-room run cannot unlock national expansion',async()=>{const r=await scalar("insert into source_discovery_runs(strategy,state_code,clean_room,status) values('DISCOVER','FL',true,'PARTIAL') returning id");await assert.rejects(pg.query('select source_validate_florida($1,$2,$3)',[actor,r,JSON.stringify({passed:true,false_positive_checks:1,false_negative_checks:1,notes:'This is a sufficiently long validation explanation for testing.'})]),/completed independent/);});
+test('reviewed source timeouts preserve PARTIAL and can permit individual state rollout',async()=>{
+ const r=await scalar("insert into source_discovery_runs(strategy,state_code,clean_room,status,metrics,queries) values('DISCOVER','FL',true,'PARTIAL','{\"search_requests\":2,\"candidates_extracted\":3}','[\"Independent Florida grant search\"]') returning id");
+ await pg.query("insert into source_scan_history(run_id,source_url,error) values($1,'https://example.org/grants','Page timeout')",[r]);
+ await pg.query("insert into source_jobs(run_id,kind,dedupe_key,status,last_error) values($1,'VALIDATE','access-limit','FAILED','Page timeout')",[r]);
+ await pg.exec('update source_engine_settings set seed_completed_at=now()');
+ const validation={passed:true,accepted_source_access_limits:true,false_positive_checks:2,false_negative_checks:2,notes:'Reviewed actual independent results and explicitly retained the documented website timeout.'};
+ await pg.query('select source_validate_florida($1,$2,$3)',[actor,r,JSON.stringify(validation)]);
+ assert.equal(await scalar('select status from source_discovery_runs where id=$1',[r]),'PARTIAL');
+ assert.equal(await scalar('select count(*)::int from source_state_settings where state_code<>\'FL\' and discovery_enabled'),0);
+});
+test('access-limit acknowledgment cannot override an internal error or unfinished jobs',async()=>{
+ const r=await scalar("insert into source_discovery_runs(strategy,state_code,clean_room,status,metrics,queries) values('DISCOVER','FL',true,'PARTIAL','{\"search_requests\":2,\"candidates_extracted\":3}','[\"Florida grants\"]') returning id");
+ const v=JSON.stringify({passed:true,accepted_source_access_limits:true,false_positive_checks:1,false_negative_checks:1,notes:'A long review cannot override an unresolved engine failure or unfinished queue.'});
+ await pg.query("insert into source_scan_history(run_id,source_url,error) values($1,'https://example.org/grants','DOMMatrix is not defined')",[r]);
+ await pg.exec('savepoint failure_check');
+ await assert.rejects(pg.query('select source_validate_florida($1,$2,$3)',[actor,r,v]),/Internal or provider/);
+ await pg.exec('rollback to savepoint failure_check');
+ await pg.query("insert into source_jobs(run_id,kind,dedupe_key,status) values($1,'VALIDATE','unfinished','QUEUED')",[r]);
+ await assert.rejects(pg.query('select source_validate_florida($1,$2,$3)',[actor,r,v]),/Finish or resolve/);
+});
 test('a job created yesterday but budget-paused today waits until the next UTC day',async()=>{
  await pg.exec('update source_engine_settings set engine_enabled=true');const r=await scalar("insert into source_discovery_runs(strategy) values('SEED') returning id");
  await pg.query("insert into source_jobs(dedupe_key,run_id,kind,created_at,available_at) values('old',$1,'SEED',now()-interval '2 days',now()-interval '2 days')",[r]);
