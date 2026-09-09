@@ -4,7 +4,7 @@ Source Intelligence is part of the existing Opportunity Assist app and Netlify p
 
 ## Install and verify
 
-1. Apply the five SQL files in `supabase/migrations` in filename order to Opportunity Assist. Each is transactional and repeatable. They add source tables and opportunity links; they do not remove existing rows or alter customer access policies.
+1. Apply the six SQL files in `supabase/migrations` in filename order to Opportunity Assist. Each is transactional and repeatable. They add source tables and opportunity links; they do not remove existing rows or alter customer access policies.
 2. Deploy this branch through the existing GitHub → Netlify integration. Netlify uses Node 22, the pinned pnpm lockfile, `node scripts/build.js`, and `dist`. Only allowlisted public assets are published.
 3. Existing Functions-scoped `SUPABASE_URL`, `SUPABASE_PUBLISHABLE_KEY`, `SUPABASE_SERVICE_ROLE_KEY`, and `ANTHROPIC_API_KEY` are required. No new credential is needed. Anthropic web search must be available on the existing account. Credentials never belong in browser assets.
 4. Sign in with an existing administrator account and open **Source Intelligence → State controls**. Enable the engine, then select **Import / reconcile corpus** and **Process queued work now**. Check Discovery runs with **All states / unresolved** selected. Continue processing until reconciliation completes. Scheduled processing also runs every 15 minutes.
