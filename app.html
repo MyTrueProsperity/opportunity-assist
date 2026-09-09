@@ -458,9 +458,15 @@ window.OA_CONFIG = {
       '<div class="field"><label>Past performance</label><textarea id="o_perf" rows="2" placeholder="Relevant contracts/grants delivered"></textarea></div>' +
       '<div id="orgMsg"></div>' +
       '<button class="btn btn-primary" style="width:100%" id="orgBtn" type="submit">Save and continue</button>' +
-      '</form></div></div>'
+      '</form><button class="btn btn-ghost" id="onboarding-logout" style="width:100%;margin-top:12px">Log in with another account</button>' +
+      (state.isAdmin ? '<button class="btn btn-ghost" id="onboarding-admin" style="width:100%">Open Source Intelligence</button>' : '') + '</div></div>'
     );
     root.appendChild(card);
+
+    card.querySelector("#onboarding-logout").addEventListener("click", function () {
+      sb.auth.signOut().then(function () { state.user = null; state.profile = null; state.org = null; state.isAdmin = false; state.fit = {}; boot(); });
+    });
+    if (state.isAdmin) card.querySelector("#onboarding-admin").addEventListener("click", function () { state.view = "sources"; renderShell(); });
 
     card.querySelector("#orgForm").addEventListener("submit", function (e) {
       e.preventDefault();
@@ -503,10 +509,12 @@ window.OA_CONFIG = {
     ];
     if (state.isAdmin) nav.push(["admin", "🛠️", "Admin"]);
     if (state.isAdmin) nav.push(["sources", "🔎", "Source Intelligence"]);
+    // Source administration is account-wide and does not require a customer organization.
+    if (!state.org && state.isAdmin) nav = [["sources", "🔎", "Source Intelligence"], ["admin", "🛠️", "Admin"], ["setup", "🏢", "Set up organization"]];
     var shell = el(
       '<div class="layout">' +
       '<aside class="sidebar">' +
-      '<div class="side-brand"><span class="brand-mark sm">OA</span><div><strong>Opportunity Assist</strong><small>' + esc(state.org.name) + '</small></div></div>' +
+      '<div class="side-brand"><span class="brand-mark sm">OA</span><div><strong>Opportunity Assist</strong><small>' + esc(state.org ? state.org.name : 'Administration') + '</small></div></div>' +
       '<nav id="nav"></nav>' +
       '<div class="side-foot">' + esc(state.user.email) + '<br/><button class="btn btn-ghost btn-sm" id="logout">Log out</button></div>' +
       '</aside>' +
@@ -529,6 +537,7 @@ window.OA_CONFIG = {
   function paint() {
     document.querySelectorAll(".nav-link").forEach(function (b) { b.classList.toggle("active", b.dataset.v === state.view && !state.currentOpp); });
     var main = document.getElementById("main");
+    if (state.view === "setup") return renderOnboarding();
     if (state.currentOpp) return renderOppDetail(main);
     if (state.view === "dashboard") return renderDashboard(main);
     if (state.view === "radar") return renderRadar(main);
@@ -1081,7 +1090,7 @@ window.OA_CONFIG = {
       .then(function (res) {
         if (!res.ok) { alert((res.data && res.data.error) || "Failed to update."); return; }
         renderAdmin(document.getElementById("main"));
-        if (state.org.id === orgId) loadSubscription();
+        if (state.org && state.org.id === orgId) loadSubscription();
       }).catch(function () { alert("Network error."); });
   }
 
@@ -1092,9 +1101,13 @@ window.OA_CONFIG = {
       var session = s.data.session;
       if (!session) { renderAuth("login"); return; }
       state.user = session.user;
-      return sb.from("profiles").select("*").eq("id", state.user.id).single().then(function (pr) {
+      return loadAdminStatus().then(function () { return sb.from("profiles").select("*").eq("id", state.user.id).single(); }).then(function (pr) {
         state.profile = pr.data || { id: state.user.id, org_id: null };
-        if (!state.profile.org_id) { renderOnboarding(); return; }
+        if (!state.profile.org_id) {
+          state.org = null;
+          if (state.isAdmin) { state.view = "sources"; renderShell(); } else renderOnboarding();
+          return;
+        }
         return sb.from("organizations").select("*").eq("id", state.profile.org_id).single().then(function (orgR) {
           if (orgR.error || !orgR.data) { renderOnboarding(); return; }
           state.org = orgR.data;
