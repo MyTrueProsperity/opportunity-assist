@@ -42,8 +42,11 @@ async function inspect(db,provider,job,url,name,program,fetcher=fetchPage) {
       await db.rpc('source_add_metrics',{p_run:job.run_id,p_metrics:{candidates_extracted:1,[result.duplicate.outcome==='EXISTING'?'exact_duplicates':result.quality.outcome==='REJECT'?'rejection_proposals':result.duplicate.outcome==='MATERIAL_DISTINCT_TRACK'?'distinct_track_candidates':result.duplicate.outcome==='NEW'?'new_candidates':'duplicate_reviews']:1}});
       if(semanticCalls<1&&result.duplicate.outcome==='POSSIBLE_DUPLICATE_REVIEW'&&result.quality.quality_ready&&result.duplicate.matches.length){
         semanticCalls++;
-        await reserve(db,job,0,0,.25);
         const similar=records.filter(r=>result.duplicate.matches.slice(0,4).some(m=>m.program_id===r.id)).map(r=>({id:r.id,source_name:r.source_name,canonical_program_name:r.canonical_program_name,purpose:r.purpose,eligibility:r.eligibility,funding_mechanism:r.funding_mechanism,evidence:r.evidence}));
+        // A byte per input token plus 2,000 prompt/format tokens is a conservative
+        // bound for this text-only request; reserve all 900 possible output tokens.
+        const comparisonBudget=(Buffer.byteLength(JSON.stringify({candidate:c,existing:similar}))+2000+900*5)/1e6;
+        await reserve(db,job,0,0,comparisonBudget);
         const semantic=await provider.compare(c,similar);await usage(db,job,semantic);cost+=semantic.cost;
         await db.patch('source_candidates',{id:'eq.'+result.row.id,status:'in.(PENDING,INVESTIGATING,MATCHED)'},{proposed:{...c,semantic_judgment:semantic.judgment}});
       }

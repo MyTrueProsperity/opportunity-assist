@@ -81,7 +81,7 @@ function compareCandidate(candidate, records, aliases = []) {
   let outcome='NEW', reason='No materially equivalent record found in complete registry';
   if (exact.length === 1) { outcome='EXISTING'; reason='Same mechanism, including aliases or a new annual cycle'; }
   else if (exact.length > 1) { outcome='POSSIBLE_DUPLICATE_REVIEW'; reason='Multiple existing identity matches require reconciliation'; }
-  else if (matches.some(m => m.same_organization && m.distinctions.length && !m.same_url)) { outcome='MATERIAL_DISTINCT_TRACK'; reason='Same parent, with evidenced differences in mechanism, purpose or eligibility'; }
+  else if (matches.some(m => m.same_organization && m.distinctions.length)) { outcome='MATERIAL_DISTINCT_TRACK'; reason='Same parent, with evidenced differences in mechanism, purpose or eligibility'; }
   else if (matches.some(m => m.same_url || m.alias_match || m.same_organization || m.legacy_name_match || m.semantic_similarity >= .6)) { outcome='POSSIBLE_DUPLICATE_REVIEW'; reason='Possible equivalent mechanism; semantic similarity alone is not rejection evidence'; }
   return { outcome, reason, matched_program_id:exact.length===1?exact[0].program_id:null, matches:matches.slice(0,8), duplicate_risk:exact.length?100:outcome==='POSSIBLE_DUPLICATE_REVIEW'?75:outcome==='MATERIAL_DISTINCT_TRACK'?35:matches.length?25:0 };
 }
