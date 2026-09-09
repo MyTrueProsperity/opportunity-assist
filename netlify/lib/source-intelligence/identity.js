@@ -58,6 +58,14 @@ function compareCandidate(candidate, records, aliases = []) {
     const sameName = c.normalized_program_name && c.normalized_program_name === r.normalized_program_name;
     const sameOrganization = (c.organization_id && c.organization_id === r.organization_id) || (c.normalized_organization_name && c.normalized_organization_name === r.normalized_organization_name && c.website_domain === r.website_domain);
     const sameUrl = c.normalized_url === r.normalized_url || (c.resolved_url && normalizeUrl(c.resolved_url) === r.normalized_url);
+    // Legacy rows combine the funder and track in one name. A verified funder
+    // name on the same host can surface that match without asserting a parent
+    // identity or merging two programs merely because they share a website.
+    const legacyWords=normalizeProgram(r.source_name).split(' ').filter(w=>!['of','and','for','in','at'].includes(w));
+    const organizationWords=c.normalized_organization_name.split(' ').filter(Boolean);
+    const remainder=[...legacyWords];
+    const containsOrganization=organizationWords.length>=2&&organizationWords.every(w=>{const i=remainder.indexOf(w);if(i<0)return false;remainder.splice(i,1);return true;});
+    const legacyNameMatch=!!c.program_name&&!r.canonical_program_name&&!r.organization_id&&c.website_domain===r.website_domain&&containsOrganization&&remainder.join(' ')===normalizeProgram(c.program_name).split(' ').filter(w=>!['of','and','for','in','at'].includes(w)).join(' ');
     const alias = aliases.some(a => a.program_id === r.id && ((a.alias_type === 'url' && a.normalized_value === c.normalized_url) || (a.alias_type === 'name' && a.normalized_value === c.normalized_program_name && sameOrganization)));
     const external = !!(c.external_id && r.external_id && c.external_id === r.external_id && c.external_provider === r.external_provider);
     const score = similarity(c.semantic_fingerprint,r.semantic_fingerprint);
@@ -65,16 +73,16 @@ function compareCandidate(candidate, records, aliases = []) {
     const materialFields = ['purpose','eligibility','funding_mechanism','funding_pool','administering_unit'];
     const distinctions = materialFields.filter(k => c[k] && r[k] && normalizeName(c[k]) !== normalizeName(r[k]) && c.evidence?.[k] && r.evidence?.[k]);
     return { program_id:r.id, name:r.canonical_program_name || r.program_name || r.source_name, source_url:r.source_url, organization_id:r.organization_id,
-      same_program:!!sameProgram, same_organization:!!sameOrganization, same_url:!!sameUrl, alias_match:alias, external_match:external,
-      semantic_similarity:Number(score.toFixed(3)), distinctions, reason:external?'EXTERNAL_ID':sameProgram?'SAME_PROGRAM_OR_NEW_CYCLE':sameUrl?'SHARED_PAGE_REQUIRES_PROGRAM_REVIEW':sameOrganization?'SAME_PARENT':score>=.6?'SEMANTIC_SIMILARITY':'WEAK_MATCH' };
-  }).filter(m => m.same_program || m.same_url || m.same_organization || m.alias_match || m.semantic_similarity>=.45)
-    .sort((a,b) => Number(b.same_program)-Number(a.same_program) || Number(b.same_organization)-Number(a.same_organization) || b.semantic_similarity-a.semantic_similarity);
+      same_program:!!sameProgram, same_organization:!!sameOrganization, same_url:!!sameUrl, legacy_name_match:!!legacyNameMatch, alias_match:alias, external_match:external,
+      semantic_similarity:Number(score.toFixed(3)), distinctions, reason:external?'EXTERNAL_ID':sameProgram?'SAME_PROGRAM_OR_NEW_CYCLE':legacyNameMatch?'LEGACY_FUNDER_AND_PROGRAM_NAME':sameUrl?'SHARED_PAGE_REQUIRES_PROGRAM_REVIEW':sameOrganization?'SAME_PARENT':score>=.6?'SEMANTIC_SIMILARITY':'WEAK_MATCH' };
+  }).filter(m => m.same_program || m.same_url || m.same_organization || m.legacy_name_match || m.alias_match || m.semantic_similarity>=.45)
+    .sort((a,b) => Number(b.same_program)-Number(a.same_program) || Number(b.legacy_name_match)-Number(a.legacy_name_match) || Number(b.same_organization)-Number(a.same_organization) || b.semantic_similarity-a.semantic_similarity);
   const exact = matches.filter(m => m.same_program);
   let outcome='NEW', reason='No materially equivalent record found in complete registry';
   if (exact.length === 1) { outcome='EXISTING'; reason='Same mechanism, including aliases or a new annual cycle'; }
   else if (exact.length > 1) { outcome='POSSIBLE_DUPLICATE_REVIEW'; reason='Multiple existing identity matches require reconciliation'; }
   else if (matches.some(m => m.same_organization && m.distinctions.length && !m.same_url)) { outcome='MATERIAL_DISTINCT_TRACK'; reason='Same parent, with evidenced differences in mechanism, purpose or eligibility'; }
-  else if (matches.some(m => m.same_url || m.alias_match || m.same_organization || m.semantic_similarity >= .6)) { outcome='POSSIBLE_DUPLICATE_REVIEW'; reason='Possible equivalent mechanism; semantic similarity alone is not rejection evidence'; }
+  else if (matches.some(m => m.same_url || m.alias_match || m.same_organization || m.legacy_name_match || m.semantic_similarity >= .6)) { outcome='POSSIBLE_DUPLICATE_REVIEW'; reason='Possible equivalent mechanism; semantic similarity alone is not rejection evidence'; }
   return { outcome, reason, matched_program_id:exact.length===1?exact[0].program_id:null, matches:matches.slice(0,8), duplicate_risk:exact.length?100:outcome==='POSSIBLE_DUPLICATE_REVIEW'?75:outcome==='MATERIAL_DISTINCT_TRACK'?35:matches.length?25:0 };
 }
 module.exports={hash,normalizeUrl,normalizeName,normalizeProgram,organizationSignature,semanticFingerprint,similarity,normalized,identityKey,compareCandidate};

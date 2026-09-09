@@ -15,6 +15,13 @@ test('exact URL and program name detect existing source',()=>assert.equal(compar
 test('same organization with evidenced purpose differences proposes distinct track',()=>{const c={...base,program_name:'Workforce Innovation Fund',source_url:'https://example.org/workforce',purpose:'employment and job training',evidence:{purpose:{quote:'employment and job training'}}};assert.equal(compareCandidate(c,[base]).outcome,'MATERIAL_DISTINCT_TRACK');});
 test('different name on the same homepage never collapses two programs',()=>{const c={...base,program_name:'Arts Grant'};assert.equal(compareCandidate(c,[base]).outcome,'POSSIBLE_DUPLICATE_REVIEW');});
 test('domain alone does not merge programs or unrelated organizations',()=>{const c={source_url:'https://example.org/trust-b',organization_name:'Separate Trust',program_name:'Conservation Support'};assert.equal(compareCandidate(c,[base]).outcome,'NEW');});
+test('legacy combined funder and program names remain review matches across moved pages',()=>{
+  const candidate={organization_name:'The Community Foundation for Northeast Florida',program_name:'Capacity Building Grants',source_url:'https://www.jaxcf.org/apply-for-grants-or-scholarships/',summary:'Extensive program details should not dilute the name match.'};
+  const legacy={id:'legacy',source_name:'Community Foundation Northeast Florida Capacity Building Grants',source_url:'https://jaxcf.org/old-capacity-page'};
+  const result=compareCandidate(candidate,[legacy]);assert.equal(result.outcome,'POSSIBLE_DUPLICATE_REVIEW');assert.equal(result.matches[0].legacy_name_match,true);assert.equal(result.matches[0].same_program,false);
+  assert.equal(compareCandidate({...candidate,source_url:'https://different.org/grants'},[legacy]).matches.some(x=>x.legacy_name_match),false);
+  assert.equal(compareCandidate({...candidate,program_name:'Arts Innovation Award'},[legacy]).matches.some(x=>x.legacy_name_match),false);
+});
 test('alias name/URL can link a moved page without replacing canonical URL',()=>{const c={...base,source_url:'https://newsite.org/program'};assert.equal(compareCandidate(c,[base],[{program_id:'a',alias_type:'url',normalized_value:'https://newsite.org/program'}]).outcome,'EXISTING');});
 test('press release and application page match when organization and program identity agree',()=>assert.equal(compareCandidate({...base,source_url:'https://example.org/news/2027-awards',program_name:'2027 Community Impact Grant'},[base]).outcome,'EXISTING'));
 test('redirect destination is identity evidence',()=>assert.equal(compareCandidate({...base,source_url:'https://oldsite.org/grant',resolved_url:base.source_url},[base]).outcome,'EXISTING'));
