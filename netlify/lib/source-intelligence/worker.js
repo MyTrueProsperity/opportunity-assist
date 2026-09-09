@@ -26,8 +26,8 @@ async function inspect(db,provider,job,url,name,program,fetcher=fetchPage) {
   try{
     page=await fetcher(url,cache);
     await db.rpc('source_add_metrics',{p_run:job.run_id,p_metrics:{pages_fetched:1}});
-    if(page.unchanged&&cache?.extracted?.geography_evidence_version!==GEOGRAPHY_EVIDENCE_VERSION)page=await fetcher(url,null);
-    if((page.unchanged||cache?.page_hash===page.hash)&&cache?.extracted?.verification_state===job.state_code){extracted=cache.extracted;await db.rpc('source_add_metrics',{p_run:job.run_id,p_metrics:{unchanged_pages:1}});}
+    if(page.unchanged&&(job.payload.force_extract||cache?.extracted?.geography_evidence_version!==GEOGRAPHY_EVIDENCE_VERSION))page=await fetcher(url,null);
+    if(!job.payload.force_extract&&(page.unchanged||cache?.page_hash===page.hash)&&cache?.extracted?.verification_state===job.state_code){extracted=cache.extracted;await db.rpc('source_add_metrics',{p_run:job.run_id,p_metrics:{unchanged_pages:1}});}
     else {
       if(page.unchanged)page=await fetcher(url,null);
       // 40k chars + 80 links and bounded output fit under a conservative $0.12 reservation.

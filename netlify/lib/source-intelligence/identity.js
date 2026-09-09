@@ -23,7 +23,7 @@ function normalizeName(value) {
     .replace(/&/g, ' and ').replace(/[^a-z0-9]+/g, ' ').replace(/\b(the|incorporated|inc|llc|corp|corporation)\b/g, ' ').replace(/\s+/g, ' ').trim();
 }
 function normalizeProgram(value) {
-  return normalizeName(value).replace(/\b(?:fy\s*)?(?:19|20)\d{2}(?:\s+(?:19|20)\d{2})?\b/g, ' ').replace(/\s+/g, ' ').trim();
+  return normalizeName(value).replace(/\b(?:fy\s*)?(?:19|20)\d{2}(?:\s+(?:19|20)\d{2})?\b/g, ' ').replace(/\bfy\s*\d{2}\b/g,' ').replace(/\s+/g, ' ').trim();
 }
 function organizationSignature(value) {
   return normalizeName(value).split(' ').filter(x => x && !['of','and','for','in','at'].includes(x)).sort().join(' ');

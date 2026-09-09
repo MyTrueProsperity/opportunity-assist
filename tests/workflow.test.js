@@ -25,6 +25,7 @@ test('full monitor worker skips model extraction for unchanged content and keeps
  await enqueue(db,{kind:'MONITOR',state:'FL',key:'monitor:'+id,payload:{program_id:id}});await runWorker({db,provider,fetcher,maxJobs:1});
  await enqueue(db,{kind:'MONITOR',state:'FL',key:'monitor:'+id,payload:{program_id:id}});await runWorker({db,provider,fetcher,maxJobs:1});
  assert.equal(calls,1);assert.equal((await db.all('opportunities')).length,1);assert.equal((await db.all('source_scan_history')).length,2);
+ await enqueue(db,{kind:'MONITOR',state:'FL',key:'monitor:'+id,payload:{program_id:id,force_extract:true}});await runWorker({db,provider,fetcher,maxJobs:1});assert.equal(calls,2);assert.equal((await db.all('opportunities')).length,1);
 });
 test('state-disabled manual jobs do not run even after Florida rollout validation',async()=>{
  await enable();await db.patch('source_engine_settings',{id:'eq.true'},{florida_validated_at:new Date().toISOString()});await enqueue(db,{kind:'VALIDATE',state:'GA',key:'ga-test',payload:{url:'https://example.org/grants'}});

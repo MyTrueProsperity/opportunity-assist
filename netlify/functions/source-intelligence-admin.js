@@ -82,7 +82,7 @@ async function handle(event,db=createDb()) {
   if(b.action==='verify'){
     checkState(b.state);if(b.program_id){if(!uuid(b.program_id))throw new HttpError(400,'Invalid program');const [p]=await db.select('funding_programs',{id:'eq.'+b.program_id});if(!p)throw new HttpError(404,'Program not found');return json(202,{job:await enqueue(db,{kind:'MONITOR',state:b.state,actor,key:'monitor:'+p.id,payload:{program_id:p.id}})});}
     if(!uuid(b.candidate_id))throw new HttpError(400,'Invalid candidate');const [c]=await db.select('source_candidates',{id:'eq.'+b.candidate_id});if(!c)throw new HttpError(404,'Candidate not found');
-    return json(202,{job:await enqueue(db,{kind:'VALIDATE',state:b.state,actor,key:'validate:'+c.id,payload:{candidate_id:c.id,url:c.source_url,name:c.source_name}})});
+    return json(202,{job:await enqueue(db,{kind:'VALIDATE',state:b.state,actor,key:'validate:'+c.id,payload:{candidate_id:c.id,url:c.source_url,name:c.source_name,force_extract:b.force_extract===true}})});
   }
   if(b.action==='resume_run'){
     if(!uuid(b.run_id))throw new HttpError(400,'Invalid run');

@@ -37,8 +37,11 @@ function validateExtraction(raw,page,targetState) {
     source_type:null, geography:null, applicable_states:[], keywords:[], applicant_types:[], current_status:'UNKNOWN',
     current_deadline:null, award_min:null, award_max:null, current_cycle_open:null, recurring_status:null, evidence:{}, page_hash:page.hash, fetched_at:new Date().toISOString() };
   for (const key of ['organization_name','program_name','summary','geography','purpose','eligibility','funding_mechanism','funding_pool','administering_unit','recurring_status','application_status','deadline_mentioned','amount_mentioned']) {
-    const e=evidenceClaim(raw[key],page.text);
-    if (e && typeof e.value==='string' && e.value.length<4000 && (!['organization_name','program_name'].includes(key) || collapse(e.quote).toLowerCase().includes(collapse(e.value).toLowerCase()))) { result[key]=e.value; result.evidence[key]={quote:e.quote,url:page.url}; }
+    let e=evidenceClaim(raw[key],page.text);
+    // A literal name present in the supplied page is itself an exact excerpt,
+    // even when the model's surrounding excerpt has a transcription error.
+    if(['organization_name','program_name'].includes(key)&&(!e||!collapse(e.quote).toLowerCase().includes(collapse(e.value).toLowerCase()))&&hasQuote(raw[key]?.value,page.text))e={value:raw[key].value,quote:raw[key].value};
+    if (e && typeof e.value==='string' && e.value.length<4000 && (!['organization_name','program_name'].includes(key) || collapse(e.quote).toLowerCase().includes(collapse(e.value).toLowerCase()))) { result[key]=['deadline_mentioned','amount_mentioned'].includes(key)?e.quote:e.value; result.evidence[key]={quote:e.quote,url:page.url}; }
   }
   result.source_name=result.program_name || result.organization_name;
   if (SOURCE_TYPES.includes(raw.source_type) && result.funding_mechanism) result.source_type=raw.source_type;
@@ -55,7 +58,12 @@ function validateExtraction(raw,page,targetState) {
   }
   const status=evidenceClaim(raw.current_status,page.text);
   if(status && STATUSES.includes(status.value)) { result.current_status=status.value; result.evidence.current_status={quote:status.quote,url:page.url}; }
-  const open=evidenceClaim(raw.current_cycle_open,page.text);
+  let open=evidenceClaim(raw.current_cycle_open,page.text);
+  if(!open&&result.evidence.application_status){
+    const quote=result.evidence.application_status.quote;
+    if(/\b(?:open|rolling)\b/i.test(result.application_status))open={value:true,quote};
+    else if(/\bclosed\b/i.test(result.application_status))open={value:false,quote};
+  }
   if(open && typeof open.value==='boolean') {
     const closed=/closed|not (?:currently )?accepting|no longer accepting|deadline has passed|applications? (?:have |has )?ended/i.test(open.quote);
     const accepts=/applications? (?:are |is )?(?:now )?open|now accepting|accepting (?:grant )?applications|apply (?:now|by)|rolling (?:basis|applications)|applications? (?:are )?accepted year.round/i.test(open.quote);
@@ -67,6 +75,11 @@ function validateExtraction(raw,page,targetState) {
     const parsed=new Date(deadline.quote); const iso=Number.isFinite(parsed.getTime())?parsed.toISOString().slice(0,10):null;
     if(iso===deadline.value || deadline.quote.includes(deadline.value)) { result.current_deadline=deadline.value; result.evidence.current_deadline={quote:deadline.quote,url:page.url}; }
   }
+  if(!result.current_deadline&&result.evidence.deadline_mentioned){
+    const quote=result.evidence.deadline_mentioned.quote;
+    const dates=[...quote.matchAll(/\b(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2}(?:st|nd|rd|th)?(?:,)?\s+(?:19|20)\d{2}\b|\b(?:19|20)\d{2}-\d{2}-\d{2}\b/gi)].map(m=>m[0]);
+    if(new Set(dates).size===1){const parsed=new Date(dates[0].replace(/(\d)(st|nd|rd|th)\b/gi,'$1'));if(Number.isFinite(parsed.getTime())){result.current_deadline=parsed.toISOString().slice(0,10);result.evidence.current_deadline={quote:dates[0],url:page.url};}}
+  }
   for(const key of ['award_min','award_max']) {
     const e=evidenceClaim(raw[key],page.text);
     if(e && typeof e.value==='number' && Number.isFinite(e.value) && e.value>=0) {
@@ -76,6 +89,7 @@ function validateExtraction(raw,page,targetState) {
   }
   if(result.award_min!=null && result.award_max!=null && result.award_min>result.award_max) result.award_min=result.award_max=null;
   if(result.current_deadline && result.current_deadline < new Date().toISOString().slice(0,10)) result.current_cycle_open=false;
+  if(result.current_status==='UNKNOWN'&&result.current_cycle_open!==null){result.current_status=result.current_cycle_open?'ACTIVE_OPEN':'ACTIVE_CLOSED';result.evidence.current_status=result.evidence.current_cycle_open||result.evidence.current_deadline;}
   result.rejection_reason = typeof raw.rejection_reason==='string'?raw.rejection_reason:null;
   result.authority = raw.authority==='official' && result.funding_mechanism ? 'official_claimed' : 'unconfirmed';
   result.target_state=targetState;
