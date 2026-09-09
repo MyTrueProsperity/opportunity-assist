@@ -68,7 +68,8 @@ async function inspect(db,provider,job,url,name,program,fetcher=fetchPage) {
     return observations;
   }catch(e){
     if(e instanceof Paused)throw e;
-    await db.insert('source_scan_history',{program_id:program?.id||null,candidate_id:job.payload.candidate_id||null,run_id:job.run_id,http_status:e.httpStatus||null,source_url:url,error:e.message.slice(0,500),duration_ms:Date.now()-start});
+    if(e.usage&&!e.usageRecorded){await usage(db,job,e);e.usageRecorded=true;cost+=e.cost||0;}
+    await db.insert('source_scan_history',{program_id:program?.id||null,candidate_id:job.payload.candidate_id||null,run_id:job.run_id,http_status:e.httpStatus||null,source_url:url,error:e.message.slice(0,500),duration_ms:Date.now()-start,estimated_cost_usd:cost,model:provider.model,input_tokens:e.usage?.input_tokens||0,output_tokens:e.usage?.output_tokens||0});
     if(program)await db.patch('funding_programs',{id:'eq.'+program.id},healthTransition(program,{ok:false}));
     await db.rpc('source_add_metrics',{p_run:job.run_id,p_metrics:{fetch_or_extraction_errors:1}});
     throw e;
@@ -116,7 +117,7 @@ async function runWorker({db=createDb(),provider=createProvider(),fetcher=fetchP
       else if(job.kind==='MONITOR'){const [p]=await db.select('funding_programs',{id:'eq.'+job.payload.program_id});if(!p||p.superseded_by)throw new Error('Program is missing or superseded');result=await inspect(db,provider,job,p.source_url,p.source_name,p,fetcher);}
       await db.rpc('source_finish_job',{p_job:job.id,p_token:job.lease_token,p_status:'COMPLETED'});
       if(result?.partial)await db.patch('source_discovery_runs',{id:'eq.'+job.run_id},{status:'PARTIAL'});
-    }catch(e){await db.rpc('source_finish_job',{p_job:job.id,p_token:job.lease_token,p_status:e instanceof Paused?'PAUSED':e.retryable&&job.attempts<3?'QUEUED':'FAILED',p_error:e.message.slice(0,500)});}
+    }catch(e){if(e.usage&&!e.usageRecorded)await usage(db,job,e);await db.rpc('source_finish_job',{p_job:job.id,p_token:job.lease_token,p_status:e instanceof Paused?'PAUSED':e.retryable&&job.attempts<3?'QUEUED':'FAILED',p_error:e.message.slice(0,500)});}
     if(['DISCOVER','VALIDATE','MONITOR'].includes(job.kind))break;
   }
   return {processed,duration_ms:Date.now()-start};

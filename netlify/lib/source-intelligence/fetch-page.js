@@ -62,8 +62,13 @@ async function fetchPage(url,cache=null,request=requestPublic) {
   else if(!robotsAllowed(robots,r.url))throw new Error('Redirect target robots disallows this path');
   const mime=String(r.headers['content-type']||'').toLowerCase();let text,links=[];
   if(mime.includes('application/pdf')||r.bytes.subarray(0,5).toString()==='%PDF-'){
+    // PDF.js requires these APIs even for text-only extraction. Explicit imports
+    // let the server packager include its otherwise optional native dependency.
+    const canvas=require('@napi-rs/canvas');
+    for(const key of ['DOMMatrix','ImageData','Path2D'])if(!globalThis[key])globalThis[key]=canvas[key];
     const {getDocument}=await import('pdfjs-dist/legacy/build/pdf.mjs');
-    const doc=await getDocument({data:new Uint8Array(r.bytes),isEvalSupported:false,useSystemFonts:false,disableFontFace:true}).promise;
+    const standardFontDataUrl=require.resolve('pdfjs-dist/package.json').replace(/package\.json$/,'standard_fonts/');
+    const doc=await getDocument({data:new Uint8Array(r.bytes),isEvalSupported:false,useSystemFonts:false,disableFontFace:true,standardFontDataUrl}).promise;
     try {if(doc.numPages>40)throw new Error('PDF exceeds 40-page extraction limit');const parts=[];for(let p=1;p<=doc.numPages;p++){const page=await doc.getPage(p);parts.push((await page.getTextContent()).items.map(i=>i.str||'').join(' '));}text=parts.join('\n');}finally{await doc.destroy();}
   }else if(mime.includes('html')||mime.includes('text/plain')||!mime){const html=r.bytes.toString('utf8');text=htmlToText(html);links=extractLinks(html,r.url);}else throw new Error('Unsupported document type: '+mime.split(';')[0]);
   if(text.length<80||/just a moment|verify you are human|enable javascript and cookies|checking your browser/i.test(text.slice(0,900)))throw new Error('Unreadable or bot-protected page; investigation required');

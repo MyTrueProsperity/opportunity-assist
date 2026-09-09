@@ -22,3 +22,19 @@ test('robots most-specific rule and bot-specific groups are respected',()=>{asse
 test('unchanged 304 page returns cached extraction without another body read',async()=>{const cache={etag:'abc',extracted:{programs:[]},page_hash:'same',resolved_url:'https://cache-test.org/grants'};const p=await fetchPage('https://cache-test.org/grants',cache,async u=>u.endsWith('robots.txt')?{status:404,bytes:Buffer.from(''),headers:{},url:u}:{status:304,bytes:Buffer.from(''),headers:{},url:u});assert.equal(p.unchanged,true);assert.equal(p.hash,'same');});
 test('search accepts only URLs actually returned by provider search blocks',async()=>{const provider=createProvider({ANTHROPIC_API_KEY:'test'},async()=>({ok:true,json:async()=>({content:[{type:'text',text:'https://invented.org'},{type:'web_search_tool_result',content:[{type:'web_search_result',url:'https://real.org/grants',title:'Real grant'}]}],usage:{}})}));const r=await provider.search(['query'],'Florida');assert.equal(r.leads.length,1);assert.equal(r.leads[0].source_url,'https://real.org/grants');});
 test('missing actual web search is an error rather than fake clean-room success',async()=>{const provider=createProvider({ANTHROPIC_API_KEY:'test'},async()=>({ok:true,json:async()=>({content:[{type:'text',text:'No sources'}],usage:{}})}));await assert.rejects(provider.search(['query'],'Florida'),/verifiable/);});
+
+test('a real PDF is read in the Node runtime without browser graphics globals',async()=>{
+  const message='Community Impact Grant. Eligible Florida nonprofits can apply for community services funding. Applications are open.';
+  const stream='BT /F1 8 Tf 30 700 Td ('+message+') Tj ET';
+  const objects=['<< /Type /Catalog /Pages 2 0 R >>','<< /Type /Pages /Kids [3 0 R] /Count 1 >>','<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>','<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>','<< /Length '+stream.length+' >>\nstream\n'+stream+'\nendstream'];
+  let pdf='%PDF-1.4\n';const offsets=[0];
+  objects.forEach((o,i)=>{offsets.push(Buffer.byteLength(pdf));pdf+=(i+1)+' 0 obj\n'+o+'\nendobj\n';});
+  const xref=Buffer.byteLength(pdf);pdf+='xref\n0 6\n0000000000 65535 f \n'+offsets.slice(1).map(n=>String(n).padStart(10,'0')+' 00000 n \n').join('')+'trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n'+xref+'\n%%EOF';
+  const parsed=await fetchPage('https://pdf-fixture.example/grants.pdf',null,async url=>url.endsWith('/robots.txt')?{status:404,bytes:Buffer.from(''),headers:{},url}:{status:200,bytes:Buffer.from(pdf),headers:{'content-type':'application/pdf'},url});
+  assert.ok(parsed.text.includes(message));assert.equal(parsed.status,200);
+});
+
+test('truncated paid extraction retains actual usage for failed-run accounting',async()=>{
+  const provider=createProvider({ANTHROPIC_API_KEY:'test'},async()=>({ok:true,json:async()=>({stop_reason:'max_tokens',content:[{type:'text',text:'{"programs":['}],usage:{input_tokens:1000,output_tokens:9000}})}));
+  await assert.rejects(provider.extract(page,'FL'),e=>e.message.includes('response limit')&&e.usage.output_tokens===9000&&e.cost===.046);
+});
