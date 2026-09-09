@@ -112,7 +112,7 @@ async function scoreOne(opp, org, token) {
   // the same policy the client already uses today.
   await sbUpsert(
     "fit_scores",
-    [{ org_id: org.id, opportunity_id: opp.id, headline_score: ai.data.headline_score, recommendation: ai.data.recommendation, factors: ai.data.factors }],
+    [{ org_id: org.id, opportunity_id: opp.id, headline_score: ai.data.headline_score, recommendation: ai.data.recommendation, factors: ai.data.factors, source_stale: false }],
     "org_id,opportunity_id",
     token
   );

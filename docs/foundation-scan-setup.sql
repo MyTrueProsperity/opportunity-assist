@@ -1,3 +1,5 @@
+-- HISTORICAL: retained for the legacy foundation_scan_hits table.
+-- Current Source Intelligence installation uses supabase/migrations; see docs/source-intelligence-operations.md.
 -- Opportunity Assist — Foundation scan one-time setup
 -- Run once in the Opportunity Assist Supabase project's SQL Editor.
 -- Safe to re-run: every statement is idempotent.

@@ -1,0 +1,14 @@
+'use strict';
+const fs=require('node:fs');
+const path=require('node:path');
+const vm=require('node:vm');
+const root=path.resolve(__dirname,'..');
+const file=path.join(root,'netlify/functions/foundation-scan-background.js');
+const text=fs.readFileSync(file,'utf8');
+const match=text.match(/const FUNDER_WATCHLIST = (\[[\s\S]*?\n\]);/);
+if(!match)throw new Error('No legacy array found; use the database watchlist import instead');
+const rows=vm.runInNewContext(match[1],Object.create(null),{timeout:1000});
+if(!Array.isArray(rows)||rows.some(r=>typeof r.name!=='string'||typeof r.url!=='string'))throw new Error('Invalid legacy rows');
+const out=path.join(root,'data');fs.mkdirSync(out,{recursive:true});
+fs.writeFileSync(path.join(out,'legacy-watchlist.json'),JSON.stringify({source_commit:'574509429da281dbec45b655699548606b055b48',source_file:'netlify/functions/foundation-scan-background.js',rows},null,2)+'\n');
+console.log('Preserved '+rows.length+' source rows with original spelling and URLs.');

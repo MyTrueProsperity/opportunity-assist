@@ -6,6 +6,7 @@
   <title>Opportunity Assist — App</title>
   <meta name="description" content="Opportunity Assist app — find, score, and pursue funding opportunities." />
   <meta name="robots" content="noindex, nofollow" />
+  <link rel="stylesheet" href="/assets/source-intelligence.css?v=20260908" />
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%230f2e3d'/%3E%3Cpath d='M20 40 L30 28 L38 36 L48 22' fill='none' stroke='%23e0a64a' stroke-width='5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E" />
   <style>
 /* Opportunity Assist — app UI */
@@ -141,6 +142,7 @@ label{display:block;font-weight:600;font-size:.85rem;margin:0 0 .3rem;color:var(
 <body>
   <div id="app"><div class="boot">Loading Opportunity Assist…</div></div>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="/assets/source-intelligence.js?v=20260908"></script>
   <script>
 // Opportunity Assist — Supabase client config
 // These are PUBLIC client keys (safe to expose). All data access is protected
@@ -243,8 +245,16 @@ window.OA_CONFIG = {
 
   /* ---------- data ---------- */
   function loadOpps() {
-    return sb.from("opportunities").select("*").order("deadline", { ascending: true })
-      .then(function (r) { state.opps = r.data || []; });
+    var rows = [];
+    function page(from) {
+      return sb.from("opportunities").select("*").order("id").range(from, from + 499).then(function (r) {
+        if (r.error) throw r.error;
+        rows = rows.concat(r.data || []);
+        if ((r.data || []).length === 500) return page(from + 500);
+        state.opps = rows.filter(function (o) { return o.source_active !== false; }).sort(function (a, b) { return (a.deadline || "9999").localeCompare(b.deadline || "9999"); });
+      });
+    }
+    return page(0);
   }
   function loadPipeline() {
     return sb.from("pipeline_items")
@@ -332,6 +342,7 @@ window.OA_CONFIG = {
   function loadFitScores() {
     return sb.from("fit_scores").select("*").then(function (r) {
       (r.data || []).forEach(function (row) {
+        if (row.source_stale) { delete state.fit[row.opportunity_id]; return; }
         state.fit[row.opportunity_id] = { headline: row.headline_score, rec: row.recommendation, factors: row.factors || [] };
       });
     });
@@ -491,6 +502,7 @@ window.OA_CONFIG = {
       ["profile", "🏢", "Organization"]
     ];
     if (state.isAdmin) nav.push(["admin", "🛠️", "Admin"]);
+    if (state.isAdmin) nav.push(["sources", "🔎", "Source Intelligence"]);
     var shell = el(
       '<div class="layout">' +
       '<aside class="sidebar">' +
@@ -527,6 +539,7 @@ window.OA_CONFIG = {
     if (state.view === "assistant") return renderAssistant(main);
     if (state.view === "profile") return renderProfile(main);
     if (state.view === "admin" && state.isAdmin) return renderAdmin(main);
+    if (state.view === "sources" && state.isAdmin) return window.OASourceIntelligence.mount(main, sb);
   }
 
   /* ---------- dashboard ---------- */
@@ -930,8 +943,9 @@ window.OA_CONFIG = {
 
     /* ---------- foundation leads (weekly AI scan) ---------- */
   function loadFoundationLeads() {
-    return sb.from("foundation_scan_hits").select("*").order("scanned_at", { ascending: false })
-      .then(function (r) { state.foundationLeads = r.data || []; });
+    // Same opportunity pool and per-organization fit scores as Funding Radar.
+    // Retain legacy hits in Supabase solely for corpus import/provenance.
+    return Promise.resolve();
   }
   function verifyBadge(mentioned, verified) {
     if (!mentioned) return "";
@@ -955,10 +969,13 @@ window.OA_CONFIG = {
     );
   }
   function renderFoundationLeads(main) {
+    state.foundationLeads = state.opps.filter(function (o) { return o.source === "Foundation Scan"; }).map(function (o) {
+      return Object.assign({}, o, { funder_name: o.title, program_name: null, scanned_at: o.source_verified_at || o.created_at });
+    });
     main.innerHTML =
-      '<div class="topbar"><div><h1>Foundation Leads</h1><p class="sub">AI-read from funder websites each week \u2014 not a structured database like the rest of your Funding Radar</p></div></div>' +
+      '<div class="topbar"><div><h1>Foundation Leads</h1><p class="sub">Website-sourced opportunities from the shared Funding Radar, with per-organization Fit Scoring.</p></div></div>' +
       '<div class="card" style="margin-bottom:18px"><p class="hint" style="margin:0">Claude reads each funder\u2019s page directly and reports what it finds \u2014 genuinely useful, but not the same as an official government posting. \u201cVerified\u201d means the exact deadline or amount text was found on the page; unverified means double-check before you rely on it.</p></div>' +
-      (state.foundationLeads.length ? '<div class="opp-list" id="foundationList"></div>' : '<div class="empty">No relevant leads found yet. The weekly scan runs Monday mornings.</div>');
+      (state.foundationLeads.length ? '<div class="opp-list" id="foundationList"></div>' : '<div class="empty">No current foundation opportunities. Approved sources are monitored according to the Admin state settings.</div>');
     if (state.foundationLeads.length) {
       var wrap = main.querySelector("#foundationList");
       state.foundationLeads.forEach(function (lead) { wrap.appendChild(foundationRow(lead)); });

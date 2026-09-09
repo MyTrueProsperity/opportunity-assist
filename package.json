@@ -1,0 +1,22 @@
+{
+  "name": "opportunity-assist",
+  "private": true,
+  "version": "1.0.0",
+  "packageManager": "pnpm@11.19.0",
+  "scripts": {
+    "test": "node --test tests/*.test.js",
+    "build": "node scripts/build.js",
+    "check:functions": "node scripts/check-functions.mjs",
+    "seed:extract": "node scripts/extract-legacy-watchlist.js"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "pdfjs-dist": "5.6.205"
+  },
+  "devDependencies": {
+    "@electric-sql/pglite": "0.5.8",
+    "@netlify/zip-it-and-ship-it": "15.5.0"
+  }
+}
