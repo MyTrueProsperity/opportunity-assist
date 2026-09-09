@@ -92,7 +92,8 @@ function reviewPayload(candidate) {
 }
 async function publish(db,program,state) {
   const c=program;const e=c.evidence||{};
-  const cycleKey=c.current_deadline?'year:'+c.current_deadline.slice(0,4):c.current_status==='ROLLING'?'rolling':'undated-current';
+  const deadline=c.current_deadline instanceof Date?c.current_deadline.toISOString():c.current_deadline;
+  const cycleKey=deadline?'year:'+deadline.slice(0,4):c.current_status==='ROLLING'?'rolling':'undated-current';
   return db.rpc('source_publish_cycle',{p_program:c.id,p_state:state,p_cycle_key:cycleKey,p_opportunity:{title:c.canonical_program_name||c.source_name,source_url:c.application_url||c.source_url,category:c.source_type==='SPONSORSHIP'?'Sponsorship':'Foundation Grant',funding_amount_label:c.award_min!=null&&c.award_max!=null?'$'+c.award_min+'–$'+c.award_max:c.award_max!=null?'Up to $'+c.award_max:null,deadline_mentioned:e.deadline_mentioned?.quote||e.current_deadline?.quote||null,amount_mentioned:e.award_max?.quote||e.amount_mentioned?.quote||null,deadline_verified:!!e.current_deadline,amount_verified:!!e.award_max},p_evidence:e});
 }
 module.exports={uuid,registry,enqueue,corpus,seedRow,seedBatch,submitCandidate,importBatch,reviewPayload,publish};
