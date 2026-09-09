@@ -8,7 +8,7 @@ const snapshot=require('../../../data/legacy-watchlist.json');
 const uuid=value=>typeof value==='string'&&/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
 async function registry(db){const rows=await db.all('funding_programs',{superseded_by:'is.null',select:'*,funding_organizations(canonical_name)'});return rows.map(r=>({...r,organization_name:r.funding_organizations?.canonical_name||null}));}
 async function enqueue(db,{kind,state,actor=null,cleanRoom=false,payload={},key,runId=null,category=null,geographyId=null}) {
-  const existing=await db.select('source_jobs',{dedupe_key:'eq.'+key,status:'in.(QUEUED,RUNNING)',limit:1});if(existing.length)return existing[0];
+  const existing=await db.select('source_jobs',{dedupe_key:'eq.'+key,status:'in.(QUEUED,RUNNING,PAUSED)',limit:1});if(existing.length)return existing[0];
   const run=runId?{id:runId}:(await db.insert('source_discovery_runs',{strategy:kind,state_code:state||null,category,geography_id:geographyId,requested_by:actor,clean_room:cleanRoom}))[0];
   try{return (await db.insert('source_jobs',{kind,state_code:state||null,run_id:run.id,payload,dedupe_key:key}))[0];}
   catch(e){if(e.code==='23505'){const rows=await db.select('source_jobs',{dedupe_key:'eq.'+key,status:'in.(QUEUED,RUNNING)',limit:1});if(!runId)await db.patch('source_discovery_runs',{id:'eq.'+run.id},{status:'PAUSED',finished_at:new Date().toISOString(),errors:['Coalesced with an already queued request']});return rows[0];}throw e;}

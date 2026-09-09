@@ -6,6 +6,13 @@ let db;
 const extracted={source_name:'Example Foundation Impact Grant',organization_name:'Example Foundation',program_name:'Example Foundation Impact Grant',source_url:'https://example.org/grants',applicable_states:['FL'],geography:'Florida',purpose:'Community services',eligibility:'Florida nonprofits',funding_mechanism:'competitive grant',current_status:'ACTIVE_OPEN',current_cycle_open:true,target_state:'FL',fetched_at:'2026-09-08T00:00:00Z',authority:'official_claimed',evidence:{program_name:{quote:'Example Foundation Impact Grant',url:'https://example.org/grants'},funding_mechanism:{quote:'Competitive grants for Florida nonprofits',url:'https://example.org/grants'},applicable_states:{quote:'Eligible Florida nonprofits',url:'https://example.org/grants'},current_cycle_open:{quote:'Applications are open',url:'https://example.org/grants'}}};
 test.before(async()=>{db=await localDb();});test.after(async()=>await db.pg.close());test.beforeEach(async()=>await db.pg.exec('begin'));test.afterEach(async()=>await db.pg.exec('rollback'));
 async function enable(){await db.patch('source_engine_settings',{id:'eq.true'},{engine_enabled:true,seed_completed_at:new Date().toISOString(),daily_budget_usd:20});await db.patch('source_state_settings',{state_code:'eq.FL'},{discovery_enabled:true,monitoring_enabled:true,publication_enabled:true,daily_budget_usd:20,daily_query_limit:100,daily_page_limit:100});}
+
+test('scheduled work does not multiply a budget-paused coverage job',async()=>{
+ const first=await enqueue(db,{kind:'DISCOVER',state:'FL',key:'paused-coverage'});
+ await db.patch('source_jobs',{id:'eq.'+first.id},{status:'PAUSED',last_error:'Daily state or global budget reached; resume after the UTC reset'});
+ for(let i=0;i<3;i++)assert.equal((await enqueue(db,{kind:'DISCOVER',state:'FL',key:'paused-coverage'})).id,first.id);
+ assert.equal((await db.all('source_jobs')).length,1);assert.equal((await db.all('source_discovery_runs')).length,1);
+});
 test('manual validation produces a reviewable candidate and idempotent approval/publication',async()=>{
  await enable();const submitted=await submitCandidate(db,extracted,{runId:null,method:'TEST',observationKey:'first'});assert.equal(submitted.quality.quality_ready,true);
  const event={httpMethod:'POST',headers:{authorization:'Bearer local-test'},body:JSON.stringify({action:'review',candidate_id:submitted.row.id,version:submitted.row.version,decision:'APPROVE_NEW'})};
