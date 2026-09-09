@@ -7,6 +7,15 @@ const extracted={source_name:'Example Foundation Impact Grant',organization_name
 test.before(async()=>{db=await localDb();});test.after(async()=>await db.pg.close());test.beforeEach(async()=>await db.pg.exec('begin'));test.afterEach(async()=>await db.pg.exec('rollback'));
 async function enable(){await db.patch('source_engine_settings',{id:'eq.true'},{engine_enabled:true,seed_completed_at:new Date().toISOString(),daily_budget_usd:20});await db.patch('source_state_settings',{state_code:'eq.FL'},{discovery_enabled:true,monitoring_enabled:true,publication_enabled:true,daily_budget_usd:20,daily_query_limit:100,daily_page_limit:100});}
 
+test('new curated rows without a state are routed for Florida verification, never approved as eligible',()=>{
+ const {seedRow}=require('../netlify/lib/source-intelligence/service');
+ const raw={name:'County Foundation Capacity Grants',url:'https://example.org/grants'};
+ const curated=seedRow({origin:'supabase:funder_watchlist',origin_id:'1',raw});
+ assert.equal(curated.search_state,'FL');assert.deepEqual(curated.applicable_states||[],[]);assert.equal(curated.provenance.identity_unresolved,true);
+ assert.equal(seedRow({origin:'supabase:opportunities',origin_id:'2',raw}).search_state,null);
+ assert.equal(seedRow({origin:'supabase:funder_watchlist',origin_id:'3',raw:{...raw,name:'Georgia Foundation Grants'}}).search_state,'GA');
+});
+
 test('scheduled work does not multiply a budget-paused coverage job',async()=>{
  const first=await enqueue(db,{kind:'DISCOVER',state:'FL',key:'paused-coverage'});
  await db.patch('source_jobs',{id:'eq.'+first.id},{status:'PAUSED',last_error:'Daily state or global budget reached; resume after the UTC reset'});
@@ -34,7 +43,7 @@ test('state-disabled manual jobs do not run even after Florida rollout validatio
  const jobs=await db.rpc('source_claim_job');assert.ok(!jobs.length||jobs[0].state_code!=='GA');
 });
 test('independent discovery stores real search leads and evidence without auto-publishing',async()=>{
- await enable();const [cell]=await db.select('source_coverage',{state_code:'eq.FL',limit:1});await enqueue(db,{kind:'DISCOVER',state:'FL',key:'pilot',cleanRoom:true,payload:{coverage_id:cell.id}});
+ await enable();await db.patch('source_coverage',{state_code:'eq.FL'},{next_search_at:new Date(Date.now()+864e5).toISOString()});const [cell]=await db.select('source_coverage',{state_code:'eq.FL',limit:1});await enqueue(db,{kind:'DISCOVER',state:'FL',key:'pilot',cleanRoom:true,payload:{coverage_id:cell.id}});
  let prompts;const provider={model:'test',search:async(q)=>{prompts=q;return {leads:[{source_name:'Example Foundation',source_url:'https://example.org/grants'}],queries:q,usage:{},cost:.02};},extract:async()=>({programs:[extracted],usage:{},cost:.01})};
  await runWorker({db,provider,fetcher:async()=>({url:extracted.source_url,status:200,text:'Evidence text',hash:'fresh',links:[]}),maxJobs:1});
  assert.ok(prompts&&prompts.every(q=>q.includes('Florida')));assert.equal((await db.all('funding_programs')).length,0);assert.equal((await db.all('opportunities')).length,0);assert.ok((await db.all('source_candidates')).some(c=>c.quality_ready));

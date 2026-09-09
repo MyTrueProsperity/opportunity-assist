@@ -4,10 +4,10 @@ Source Intelligence is part of the existing Opportunity Assist app and Netlify p
 
 ## Install and verify
 
-1. Apply the six SQL files in `supabase/migrations` in filename order to Opportunity Assist. Each is transactional and repeatable. They add source tables and opportunity links; they do not remove existing rows or alter customer access policies.
+1. Apply the seven SQL files in `supabase/migrations` in filename order to Opportunity Assist. Each is transactional and repeatable. They add source tables and opportunity links; they do not remove existing rows or alter customer access policies.
 2. Deploy this branch through the existing GitHub → Netlify integration. Netlify uses Node 22, the pinned pnpm lockfile, `node scripts/build.js`, and `dist`. Only allowlisted public assets are published.
 3. Existing Functions-scoped `SUPABASE_URL`, `SUPABASE_PUBLISHABLE_KEY`, `SUPABASE_SERVICE_ROLE_KEY`, and `ANTHROPIC_API_KEY` are required. No new credential is needed. Anthropic web search must be available on the existing account. Credentials never belong in browser assets.
-4. Sign in with an existing administrator account and open **Source Intelligence → State controls**. Enable the engine, then select **Import / reconcile corpus** and **Process queued work now**. Check Discovery runs with **All states / unresolved** selected. Continue processing until reconciliation completes. Scheduled processing also runs every 15 minutes.
+4. Sign in with an existing administrator account and open **Source Intelligence → State controls**. Enable the engine, then select **Import / reconcile corpus** and **Process queued work now**. Check Discovery runs with **All states / unresolved** selected. Continue processing until reconciliation completes. Scheduled processing also runs every five minutes.
 5. Verify import totals by origin against the live tables. The preserved GitHub snapshot contains 3,391 rows. The concurrently maintained `funder_watchlist` remains an import input; every row is retained in `source_import_rows`. Reconcile again after the other task finishes loading all lists.
 
 Run `pnpm test`, `pnpm build`, and `pnpm check:functions` before deploying. The last command uses Netlify's own function packager. Test data lives only in an isolated PostgreSQL test database; `scripts/local-ui-server.js` provides a synthetic local interface on port 8791.
@@ -24,7 +24,9 @@ Review pilot results, inspect false positives and spot-check missed curated sour
 
 After that review, select one additional state in **State controls**, choose its categories and budget, and enable the desired capabilities. Other states remain off. Every state starts with statewide category searches; use **Extend geographic coverage** to add counties, municipalities, districts or regions. National eligibility is accepted only with explicit source evidence and remains subject to the selected state's switches.
 
-Default provider reservation limits: $3/day globally; $1/day, 4 queries and 25 pages per state. Reservations are conservative upper estimates, while runs separately report estimated actual token/search cost. Limits reset at UTC midnight. Budget-paused work resumes after that reset; other paused or failed work has an explicit resume action. Current model pricing is a configuration assumption that should be revisited when the provider changes pricing.
+Default provider reservation limits on a new installation: $3/day globally; $1/day, 4 queries and 25 pages per state. For the owner-authorized Florida initial fill on September 9, production was raised to $10/day globally and for Florida, with 20 queries and 200 page checks per day. These are independent ceilings, not guaranteed daily output. Conservative reservations can stop work before the query or page ceilings; reported actual token/search estimates are normally lower. Limits reset at UTC midnight. Budget-paused work also resumes after an authorized limit increase if capacity is available, without resetting prior usage. Other paused or failed work has an explicit resume action. Current model pricing is a configuration assumption that should be revisited when the provider changes pricing.
+
+Imported watchlist and preserved snapshot records without a unique state clue are routed into Florida verification. This target reflects the Florida corpus context and never establishes eligibility, approves a source, or enables another state. Explicit other-state routes and source facts remain unchanged. Older known-source checks share chronological queue ordering with paid discovery and validation work so incoming discovery pages cannot continually bypass them.
 
 ## Review and publication
 
@@ -42,7 +44,7 @@ Only approved sources with evidenced applicability and an explicitly open cycle 
 
 ## Runtime and troubleshooting
 
-`source-intelligence-background` checks durable jobs every 15 minutes. `source-intelligence-run-background` is the authenticated manual worker trigger. The existing daily `foundation-scan-background` entry point reconciles `funder_watchlist` and uses the same worker. SAM.gov, Grants.gov, health checks, billing and organization authorization retain their existing entry points.
+`source-intelligence-background` checks durable jobs every five minutes. `source-intelligence-run-background` is the authenticated manual worker trigger. The existing daily `foundation-scan-background` entry point reconciles `funder_watchlist` and uses the same worker. SAM.gov, Grants.gov, health checks, billing and organization authorization retain their existing entry points.
 
 Jobs have leases, bounded retries and active-key deduplication. Paused work is reused instead of repeatedly generating new scheduled jobs. A search processes at most two pages inline and queues remaining returned pages individually. One invocation processes at most one job that calls the model; corpus jobs can batch. Deploy previews cannot mutate the production source system.
 

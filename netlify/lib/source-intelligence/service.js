@@ -29,7 +29,12 @@ function seedRow(item) {
   // Search routing is only a clue; it is never used as an assertion of eligibility.
   const searchText=[c.source_name,c.geography].filter(Boolean).join(' ');
   const explicit=Object.entries(STATES).filter(([,name])=>new RegExp('\\b'+name+'\\b','i').test(searchText));
-  return {...c,identity_key:identityKey(c),search_state:explicit.length===1?explicit[0][0]:null,provenance:{origin:item.origin,origin_id:item.origin_id,identity_unresolved:true}};
+  // The imported watchlist is the Florida research corpus. A missing state name
+  // must not leave its pages permanently outside the verification queue. Routing
+  // a page to Florida does not establish Florida eligibility or approve a source.
+  const floridaCorpus=item.origin.startsWith('github:')||item.origin==='supabase:funder_watchlist';
+  const searchState=explicit.length===1?explicit[0][0]:floridaCorpus?'FL':null;
+  return {...c,identity_key:identityKey(c),search_state:searchState,provenance:{origin:item.origin,origin_id:item.origin_id,identity_unresolved:true,...(explicit.length!==1&&floridaCorpus?{search_routing:'Florida corpus verification; eligibility unverified'}:{})}};
 }
 async function seedBatch(db,job) {
   const items=await corpus(db);const start=Number(job.payload.offset||0);const batch=items.slice(start,start+500);

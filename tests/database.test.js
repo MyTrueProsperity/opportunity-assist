@@ -71,13 +71,48 @@ test('access-limit acknowledgment cannot override an internal error or unfinishe
  await assert.rejects(pg.query('select source_validate_florida($1,$2,$3)',[actor,r,v]),/Finish or resolve/);
 });
 test('a job created yesterday but budget-paused today waits until the next UTC day',async()=>{
- await pg.exec('update source_engine_settings set engine_enabled=true');const r=await scalar("insert into source_discovery_runs(strategy) values('SEED') returning id");
- await pg.query("insert into source_jobs(dedupe_key,run_id,kind,created_at,available_at) values('old',$1,'SEED',now()-interval '2 days',now()-interval '2 days')",[r]);
+ await pg.exec("update source_engine_settings set engine_enabled=true;update source_state_settings set monitoring_enabled=true where state_code='FL'");const r=await scalar("insert into source_discovery_runs(strategy,state_code) values('MONITOR','FL') returning id");
+ await pg.query("insert into source_jobs(dedupe_key,run_id,kind,state_code,created_at,available_at) values('old',$1,'MONITOR','FL',now()-interval '2 days',now()-interval '2 days')",[r]);
  const [j]=(await pg.query('select * from source_claim_job()')).rows;
  await pg.query("select source_finish_job($1,$2,'PAUSED','Daily state or global budget reached; resume after the UTC reset')",[j.id,j.lease_token]);
  assert.equal(await scalar('select source_requeue_budget_jobs()'),0);
  await pg.query("update source_jobs set available_at=now()-interval '2 days' where id=$1",[j.id]);
  assert.equal(await scalar('select source_requeue_budget_jobs()'),1);
+});
+
+test('increasing the budget resumes eligible paused work without resetting usage or repeatedly retrying',async()=>{
+ await pg.exec("update source_engine_settings set engine_enabled=true,updated_at=now()-interval '2 hours';update source_state_settings set monitoring_enabled=true,updated_at=now()-interval '2 hours' where state_code='FL';insert into source_daily_usage(usage_date,state_code,queries,pages,reserved_usd) values((now() at time zone 'UTC')::date,'FL',0,4,1)");
+ const r=await scalar("insert into source_discovery_runs(strategy,state_code,status) values('MONITOR','FL','PAUSED') returning id");
+ const j=await scalar("insert into source_jobs(dedupe_key,run_id,kind,state_code,status,attempts,last_error,available_at) values('increase-budget',$1,'MONITOR','FL','PAUSED',1,'Daily state or global budget reached',now()-interval '1 hour') returning id",[r]);
+ assert.equal(await scalar('select source_requeue_budget_jobs()'),0);
+ await pg.exec("update source_state_settings set daily_budget_usd=10,updated_at=now() where state_code='FL';update source_engine_settings set daily_budget_usd=10,updated_at=now()");
+ assert.equal(await scalar('select source_requeue_budget_jobs()'),1);
+ assert.equal(await scalar('select attempts from source_jobs where id=$1',[j]),0);
+ assert.equal(Number(await scalar("select reserved_usd from source_daily_usage where state_code='FL'")),1);
+ await pg.query("update source_jobs set status='PAUSED',last_error='Daily state or global budget reached',available_at=now() where id=$1",[j]);
+ assert.equal(await scalar('select source_requeue_budget_jobs()'),0);
+});
+
+test('paid work is chronological so new validation pages cannot starve older source monitors',async()=>{
+ await pg.exec("update source_engine_settings set engine_enabled=true;update source_state_settings set monitoring_enabled=true where state_code='FL'");
+ const r=await scalar("insert into source_discovery_runs(strategy,state_code) values('MONITOR','FL') returning id");
+ await pg.query("insert into source_jobs(dedupe_key,run_id,kind,state_code,created_at) values('older-source',$1,'MONITOR','FL',now()-interval '2 hours'),('new-page',$1,'VALIDATE','FL',now()-interval '1 hour'),('first-seed',$1,'SEED',null,now())",[r]);
+ assert.equal((await pg.query('select * from source_claim_job()')).rows[0].kind,'SEED');
+ assert.equal((await pg.query('select * from source_claim_job()')).rows[0].dedupe_key,'older-source');
+ assert.equal((await pg.query('select * from source_claim_job()')).rows[0].dedupe_key,'new-page');
+});
+
+test('Florida corpus routing preserves unknown eligibility, other-state routes and program identity',async()=>{
+ await pg.exec("insert into funding_programs(identity_key,source_name,normalized_program_name,source_url,normalized_url,website_domain,search_state,provenance) values('unknown-corpus','County Foundation','county foundation','https://example.org/a','https://example.org/a','example.org',null,'{\"origin\":\"supabase:funder_watchlist\"}'),('known-state','Georgia Foundation','georgia foundation','https://example.org/b','https://example.org/b','example.org','GA','{\"origin\":\"supabase:funder_watchlist\"}'),('unknown-opportunity','Unknown opportunity','unknown opportunity','https://example.org/c','https://example.org/c','example.org',null,'{\"origin\":\"supabase:opportunities\"}')");
+ const before=await scalar("select id from funding_programs where identity_key='unknown-corpus'");
+ const migration=fs.readFileSync(path.join(__dirname,'../supabase/migrations/202609090007_source_florida_fill.sql'),'utf8').replace(/^begin;\s*/,'').replace(/commit;\s*$/,'');
+ await pg.exec(migration);
+ assert.equal(await scalar("select search_state from funding_programs where identity_key='unknown-corpus'"),'FL');
+ assert.equal(await scalar("select id from funding_programs where identity_key='unknown-corpus'"),before);
+ assert.equal(await scalar("select review_status from funding_programs where identity_key='unknown-corpus'"),'LEGACY_UNVERIFIED');
+ assert.equal(await scalar("select cardinality(applicable_states) from funding_programs where identity_key='unknown-corpus'"),0);
+ assert.equal(await scalar("select search_state from funding_programs where identity_key='known-state'"),'GA');
+ assert.equal(await scalar("select search_state from funding_programs where identity_key='unknown-opportunity'"),null);
 });
 test('opening a new year preserves but deactivates an expired evidenced cycle',async()=>{
  const p=await review(await candidate());await pg.exec("update source_engine_settings set engine_enabled=true;update source_state_settings set publication_enabled=true where state_code='FL'");

@@ -12,7 +12,7 @@
   included_files = ["data/legacy-watchlist.json", "node_modules/@napi-rs/canvas-linux-x64-gnu/**"]
 
 [functions."source-intelligence-background"]
-  schedule = "*/15 * * * *"
+  schedule = "*/5 * * * *"
 
 [functions."sam-gov-crawler-background"]
   schedule = "0 9 * * *"
