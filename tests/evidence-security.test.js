@@ -3,6 +3,7 @@ const test=require('node:test');const assert=require('node:assert/strict');
 const {validateExtraction,quality,healthTransition,contentHash}=require('../netlify/lib/source-intelligence/quality');
 const {publicIp,validateTarget,htmlToText,extractLinks,robotsAllowed,fetchPage}=require('../netlify/lib/source-intelligence/fetch-page');
 const {createProvider}=require('../netlify/lib/source-intelligence/provider');
+const {resolveGeographicEvidence}=require('../netlify/lib/source-intelligence/quality');
 const page={url:'https://example.org/grants',text:'Community Impact Grant. Eligible Florida nonprofits can apply. Apply by October 31, 2026. Awards up to $25,000. Applications are open. Grants support community services.',hash:'abc',links:[{url:'https://example.org/apply',text:'Apply'}]};
 const claim=(value,quote)=>({value,quote});
 test('invented quotes never become deadlines, amounts or eligibility',()=>{const c=validateExtraction({program_name:claim('Invented','not on page'),award_max:claim(50000,'Awards up to $50,000'),current_deadline:claim('2026-12-01','December 1, 2026')},page,'FL');assert.equal(c.program_name,null);assert.equal(c.award_max,null);assert.equal(c.current_deadline,null);});
@@ -37,4 +38,33 @@ test('a real PDF is read in the Node runtime without browser graphics globals',a
 test('truncated paid extraction retains actual usage for failed-run accounting',async()=>{
   const provider=createProvider({ANTHROPIC_API_KEY:'test'},async()=>({ok:true,json:async()=>({stop_reason:'max_tokens',content:[{type:'text',text:'{"programs":['}],usage:{input_tokens:1000,output_tokens:9000}})}));
   await assert.rejects(provider.extract(page,'FL'),e=>e.message.includes('response limit')&&e.usage.output_tokens===9000&&e.cost===.046);
+});
+
+test('configured county eligibility is supported by separate state context',()=>{
+  const quote='Any 501c3 in our service area (Duval, Clay, Baker, St. Johns, Nassau and Putnam counties) may apply for a grant.';
+  const p={url:'https://example.org',text:'The Community Foundation for Northeast Florida. '+quote};
+  const geos=['Duval','Clay','Baker'].map(name=>({id:name,name,kind:'county',state_code:'FL'}));
+  const c={applicable_states:[],evidence:{eligibility:{quote}}};
+  const resolved=resolveGeographicEvidence(c,p,'FL',geos);
+  assert.deepEqual(resolved.applicable_states,['FL']);
+  assert.equal(resolved.evidence.applicable_states.method,'configured_counties_with_state_context');
+  assert.equal(resolved.evidence.applicable_states.quote,quote);
+  assert.deepEqual(c.applicable_states,[]);
+  assert.deepEqual(resolveGeographicEvidence(c,{...p,text:quote},'FL',geos).applicable_states,[]);
+});
+
+test('corporate presence and a conflicting county state cannot establish eligibility',()=>{
+  const geos=[{name:'Clay',kind:'county',state_code:'FL'},{name:'Baker',kind:'county',state_code:'FL'}];
+  for(const quote of ['Our office is in Florida.','Grants serve Clay and Baker counties in Georgia.']){
+    const c={applicable_states:[],evidence:{geography:{quote}}};
+    assert.deepEqual(resolveGeographicEvidence(c,{url:page.url,text:'Florida headquarters. '+quote},'FL',geos).applicable_states,[]);
+  }
+});
+
+test('postal eligibility and configured geography work outside Florida',()=>{
+  const quote='Grants support nonprofit organizations serving Winter Park, FL.';
+  assert.deepEqual(resolveGeographicEvidence({evidence:{eligibility:{quote}}},{url:page.url,text:quote},'FL').applicable_states,['FL']);
+  const gaQuote='Eligible nonprofits serve Fulton County.';
+  assert.deepEqual(resolveGeographicEvidence({evidence:{eligibility:{quote:gaQuote}}},{url:page.url,text:'Georgia Community Fund. '+gaQuote},'GA',[{name:'Fulton',kind:'county',state_code:'GA'}]).applicable_states,['GA']);
+  assert.equal(resolveGeographicEvidence({evidence:{eligibility:{quote:gaQuote}}},{url:page.url,text:'Georgia Community Fund. Different eligibility.'},'GA',[{name:'Fulton',kind:'county',state_code:'GA'}]).applicable_states,undefined);
 });

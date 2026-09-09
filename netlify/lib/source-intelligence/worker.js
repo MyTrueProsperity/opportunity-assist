@@ -4,7 +4,7 @@ const {createProvider}=require('./provider');
 const {fetchPage}=require('./fetch-page');
 const {STATES,queriesFor,enabledFor}=require('./config');
 const {normalizeUrl,normalizeProgram,hash}=require('./identity');
-const {healthTransition}=require('./quality');
+const {healthTransition,resolveGeographicEvidence,GEOGRAPHY_EVIDENCE_VERSION}=require('./quality');
 const {registry,enqueue,seedBatch,submitCandidate,importBatch,publish}=require('./service');
 class Paused extends Error {}
 async function gate(db,job,kind) {
@@ -21,16 +21,19 @@ async function inspect(db,provider,job,url,name,program,fetcher=fetchPage) {
   await gate(db,job,job.kind==='MONITOR'?'monitoring':job.kind==='DISCOVER'?'discovery':null);
   await reserve(db,job,0,1,0);const start=Date.now();let page,extracted,cost=0;
   const cache=(await db.select('source_page_cache',{normalized_url:'eq.'+normalizeUrl(url),limit:1}))[0];
+  const geographies=await db.all('source_geographies',{state_code:'eq.'+job.state_code,select:'id,name,kind,state_code'});
   await db.rpc('source_add_metrics',{p_run:job.run_id,p_metrics:{pages_attempted:1}});
   try{
     page=await fetcher(url,cache);
     await db.rpc('source_add_metrics',{p_run:job.run_id,p_metrics:{pages_fetched:1}});
+    if(page.unchanged&&cache?.extracted?.geography_evidence_version!==GEOGRAPHY_EVIDENCE_VERSION)page=await fetcher(url,null);
     if((page.unchanged||cache?.page_hash===page.hash)&&cache?.extracted?.verification_state===job.state_code){extracted=cache.extracted;await db.rpc('source_add_metrics',{p_run:job.run_id,p_metrics:{unchanged_pages:1}});}
     else {
       if(page.unchanged)page=await fetcher(url,null);
       // 40k chars + 80 links and bounded output fit under a conservative $0.12 reservation.
       await reserve(db,job,0,0,.12);extracted={...await provider.extract(page,job.state_code),verification_state:job.state_code};cost+=extracted.cost;await usage(db,job,extracted);
     }
+    if(page.text)extracted={...extracted,geography_evidence_version:GEOGRAPHY_EVIDENCE_VERSION,programs:(extracted.programs||[]).map(c=>resolveGeographicEvidence(c,page,job.state_code,geographies))};
     await db.upsert('source_page_cache',{normalized_url:normalizeUrl(url),resolved_url:page.url,page_hash:page.hash,extracted,links:page.links,etag:page.etag||cache?.etag||null,last_modified:page.last_modified||cache?.last_modified||null,fetched_at:new Date().toISOString()},'normalized_url');
     const records=await registry(db),aliases=await db.all('source_aliases');const observations=[];let semanticCalls=0;
     for(const original of extracted.programs||[]){const c={...original,target_state:job.state_code,fetched_at:new Date().toISOString(),source_url:page.url};

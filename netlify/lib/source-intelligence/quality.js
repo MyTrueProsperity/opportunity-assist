@@ -2,6 +2,32 @@
 const { SOURCE_TYPES, STATUSES, STATES } = require('./config');
 const { hash } = require('./identity');
 const collapse = s => String(s || '').replace(/\s+/g,' ').trim();
+const GEOGRAPHY_EVIDENCE_VERSION=2;
+const regexEscape=s=>String(s).replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
+function resolveGeographicEvidence(candidate,page,targetState,geographies=[]) {
+  if(!STATES[targetState]||candidate.applicable_states?.includes(targetState))return candidate;
+  const c={...candidate,evidence:{...candidate.evidence}};
+  const quotes=[c.evidence.applicable_states?.quote,c.evidence.eligibility?.quote,c.evidence.geography?.quote].filter(Boolean);
+  const statePattern=new RegExp('\\b'+STATES[targetState]+'\\b','i');
+  const postalPattern=new RegExp(',\\s*'+targetState+'\\b');
+  const context=String(page.text||'').match(new RegExp('.{0,80}\\b'+STATES[targetState]+'\\b.{0,80}','i'))?.[0]||String(page.text||'').match(new RegExp('.{0,80},\\s*'+targetState+'\\b.{0,80}'))?.[0];
+  for(const quote of quotes){
+    if(!hasQuote(quote,page.text)||!/(?:eligib|applican|applications?|may apply|grants?|funding|nonprofits?|organizations?|serving|service area|benefit.*residents)/i.test(quote)||/\b(?:headquarters?|our office|offices? located)\b/i.test(quote))continue;
+    if(statePattern.test(quote)||postalPattern.test(quote)){
+      c.applicable_states=[...new Set([...(c.applicable_states||[]),targetState])];
+      c.evidence.applicable_states={quote,url:page.url,method:'explicit_eligibility'};return c;
+    }
+    // A configured county in an eligibility clause plus independent state context
+    // supports geography; headquarters or an ambiguous county name alone does not.
+    const counties=geographies.filter(g=>g.state_code===targetState&&g.kind==='county'&&new RegExp('\\b'+regexEscape(g.name)+'\\b','i').test(quote));
+    const explicitOtherState=Object.entries(STATES).some(([code,name])=>code!==targetState&&new RegExp('(?:,|\\bin)\\s*'+regexEscape(name)+'\\b(?!\\s+Count(?:y|ies))','i').test(quote));
+    if(context&&!explicitOtherState&&counties.length&&/\bcount(?:y|ies)\b/i.test(quote)&&(counties.length>=2||new RegExp('\\b'+regexEscape(counties[0].name)+'\\s+County\\b','i').test(quote))){
+      c.applicable_states=[...new Set([...(c.applicable_states||[]),targetState])];
+      c.evidence.applicable_states={quote,url:page.url,method:'configured_counties_with_state_context',geographies:counties.map(g=>({id:g.id,name:g.name,state_code:g.state_code})),corroborating_quote:context};return c;
+    }
+  }
+  return c;
+}
 function hasQuote(quote,text) { return typeof quote==='string' && collapse(quote).length>=4 && collapse(text).includes(collapse(quote)); }
 function evidenceClaim(claim, text) {
   return claim && typeof claim==='object' && hasQuote(claim.quote,text) ? claim : null;
@@ -80,4 +106,4 @@ function healthTransition(previous,scan,now=new Date()) {
   return result;
 }
 function contentHash(text) {return hash(collapse(text));}
-module.exports={hasQuote,validateExtraction,quality,healthTransition,contentHash};
+module.exports={hasQuote,validateExtraction,resolveGeographicEvidence,GEOGRAPHY_EVIDENCE_VERSION,quality,healthTransition,contentHash};
