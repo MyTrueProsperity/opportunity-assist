@@ -9,7 +9,7 @@
 [functions]
   node_bundler = "esbuild"
   external_node_modules = ["pdfjs-dist", "@napi-rs/canvas"]
-  included_files = ["data/legacy-watchlist.json"]
+  included_files = ["data/legacy-watchlist.json", "node_modules/@napi-rs/canvas-linux-x64-gnu/**"]
 
 [functions."source-intelligence-background"]
   schedule = "*/15 * * * *"

@@ -16,6 +16,9 @@
     "@napi-rs/canvas": "0.1.96",
     "pdfjs-dist": "5.6.205"
   },
+  "optionalDependencies": {
+    "@napi-rs/canvas-linux-x64-gnu": "0.1.96"
+  },
   "devDependencies": {
     "@electric-sql/pglite": "0.5.8",
     "@netlify/zip-it-and-ship-it": "15.5.0"

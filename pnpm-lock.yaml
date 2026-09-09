@@ -21,6 +21,10 @@ importers:
       '@netlify/zip-it-and-ship-it':
         specifier: 15.5.0
         version: 15.5.0
+    optionalDependencies:
+      '@napi-rs/canvas-linux-x64-gnu':
+        specifier: 0.1.96
+        version: 0.1.96
 
 packages:
 
