@@ -62,6 +62,7 @@ test('reconciliation follows a previously reviewed source without recreating its
 test('cached Florida extraction is revalidated before use for another state',async()=>{
  await enable();await db.patch('source_state_settings',{state_code:'eq.FL'},{discovery_enabled:false,monitoring_enabled:false});
  await db.patch('source_engine_settings',{id:'eq.true'},{florida_validated_at:new Date().toISOString()});await db.patch('source_state_settings',{state_code:'eq.GA'},{discovery_enabled:true});
+ await db.patch('source_coverage',{state_code:'eq.GA'},{next_search_at:new Date(Date.now()+864e5).toISOString()});
  await db.insert('source_page_cache',{normalized_url:extracted.source_url,resolved_url:extracted.source_url,page_hash:'same',extracted:{programs:[extracted],verification_state:'FL'}});
  await enqueue(db,{kind:'VALIDATE',state:'GA',key:'state-cache',payload:{url:extracted.source_url}});
  let extractedState,requests=0;const provider={model:'test',extract:async(page,state)=>{extractedState=state;assert.ok(page.text);return {programs:[],usage:{},cost:.001};}};
