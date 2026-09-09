@@ -108,7 +108,7 @@ async function scheduleDue(db) {
   const states=await db.select('source_state_settings',{or:'(discovery_enabled.eq.true,monitoring_enabled.eq.true)',order:'state_code'});
   for(const s of states){if(s.state_code!=='FL'&&!engine.florida_validated_at)continue;
     if(s.discovery_enabled&&s.categories.length){const cells=await db.select('source_coverage',{state_code:'eq.'+s.state_code,next_search_at:'lte.'+new Date().toISOString(),category:'in.('+s.categories.join(',')+')',order:'next_search_at.asc,id.asc',limit:1});for(const cell of cells)await enqueue(db,{kind:'DISCOVER',state:s.state_code,category:cell.category,geographyId:cell.geography_id,key:'coverage:'+cell.id,payload:{coverage_id:cell.id}});}
-    if(s.monitoring_enabled){const programs=await db.select('funding_programs',{search_state:'eq.'+s.state_code,superseded_by:'is.null',next_scan_at:'lte.'+new Date().toISOString(),order:'next_scan_at.asc,id.asc',limit:2});for(const p of programs)await enqueue(db,{kind:'MONITOR',state:s.state_code,key:'monitor:'+p.id,payload:{program_id:p.id}});}
+    if(s.monitoring_enabled){const programs=await db.select('funding_programs',{search_state:'eq.'+s.state_code,superseded_by:'is.null',next_scan_at:'lte.'+new Date().toISOString(),order:'review_status.asc,next_scan_at.asc,id.asc',limit:2});for(const p of programs)await enqueue(db,{kind:'MONITOR',state:s.state_code,key:'monitor:'+p.id,payload:{program_id:p.id}});}
   }
 }
 async function runWorker({db=createDb(),provider=createProvider(),fetcher=fetchPage,maxJobs=8,maxMs=11*60000}={}) {

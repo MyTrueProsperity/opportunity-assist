@@ -14,9 +14,10 @@ test('scheduled work does not multiply a budget-paused coverage job',async()=>{
  assert.equal((await db.all('source_jobs')).length,1);assert.equal((await db.all('source_discovery_runs')).length,1);
 });
 test('manual validation produces a reviewable candidate and idempotent approval/publication',async()=>{
- await enable();const submitted=await submitCandidate(db,extracted,{runId:null,method:'TEST',observationKey:'first'});assert.equal(submitted.quality.quality_ready,true);
+ await enable();const withDeadline={...extracted,current_deadline:'2099-09-30',evidence:{...extracted.evidence,current_deadline:{quote:'September 30, 2099',url:extracted.source_url},deadline_mentioned:{quote:'Applications close at NOON on September 30, 2099',url:extracted.source_url}}};const submitted=await submitCandidate(db,withDeadline,{runId:null,method:'TEST',observationKey:'first'});assert.equal(submitted.quality.quality_ready,true);
  const event={httpMethod:'POST',headers:{authorization:'Bearer local-test'},body:JSON.stringify({action:'review',candidate_id:submitted.row.id,version:submitted.row.version,decision:'APPROVE_NEW'})};
  const result=await handle(event,db);assert.equal(result.statusCode,200);assert.equal((await db.all('opportunities')).length,1);
+ assert.equal((await db.all('opportunities'))[0].deadline_mentioned,'Applications close at NOON on September 30, 2099');
  const again=await submitCandidate(db,extracted,{runId:null,method:'TEST',observationKey:'second'});assert.equal(again.duplicate.outcome,'EXISTING');assert.equal(again.row.status,'APPROVED');assert.equal((await registry(db)).length,1);
 });
 test('full monitor worker skips model extraction for unchanged content and keeps one cycle',async()=>{
