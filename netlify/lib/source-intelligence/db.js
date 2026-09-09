@@ -17,7 +17,19 @@ function createDb(env=process.env,fetcher=fetch) {
     upsert:(table,body,onConflict,ignore=false)=>request(table+'?'+query({on_conflict:onConflict}),{method:'POST',body,prefer:`resolution=${ignore?'ignore':'merge'}-duplicates,return=representation`}),
     patch:(table,p,body)=>request(table+'?'+query(p),{method:'PATCH',body,prefer:'return=representation'}),
     rpc:(name,body={})=>request('rpc/'+name,{method:'POST',body}),
-    async all(table,p={}) {let out=[],last=null;for(;;){const rows=await this.select(table,{...p,order:'id.asc',limit:500,...(last?{id:'gt.'+last}:{})});out.push(...rows);if(rows.length<500)break;last=rows.at(-1).id;}return out;},
+    async all(table,p={}) {
+      // Every projection must retain the key used to advance the REST cursor.
+      const projection=p.select&&!p.select.split(',').includes('id')?'id,'+p.select:p.select;
+      let out=[],last=null;
+      for(;;){
+        const rows=await this.select(table,{...p,...(projection?{select:projection}:{}),order:'id.asc',limit:500,...(last!==null?{id:'gt.'+last}:{})});
+        out.push(...rows);if(rows.length<500)break;
+        const next=rows.at(-1).id;
+        if(next==null||next===last)throw new HttpError(502,'Database pagination did not advance');
+        last=next;
+      }
+      return out;
+    },
     async admin(event) {
       const token=String(event.headers?.authorization||event.headers?.Authorization||'').match(/^Bearer\s+(.+)$/i)?.[1];
       if(!token)throw new HttpError(401,'Sign in as an administrator');
