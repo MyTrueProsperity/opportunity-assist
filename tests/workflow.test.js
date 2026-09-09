@@ -41,3 +41,20 @@ test('reconciliation follows a previously reviewed source without recreating its
  assert.equal((await db.select('funding_programs',{identity_key:'eq.'+c.identity_key})).length,0);
  assert.equal((await db.select('source_import_rows',{import_key:'eq.'+hash(item.origin+'|1')}))[0].program_id,p.id);
 });
+test('cached Florida extraction is revalidated before use for another state',async()=>{
+ await enable();await db.patch('source_state_settings',{state_code:'eq.FL'},{discovery_enabled:false,monitoring_enabled:false});
+ await db.patch('source_engine_settings',{id:'eq.true'},{florida_validated_at:new Date().toISOString()});await db.patch('source_state_settings',{state_code:'eq.GA'},{discovery_enabled:true});
+ await db.insert('source_page_cache',{normalized_url:extracted.source_url,resolved_url:extracted.source_url,page_hash:'same',extracted:{programs:[extracted],verification_state:'FL'}});
+ await enqueue(db,{kind:'VALIDATE',state:'GA',key:'state-cache',payload:{url:extracted.source_url}});
+ let extractedState,requests=0;const provider={model:'test',extract:async(page,state)=>{extractedState=state;assert.ok(page.text);return {programs:[],usage:{},cost:.001};}};
+ await runWorker({db,provider,fetcher:async(url,cache)=>{requests++;return cache?{url,status:304,hash:'same',unchanged:true,links:[]}:{url,status:200,hash:'same',text:'A fresh body for Georgia eligibility evaluation',links:[]};},maxJobs:1});
+ assert.equal(extractedState,'GA');assert.equal(requests,2);assert.equal((await db.all('opportunities')).length,0);
+});
+test('approved-source monitoring requires two successful discontinuation observations',async()=>{
+ await enable();await db.patch('source_state_settings',{state_code:'eq.FL'},{discovery_enabled:false});
+ const submitted=await submitCandidate(db,extracted,{method:'TEST',observationKey:'discontinuation'});const p=reviewPayload(submitted.row);
+ const id=await db.rpc('source_review_candidate',{p_actor:db.actor,p_candidate:submitted.row.id,p_version:submitted.row.version,p_action:'APPROVE_NEW',p_target:null,p_reason:null,p_notes:'Verified source evidence',p_program:p.program,p_org:p.organization});
+ const closed={...extracted,current_status:'DISCONTINUED',current_cycle_open:false,evidence:{...extracted.evidence,current_status:{quote:'The program has been discontinued'},current_cycle_open:{quote:'Applications are closed'}}};
+ const provider={model:'test',extract:async()=>({programs:[closed],usage:{},cost:.001})};const fetcher=async()=>({url:extracted.source_url,status:200,text:'Program discontinued',hash:'closed',links:[]});
+ for(const expected of ['DISCONTINUED_PENDING','DISCONTINUED']){await enqueue(db,{kind:'MONITOR',state:'FL',key:'monitor:'+id,payload:{program_id:id}});await runWorker({db,provider,fetcher,maxJobs:1});assert.equal((await db.select('funding_programs',{id:'eq.'+id}))[0].current_status,expected);}
+});

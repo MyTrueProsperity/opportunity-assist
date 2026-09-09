@@ -59,3 +59,11 @@ test('opening a new year preserves but deactivates an expired evidenced cycle',a
  const newId=await scalar('select source_publish_cycle($1,$2,$3,$4,$5)',args);
  assert.notEqual(oldId,newId);assert.equal(await scalar('select source_active from opportunities where id=$1',[oldId]),false);assert.equal(await scalar('select count(*)::int from opportunities'),2);
 });
+test('a final successful child job cannot erase partial search failures',async()=>{
+ await pg.exec('update source_engine_settings set engine_enabled=true');
+ const r=await scalar("insert into source_discovery_runs(strategy,metrics) values('SEED','{\"search_errors\":1}') returning id");
+ await pg.query("insert into source_jobs(dedupe_key,run_id,kind) values('partial-child',$1,'SEED')",[r]);
+ const [j]=(await pg.query('select * from source_claim_job()')).rows;
+ await pg.query("select source_finish_job($1,$2,'COMPLETED')",[j.id,j.lease_token]);
+ assert.equal(await scalar('select status from source_discovery_runs where id=$1',[r]),'PARTIAL');
+});

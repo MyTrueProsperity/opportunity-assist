@@ -345,7 +345,7 @@ declare j public.source_jobs;
 begin
  -- Locks and leases survive duplicate scheduler invocations. Exhausted retries are visible.
  update source_jobs set status='FAILED',last_error='Lease expired after maximum attempts',finished_at=now() where status='RUNNING' and lease_until<now() and attempts>=3;
- update source_discovery_runs r set status='PARTIAL',finished_at=now(),errors=errors||jsonb_build_array('A job exhausted its lease retries') where status='RUNNING' and exists(select 1 from source_jobs j where j.run_id=r.id and j.last_error='Lease expired after maximum attempts') and not exists(select 1 from source_jobs j where j.run_id=r.id and j.status in('QUEUED','RUNNING'));
+ update source_discovery_runs r set status='PARTIAL',finished_at=now(),errors=errors||jsonb_build_array('A job exhausted its lease retries') where status='RUNNING' and exists(select 1 from source_jobs failed_job where failed_job.run_id=r.id and failed_job.last_error='Lease expired after maximum attempts') and not exists(select 1 from source_jobs active_job where active_job.run_id=r.id and active_job.status in('QUEUED','RUNNING'));
  select q.* into j from source_jobs q left join source_state_settings s on s.state_code=q.state_code cross join source_engine_settings e
  where e.id=true and e.engine_enabled and q.attempts<3 and ((q.status='QUEUED' and q.available_at<=now()) or (q.status='RUNNING' and q.lease_until<now()))
  and (q.state_code is null or (q.state_code='FL' or e.florida_validated_at is not null))
