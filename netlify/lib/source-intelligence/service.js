@@ -95,10 +95,32 @@ function reviewPayload(candidate) {
   const c=normalized(candidate.proposed);
   return {program:{...c,identity_key:identityKey(c),canonical_program_name:c.program_name},organization:c.organization_name?{identity_key:hash(c.website_domain+'|'+organizationSignature(c.organization_name)),canonical_name:c.organization_name,normalized_name:organizationSignature(c.organization_name),website_domain:c.website_domain,primary_url:new URL(c.source_url).origin}:null};
 }
-async function publish(db,program,state) {
+function publicationPayload(program) {
   const c=program;const e=c.evidence||{};
   const deadline=c.current_deadline instanceof Date?c.current_deadline.toISOString():c.current_deadline;
   const cycleKey=deadline?'year:'+deadline.slice(0,4):c.current_status==='ROLLING'?'rolling':'undated-current';
-  return db.rpc('source_publish_cycle',{p_program:c.id,p_state:state,p_cycle_key:cycleKey,p_opportunity:{title:c.canonical_program_name||c.source_name,source_url:c.application_url||c.source_url,category:c.source_type==='SPONSORSHIP'?'Sponsorship':'Foundation Grant',funding_amount_label:c.award_min!=null&&c.award_max!=null?'$'+c.award_min+'–$'+c.award_max:c.award_max!=null?'Up to $'+c.award_max:null,deadline_mentioned:e.deadline_mentioned?.quote||e.current_deadline?.quote||null,amount_mentioned:e.award_max?.quote||e.amount_mentioned?.quote||null,deadline_verified:!!e.current_deadline,amount_verified:!!e.award_max},p_evidence:e});
+  return {cycle_key:cycleKey,opportunity:{title:c.canonical_program_name||c.source_name,source_url:c.application_url||c.source_url,category:c.source_type==='SPONSORSHIP'?'Sponsorship':'Foundation Grant',funding_amount_label:c.award_min!=null&&c.award_max!=null?'$'+c.award_min+'–$'+c.award_max:c.award_max!=null?'Up to $'+c.award_max:null,deadline_mentioned:e.deadline_mentioned?.quote||e.current_deadline?.quote||null,amount_mentioned:e.award_max?.quote||e.amount_mentioned?.quote||null,deadline_verified:!!e.current_deadline,amount_verified:!!e.award_max}};
 }
-module.exports={uuid,registry,enqueue,corpus,seedRow,seedBatch,submitCandidate,importBatch,reviewPayload,publish};
+async function publish(db,program,state) {
+  const p=publicationPayload(program);
+  return db.rpc('source_publish_cycle',{p_program:program.id,p_state:state,p_cycle_key:p.cycle_key,p_opportunity:p.opportunity,p_evidence:program.evidence||{}});
+}
+async function automaticallyApprove(db,candidate) {
+  if(['APPROVED','UPDATED','MERGED','REJECTED'].includes(candidate.status))return {outcome:'ALREADY_DECIDED',program_id:candidate.matched_program_id};
+  if(!candidate.quality_ready||!candidate.last_verified_at||!candidate.proposed?.program_name)return {outcome:'AWAITING_EVIDENCE'};
+  const payload=reviewPayload(candidate);
+  try{return await db.rpc('source_automatically_approve',{p_candidate:candidate.id,p_version:candidate.version,p_program:payload.program,p_org:payload.organization,p_publication:publicationPayload(payload.program)});}
+  catch(e){if(['PGRST202','42883'].includes(e.code)){console.warn('Automatic approval awaits migration 202609090008; existing scanning remains active.');return {outcome:'UNAVAILABLE'};}throw e;}
+}
+async function approveBacklog(db) {
+  let candidates;
+  try{candidates=await db.rpc('source_automatic_candidates',{p_limit:10});}
+  catch(e){if(['PGRST202','42883'].includes(e.code)){console.warn('Automatic approval awaits migration 202609090008; existing scanning remains active.');return 0;}throw e;}
+  let approved=0;
+  for(const candidate of candidates){
+    const result=await automaticallyApprove(db,candidate);
+    if(['APPROVE_NEW','UPDATE','MERGE'].includes(result.outcome))approved++;
+  }
+  return approved;
+}
+module.exports={uuid,registry,enqueue,corpus,seedRow,seedBatch,submitCandidate,importBatch,reviewPayload,publish,automaticallyApprove,approveBacklog};

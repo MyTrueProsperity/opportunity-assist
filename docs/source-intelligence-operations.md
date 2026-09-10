@@ -4,7 +4,7 @@ Source Intelligence is part of the existing Opportunity Assist app and Netlify p
 
 ## Install and verify
 
-1. Apply the seven SQL files in `supabase/migrations` in filename order to Opportunity Assist. Each is transactional and repeatable. They add source tables and opportunity links; they do not remove existing rows or alter customer access policies.
+1. Apply the eight SQL files in `supabase/migrations` in filename order to Opportunity Assist. Each is transactional and repeatable. They add source tables and opportunity links; they do not remove existing rows or alter customer access policies.
 2. Deploy this branch through the existing GitHub → Netlify integration. Netlify uses Node 22, the pinned pnpm lockfile, `node scripts/build.js`, and `dist`. Only allowlisted public assets are published.
 3. Existing Functions-scoped `SUPABASE_URL`, `SUPABASE_PUBLISHABLE_KEY`, `SUPABASE_SERVICE_ROLE_KEY`, and `ANTHROPIC_API_KEY` are required. No new credential is needed. Anthropic web search must be available on the existing account. Credentials never belong in browser assets.
 4. Sign in with an existing administrator account and open **Source Intelligence → State controls**. Enable the engine, then select **Import / reconcile corpus** and **Process queued work now**. Check Discovery runs with **All states / unresolved** selected. Continue processing until reconciliation completes. Scheduled processing also runs every five minutes.
@@ -28,13 +28,25 @@ Default provider reservation limits on a new installation: $3/day globally; $1/d
 
 Imported watchlist and preserved snapshot records without a unique state clue are routed into Florida verification. This target reflects the Florida corpus context and never establishes eligibility, approves a source, or enables another state. Explicit other-state routes and source facts remain unchanged. Older known-source checks share chronological queue ordering with paid discovery and validation work so incoming discovery pages cannot continually bypass them.
 
-## Review and publication
+## Automatic approval and publication
 
-The five-column import accepts `SOURCE NAME|URL|SOURCE_TYPE|GEOGRAPHY|KEYWORDS`, up to 100 rows per interactive import. Preview reports malformed rows and full-registry duplicate matches. Import preserves original text and sends valid candidates for verification. Download CSV or pipe format for manual analysis.
+Automatic approval is enabled by default by migration eight, as requested by the owner. Turn it off in State controls to return to manual decisions. The worker approves newly verified funding programs and processes up to ten eligible backlog candidates each invocation without additional model calls. Source identity, funding evidence and state applicability remain required; open-cycle evidence is separately required for Radar publication.
 
-Existing curated entries initially appear as **Legacy unverified**. Missing organization, program, geography or source-type facts remain unknown. Verification can extract several actual programs from a single source page. A reviewer resolves the parent and mechanism before the record becomes approved. Use **Update existing** for a verified version of an imported source so its durable references survive.
+Only a deterministic program-identity match suppresses creation. An exact imported match is upgraded in place, preserving opportunity and customer references. An exact approved match is linked to its existing program. Shared pages, shared parent organizations, similar names and semantic judgments do not block approval of a different program. Existing ambiguous duplicate records are retained; a confirmed incoming duplicate links to a deterministic existing target without deleting historical records.
 
-Review actions: approve new source, approve distinct program under an established parent, merge candidate with an existing program, update existing, reject with a reason, or investigate. Decisions and evidence are retained. Identity conflicts and stale reviews are rejected atomically. Domain similarity alone never merges programs. Combined legacy funder/program names are matched across changed pages, with review required. Distinct programs may share an official grants hub. Explicit fiscal-year labels identify cycles. Semantic comparison is advisory, limited to one call per fetched page, with a conservative reservation sized to its input and maximum output.
+Every automatic decision records a system origin and policy version in Decision history. It does not impersonate a human reviewer. Explicit prior human investigations, rejections and decisions are preserved. Missing or unsupported facts remain awaiting verification; this policy does not label unknown facts as verified. Unscanned imported records become eligible for automatic approval as the scheduled scanner verifies them.
+
+Automatic approval uses evidence verified within seven days. Older pending candidates are scheduled for page verification automatically, within the existing state limits. Verification jobs are deduplicated and retry scheduling is spaced seven days apart; old evidence cannot silently publish as newly verified.
+
+Approval, alias updates, audit history and initial open-cycle publication share one database transaction. State switches, the master switch and the existing daily provider limits remain in force.
+
+### Optional manual review
+
+The five-column import accepts `SOURCE NAME|URL|SOURCE_TYPE|GEOGRAPHY|KEYWORDS`, up to 100 rows per interactive import. Preview reports malformed rows and full-registry duplicate matches. Import preserves original text and sends valid candidates for verification and automatic processing. Download CSV or pipe format for manual analysis.
+
+Existing curated entries initially appear as **Legacy unverified**. Missing organization, program, geography or source-type facts remain unknown. Verification can extract several actual programs from a single source page. Verified records follow the automatic decision policy; administrators can still investigate or correct records. Use **Update existing** for a verified version of an imported source so its durable references survive.
+
+Review actions: approve new source, approve distinct program under an established parent, merge candidate with an existing program, update existing, reject with a reason, or investigate. Decisions and evidence are retained. Identity conflicts and stale reviews are rejected atomically. Domain similarity alone never merges programs. Combined legacy funder/program names are matched across changed pages, with optional manual investigation. Distinct programs may share an official grants hub. Explicit fiscal-year labels identify cycles. In manual mode, semantic comparison is advisory, limited to one call per fetched page, with a conservative reservation sized to its input and maximum output.
 
 **Verify page** normally reuses unchanged extraction. **Re-extract page** explicitly requests a new model reading when facts are incomplete, within the same state budget. Deadlines without a stated year remain unstructured source excerpts. Only literal source dates and explicit open-application notices can support structured dates and publication.
 

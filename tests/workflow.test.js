@@ -42,11 +42,12 @@ test('state-disabled manual jobs do not run even after Florida rollout validatio
  let fetched=false;await runWorker({db,provider:{},fetcher:async()=>{fetched=true;},maxJobs:0});assert.equal(fetched,false);
  const jobs=await db.rpc('source_claim_job');assert.ok(!jobs.length||jobs[0].state_code!=='GA');
 });
-test('independent discovery stores real search leads and evidence without auto-publishing',async()=>{
+test('independent discovery automatically approves and publishes evidenced new programs',async()=>{
  await enable();await db.patch('source_coverage',{state_code:'eq.FL'},{next_search_at:new Date(Date.now()+864e5).toISOString()});const [cell]=await db.select('source_coverage',{state_code:'eq.FL',limit:1});await enqueue(db,{kind:'DISCOVER',state:'FL',key:'pilot',cleanRoom:true,payload:{coverage_id:cell.id}});
  let prompts;const provider={model:'test',search:async(q)=>{prompts=q;return {leads:[{source_name:'Example Foundation',source_url:'https://example.org/grants'}],queries:q,usage:{},cost:.02};},extract:async()=>({programs:[extracted],usage:{},cost:.01})};
  await runWorker({db,provider,fetcher:async()=>({url:extracted.source_url,status:200,text:'Evidence text',hash:'fresh',links:[]}),maxJobs:1});
- assert.ok(prompts&&prompts.every(q=>q.includes('Florida')));assert.equal((await db.all('funding_programs')).length,0);assert.equal((await db.all('opportunities')).length,0);assert.ok((await db.all('source_candidates')).some(c=>c.quality_ready));
+ assert.ok(prompts&&prompts.every(q=>q.includes('Florida')));assert.equal((await db.all('funding_programs')).length,1);assert.equal((await db.all('opportunities')).length,1);assert.ok((await db.all('source_candidates')).some(c=>c.status==='APPROVED'));
+ const decision=(await db.all('source_review_decisions'))[0];assert.equal(decision.decision_origin,'AUTOMATIC');assert.equal(decision.actor_id,null);
  const updated=(await db.select('source_coverage',{id:'eq.'+cell.id}))[0];assert.ok(updated.last_searched_at);assert.equal(updated.last_comprehensive_at,null);
 });
 test('API rejects an unauthenticated administration request',async()=>await assert.rejects(handle({httpMethod:'GET',headers:{},queryStringParameters:{view:'bootstrap'}},db),/Administrator/));

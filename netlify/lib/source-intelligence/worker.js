@@ -5,7 +5,7 @@ const {fetchPage}=require('./fetch-page');
 const {STATES,queriesFor,enabledFor}=require('./config');
 const {normalizeUrl,normalizeProgram,hash}=require('./identity');
 const {healthTransition,resolveGeographicEvidence,GEOGRAPHY_EVIDENCE_VERSION}=require('./quality');
-const {registry,enqueue,seedBatch,submitCandidate,importBatch,publish}=require('./service');
+const {registry,enqueue,seedBatch,submitCandidate,importBatch,publish,automaticallyApprove,approveBacklog}=require('./service');
 class Paused extends Error {}
 async function gate(db,job,kind) {
   const [e]=await db.select('source_engine_settings',{id:'eq.true'});
@@ -40,7 +40,11 @@ async function inspect(db,provider,job,url,name,program,fetcher=fetchPage) {
       const result=await submitCandidate(db,c,{runId:job.run_id,method:job.kind==='MONITOR'?'KNOWN_SOURCE_TRACK_SCAN':job.kind==='DISCOVER'?'GEOGRAPHIC_SWEEP':'MANUAL_VALIDATION',observationKey:hash(job.id+'|'+normalizeUrl(url)+'|'+normalizeProgram(c.program_name)),provenance:{query:job.payload.queries,source_url:url,resolved_url:page.url,page_hash:page.hash},records,aliases});
       observations.push(result);
       await db.rpc('source_add_metrics',{p_run:job.run_id,p_metrics:{candidates_extracted:1,[result.duplicate.outcome==='EXISTING'?'exact_duplicates':result.quality.outcome==='REJECT'?'rejection_proposals':result.duplicate.outcome==='MATERIAL_DISTINCT_TRACK'?'distinct_track_candidates':result.duplicate.outcome==='NEW'?'new_candidates':'duplicate_reviews']:1}});
-      if(semanticCalls<1&&result.duplicate.outcome==='POSSIBLE_DUPLICATE_REVIEW'&&result.quality.quality_ready&&result.duplicate.matches.length){
+      const automatic=await automaticallyApprove(db,result.row);
+      if(['APPROVE_NEW','UPDATE','MERGE'].includes(automatic.outcome)){
+        await db.rpc('source_add_metrics',{p_run:job.run_id,p_metrics:{[automatic.outcome==='MERGE'?'automatic_duplicate_links':'automatic_approvals']:1,...(automatic.opportunity_id?{opportunities_updated:1}:{})}});
+      }
+      if(automatic.outcome==='DISABLED'&&semanticCalls<1&&result.duplicate.outcome==='POSSIBLE_DUPLICATE_REVIEW'&&result.quality.quality_ready&&result.duplicate.matches.length){
         semanticCalls++;
         const similar=records.filter(r=>result.duplicate.matches.slice(0,4).some(m=>m.program_id===r.id)).map(r=>({id:r.id,source_name:r.source_name,canonical_program_name:r.canonical_program_name,purpose:r.purpose,eligibility:r.eligibility,funding_mechanism:r.funding_mechanism,evidence:r.evidence}));
         // A byte per input token plus 2,000 prompt/format tokens is a conservative
@@ -51,12 +55,13 @@ async function inspect(db,provider,job,url,name,program,fetcher=fetchPage) {
         await db.patch('source_candidates',{id:'eq.'+result.row.id,status:'in.(PENDING,INVESTIGATING,MATCHED)'},{proposed:{...c,semantic_judgment:semantic.judgment}});
       }
     }
-    if(job.payload.candidate_id&&observations.length&&!observations.some(o=>o.row.id===job.payload.candidate_id))await db.patch('source_candidates',{id:'eq.'+job.payload.candidate_id,status:'in.(PENDING,INVESTIGATING,MATCHED)'},{status:'MATCHED',reason:'Resolved into '+observations.length+' evidenced program candidate(s). Review their cards in the discovery queue.',proposed:{resolved_candidate_ids:observations.map(o=>o.row.id)},last_verified_at:new Date().toISOString()});
+    if(job.payload.candidate_id&&observations.length&&!observations.some(o=>o.row.id===job.payload.candidate_id))await db.patch('source_candidates',{id:'eq.'+job.payload.candidate_id,status:'in.(PENDING,INVESTIGATING,MATCHED)'},{status:'MATCHED',reason:'Resolved into '+observations.length+' evidenced program candidate(s). Automatic processing applies to those records.',proposed:{resolved_candidate_ids:observations.map(o=>o.row.id)},last_verified_at:new Date().toISOString()});
     if(program){
       const exact=(extracted.programs||[]).filter(c=>normalizeProgram(c.program_name)===program.normalized_program_name);
       const confirmed=exact.length===1?exact[0]:null;
       const patch=healthTransition(program,{ok:true,hash:page.hash,redirected:page.redirected,extraction:confirmed});
-      // Approved identity can update its evidenced facts; a new name or child track stays quarantined.
+      // Approved identity updates retain their references. New tracks follow the
+      // automatic decision transaction above, including exact duplicate checks.
       if(confirmed&&program.review_status==='APPROVED'){
         for(const field of ['summary','eligibility','purpose','current_cycle_open','current_deadline','award_min','award_max','application_url','geography','applicable_states','recurring_status'])if(confirmed[field]!=null && confirmed.evidence?.[field])patch[field]=confirmed[field];
         patch.evidence={...program.evidence,...confirmed.evidence};
@@ -107,12 +112,16 @@ async function scheduleDue(db) {
   const [engine]=await db.select('source_engine_settings',{id:'eq.true'});if(!engine?.engine_enabled||!engine.seed_completed_at)return;
   const states=await db.select('source_state_settings',{or:'(discovery_enabled.eq.true,monitoring_enabled.eq.true)',order:'state_code'});
   for(const s of states){if(s.state_code!=='FL'&&!engine.florida_validated_at)continue;
+    if(engine.automatic_approval_enabled){
+      const candidates=await db.rpc('source_due_verifications',{p_state:s.state_code,p_limit:2});
+      for(const c of candidates){await enqueue(db,{kind:'VALIDATE',state:s.state_code,key:'validate:'+c.id,payload:{candidate_id:c.id,url:c.source_url,name:c.source_name}});await db.patch('source_candidates',{id:'eq.'+c.id},{next_verification_at:new Date(Date.now()+7*864e5).toISOString()});}
+    }
     if(s.discovery_enabled&&s.categories.length){const cells=await db.select('source_coverage',{state_code:'eq.'+s.state_code,next_search_at:'lte.'+new Date().toISOString(),category:'in.('+s.categories.join(',')+')',order:'next_search_at.asc,id.asc',limit:1});for(const cell of cells)await enqueue(db,{kind:'DISCOVER',state:s.state_code,category:cell.category,geographyId:cell.geography_id,key:'coverage:'+cell.id,payload:{coverage_id:cell.id}});}
     if(s.monitoring_enabled){const programs=await db.select('funding_programs',{search_state:'eq.'+s.state_code,superseded_by:'is.null',next_scan_at:'lte.'+new Date().toISOString(),order:'review_status.asc,next_scan_at.asc,id.asc',limit:2});for(const p of programs)await enqueue(db,{kind:'MONITOR',state:s.state_code,key:'monitor:'+p.id,payload:{program_id:p.id}});}
   }
 }
 async function runWorker({db=createDb(),provider=createProvider(),fetcher=fetchPage,maxJobs=8,maxMs=11*60000}={}) {
-  const start=Date.now();await db.rpc('source_requeue_budget_jobs');await scheduleDue(db);let processed=0;
+  const start=Date.now();const automaticDecisions=await approveBacklog(db);await db.rpc('source_requeue_budget_jobs');await scheduleDue(db);let processed=0;
   while(processed<maxJobs&&Date.now()-start<Math.max(1000,maxMs-600000)){const [job]=await db.rpc('source_claim_job');if(!job)break;processed++;
     try{
       let result;
@@ -126,6 +135,6 @@ async function runWorker({db=createDb(),provider=createProvider(),fetcher=fetchP
     }catch(e){if(e.usage&&!e.usageRecorded)await usage(db,job,e);await db.rpc('source_finish_job',{p_job:job.id,p_token:job.lease_token,p_status:e instanceof Paused?'PAUSED':e.retryable&&job.attempts<3?'QUEUED':'FAILED',p_error:e.message.slice(0,500)});}
     if(['DISCOVER','VALIDATE','MONITOR'].includes(job.kind))break;
   }
-  return {processed,duration_ms:Date.now()-start};
+  return {processed,automatic_decisions:automaticDecisions,duration_ms:Date.now()-start};
 }
 module.exports={Paused,gate,reserve,inspect,discover,scheduleDue,runWorker};

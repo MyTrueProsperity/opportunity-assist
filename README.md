@@ -181,11 +181,11 @@ Runs daily at 09:10 UTC (see `netlify.toml`), ten minutes after the SAM.gov craw
 
 ## Source Intelligence and Foundation Scan
 
-The canonical registry uses `funding_organizations` and `funding_programs`. Discovered sources enter a review queue; approved, evidenced open cycles feed the shared `opportunities` table used by Funding Radar and Fit Scoring. The legacy `foundation_scan_hits` table is retained as history and an import input.
+The canonical registry uses `funding_organizations` and `funding_programs`. Verified funding sources are approved automatically by default; confirmed duplicates link to existing records. Possible similarities do not block approval. Evidence of state eligibility and an open cycle is still required before opportunities reach the shared `opportunities` table used by Funding Radar and Fit Scoring. The legacy `foundation_scan_hits` table is retained as history and an import input.
 
 The database `funder_watchlist` introduced in commit 5904ac3 remains supported. Daily reconciliation imports new list rows without changing scanner code. The complete earlier repository list is preserved in `data/legacy-watchlist.json` for migration provenance. Missing facts remain unknown until verified.
 
-The Source Intelligence admin screen includes discovery and duplicate queues, registry and health views, county/category coverage, run history, review controls, five-column import/export, budgets, and independent state discovery/monitoring/publication switches. All states start off. Florida validation is required before another state can be enabled individually.
+The Source Intelligence admin screen includes verification and duplicate queues, registry and health views, county/category coverage, run and decision history, optional manual review, five-column import/export, budgets, automatic approval controls, and independent state discovery/monitoring/publication switches. Automatic decisions use a system audit identity; explicit human decisions are preserved. All states start off. Florida validation is required before another state can be enabled individually.
 
 Read [the production architecture audit](docs/source-intelligence-audit.md) and [installation and operations](docs/source-intelligence-operations.md). Apply the dated migrations in `supabase/migrations` in order before deploying. The old `docs/foundation-scan-setup.sql` is historical and does not install this system.
 

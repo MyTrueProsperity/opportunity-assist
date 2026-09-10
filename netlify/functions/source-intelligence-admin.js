@@ -42,6 +42,7 @@ async function handle(event,db=createDb()) {
     if(typeof b.enabled!=='boolean')throw new HttpError(400,'enabled must be true or false');
     const [before]=await db.select('source_engine_settings',{id:'eq.true'});
     const patch={engine_enabled:b.enabled,updated_at:new Date().toISOString()};
+    if(b.automatic_approval_enabled!==undefined){if(typeof b.automatic_approval_enabled!=='boolean')throw new HttpError(400,'Automatic approval must be enabled or disabled');patch.automatic_approval_enabled=b.automatic_approval_enabled;}
     if(b.daily_budget_usd!==undefined){if(!Number.isFinite(b.daily_budget_usd)||b.daily_budget_usd<0||b.daily_budget_usd>100)throw new HttpError(400,'Daily budget must be between $0 and $100');patch.daily_budget_usd=b.daily_budget_usd;}
     await db.patch('source_engine_settings',{id:'eq.true'},patch);await db.insert('source_review_decisions',{actor_id:actor,action:'ENGINE_CONFIGURATION',before_snapshot:before,after_snapshot:patch});return json(200,{ok:true});
   }
