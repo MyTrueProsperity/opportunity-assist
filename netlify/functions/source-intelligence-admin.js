@@ -13,6 +13,7 @@ async function handle(event,db=createDb()) {
   if(event.httpMethod==='POST'&&process.env.NETLIFY==='true'&&process.env.CONTEXT!=='production')throw new HttpError(403,'Source mutations are disabled in deploy previews');
   if(event.httpMethod==='GET') {
     const q=event.queryStringParameters||{};
+    if(q.view==='import_progress'){if(q.state)checkState(q.state);return json(200,await db.rpc('source_import_progress',{p_state:q.state||null}));}
     if(q.view==='bootstrap'||!q.view){const [settings,states]=await Promise.all([db.select('source_engine_settings'),db.select('source_state_settings',{order:'state_name'})]);return json(200,{engine:settings[0],states,categories:Object.keys(CATEGORIES),source_types:SOURCE_TYPES,reasons:REASONS});}
     if(q.view==='export'){const rows=await registry(db);const data=exportRegistry(rows,q.format||'csv');return {statusCode:200,headers:{'Content-Type':q.format==='pipe'?'text/plain; charset=utf-8':'text/csv; charset=utf-8','Content-Disposition':'attachment; filename="opportunity-assist-sources.'+(q.format==='pipe'?'txt':'csv')+'"','Cache-Control':'no-store'},body:data};}
     if(q.view==='coverage_matrix'){checkState(q.state);return json(200,{rows:await db.all('source_coverage',{state_code:'eq.'+q.state,select:'*,source_geographies(name,kind)'})});}

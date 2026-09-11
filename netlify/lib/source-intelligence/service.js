@@ -108,19 +108,44 @@ async function publish(db,program,state) {
 async function automaticallyApprove(db,candidate) {
   if(['APPROVED','UPDATED','MERGED','REJECTED'].includes(candidate.status))return {outcome:'ALREADY_DECIDED',program_id:candidate.matched_program_id};
   if(!candidate.quality_ready||!candidate.last_verified_at||!candidate.proposed?.program_name)return {outcome:'AWAITING_EVIDENCE'};
+  // Older semantic reviews discarded derived identity fields, and normalization
+  // rules can change between releases. Rebuild only derived metadata from the
+  // saved evidence, without changing its age or making new eligibility claims.
+  const canonical=normalized(candidate.proposed);
+  const fields=['normalized_url','normalized_program_name','normalized_organization_name','website_domain'];
+  if(fields.some(k=>candidate.proposed[k]!==canonical[k])||candidate.normalized_url!==canonical.normalized_url||candidate.source_url!==canonical.source_url){
+    const [updated]=await db.patch('source_candidates',{id:'eq.'+candidate.id,version:'eq.'+candidate.version,status:'in.(PENDING,INVESTIGATING,MATCHED)'},{proposed:canonical,source_url:canonical.source_url,normalized_url:canonical.normalized_url,version:candidate.version+1});
+    if(!updated)return {outcome:'STALE'};
+    candidate=updated;
+  }
   const payload=reviewPayload(candidate);
   try{return await db.rpc('source_automatically_approve',{p_candidate:candidate.id,p_version:candidate.version,p_program:payload.program,p_org:payload.organization,p_publication:publicationPayload(payload.program)});}
   catch(e){if(['PGRST202','42883'].includes(e.code)){console.warn('Automatic approval awaits migration 202609090008; existing scanning remains active.');return {outcome:'UNAVAILABLE'};}throw e;}
 }
+async function tryAutomaticApproval(db,candidate) {
+  try{
+    const result=await automaticallyApprove(db,candidate);
+    if(candidate.automatic_approval_error&&['APPROVE_NEW','UPDATE','MERGE'].includes(result.outcome))await db.patch('source_candidates',{id:'eq.'+candidate.id},{automatic_approval_error:null});
+    return result;
+  }
+  catch(e){
+    console.error('Automatic source approval failed',candidate.id,e.code||'',e.message);
+    // Isolate the failed record and retry later; imports and other approvals
+    // must still run. Keep the failure visible on the candidate in the app.
+    try{await db.patch('source_candidates',{id:'eq.'+candidate.id,status:'in.(PENDING,INVESTIGATING,MATCHED)'},{automatic_approval_error:e.message.slice(0,500),automatic_approval_retry_at:new Date(Date.now()+3600000).toISOString()});}
+    catch(recordError){console.error('Could not record automatic approval failure',recordError.message);}
+    return {outcome:'FAILED',error:e.message};
+  }
+}
 async function approveBacklog(db) {
   let candidates;
   try{candidates=await db.rpc('source_automatic_candidates',{p_limit:10});}
-  catch(e){if(['PGRST202','42883'].includes(e.code)){console.warn('Automatic approval awaits migration 202609090008; existing scanning remains active.');return 0;}throw e;}
+  catch(e){console.error('Automatic approval backlog unavailable; queued work will continue',e.code||'',e.message);return 0;}
   let approved=0;
   for(const candidate of candidates){
-    const result=await automaticallyApprove(db,candidate);
+    const result=await tryAutomaticApproval(db,candidate);
     if(['APPROVE_NEW','UPDATE','MERGE'].includes(result.outcome))approved++;
   }
   return approved;
 }
-module.exports={uuid,registry,enqueue,corpus,seedRow,seedBatch,submitCandidate,importBatch,reviewPayload,publish,automaticallyApprove,approveBacklog};
+module.exports={uuid,registry,enqueue,corpus,seedRow,seedBatch,submitCandidate,importBatch,reviewPayload,publish,automaticallyApprove,tryAutomaticApproval,approveBacklog};

@@ -4,7 +4,7 @@ Source Intelligence is part of the existing Opportunity Assist app and Netlify p
 
 ## Install and verify
 
-1. Apply the eight SQL files in `supabase/migrations` in filename order to Opportunity Assist. Each is transactional and repeatable. They add source tables and opportunity links; they do not remove existing rows or alter customer access policies.
+1. Apply the nine SQL files in `supabase/migrations` in filename order to Opportunity Assist. Each is transactional and repeatable. They add source tables and opportunity links; they do not remove existing rows or alter customer access policies.
 2. Deploy this branch through the existing GitHub → Netlify integration. Netlify uses Node 22, the pinned pnpm lockfile, `node scripts/build.js`, and `dist`. Only allowlisted public assets are published.
 3. Existing Functions-scoped `SUPABASE_URL`, `SUPABASE_PUBLISHABLE_KEY`, `SUPABASE_SERVICE_ROLE_KEY`, and `ANTHROPIC_API_KEY` are required. No new credential is needed. Anthropic web search must be available on the existing account. Credentials never belong in browser assets.
 4. Sign in with an existing administrator account and open **Source Intelligence → State controls**. Enable the engine, then select **Import / reconcile corpus** and **Process queued work now**. Check Discovery runs with **All states / unresolved** selected. Continue processing until reconciliation completes. Scheduled processing also runs every five minutes.
@@ -55,6 +55,10 @@ The scanner supports bounded HTML/text/PDF reading, HTTP redirects, conditional 
 Only approved sources with evidenced applicability and an explicitly open cycle can publish. Cycle identity ignores changing deadlines within the same year. Closed or expired cycles are retained and hidden from active Radar; opportunity IDs, customer pipeline references and score history survive. Material changes invalidate cached summaries and mark scores stale for normal rescoring. Foundation Leads now reads the shared opportunity feed used by Radar. The old `foundation_scan_hits` table is preserved as an import source and history.
 
 ## Runtime and troubleshooting
+
+File import staging does not call an AI provider. It preserves submitted rows and queues website verification. New file sources enter the canonical registry export after verification and approval; definite duplicates link to an existing program. This differs from legacy corpus reconciliation, which registers unverified legacy rows immediately. The Import / export progress panel shows staged rows, batch failures, queued checks, budget pauses, and the global reservation total and reset time. A reservation is a conservative scheduling allowance, not a confirmed provider bill.
+
+Migration nine adds per-candidate automatic approval errors and a one-hour retry delay. The worker repairs missing or outdated derived identity metadata from saved verified facts, preserving evidence age and concurrent review versions. The previous semantic-review path discarded those fields and could make one old candidate abort the worker before any import was claimed. Individual approval failures now remain visible on candidate cards and cannot block imports or other approvals. The semantic-review path preserves normalized metadata. Database or provider failures still appear in function logs and run history; do not infer completion solely from an accepted background request.
 
 `source-intelligence-background` checks durable jobs every five minutes. `source-intelligence-run-background` is the authenticated manual worker trigger. The existing daily `foundation-scan-background` entry point reconciles `funder_watchlist` and uses the same worker. SAM.gov, Grants.gov, health checks, billing and organization authorization retain their existing entry points.
 

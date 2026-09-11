@@ -1,7 +1,7 @@
 'use strict';
 const test=require('node:test'),assert=require('node:assert/strict');
 const {localDb}=require('./helpers/local-db');
-const {submitCandidate,automaticallyApprove,approveBacklog,reviewPayload}=require('../netlify/lib/source-intelligence/service');
+const {submitCandidate,automaticallyApprove,approveBacklog,reviewPayload,enqueue}=require('../netlify/lib/source-intelligence/service');
 const {runWorker}=require('../netlify/lib/source-intelligence/worker');
 const {handle}=require('../netlify/functions/source-intelligence-admin');
 let db;
@@ -80,4 +80,45 @@ test('publication failure rolls back the automatic approval, aliases and audit t
  const c=await candidate();const p=reviewPayload(c);await db.pg.exec('savepoint atomic_approval');
  await assert.rejects(db.rpc('source_automatically_approve',{p_candidate:c.id,p_version:c.version,p_program:p.program,p_org:p.organization,p_publication:{cycle_key:null,opportunity:{title:c.source_name}}}),/stable cycle identity/);
  await db.pg.exec('rollback to savepoint atomic_approval');assert.equal((await db.all('funding_programs')).length,0);assert.equal((await db.all('source_aliases')).length,0);assert.equal((await db.all('source_review_decisions')).length,0);assert.equal((await db.select('source_candidates',{id:'eq.'+c.id}))[0].status,'PENDING');
+});
+
+test('legacy semantic metadata and old fiscal-year normalization are repaired without changing evidence freshness',async()=>{
+ const c=await candidate({program_name:'FY27 Community Impact Grant'});
+ const legacy={...c.proposed,normalized_program_name:'fy27 community impact grant',semantic_judgment:{reason:'Prior advisory comparison'}};
+ delete legacy.normalized_url;delete legacy.normalized_organization_name;
+ await db.patch('source_candidates',{id:'eq.'+c.id},{proposed:legacy});
+ assert.equal(await approveBacklog(db),1);
+ const [updated]=await db.select('source_candidates',{id:'eq.'+c.id});
+ assert.equal(updated.status,'APPROVED');assert.equal(updated.proposed.normalized_program_name,'community impact grant');
+ assert.deepEqual(updated.proposed.evidence,c.proposed.evidence);assert.equal(+new Date(updated.last_verified_at),+new Date(c.last_verified_at));
+ assert.equal(updated.proposed.semantic_judgment.reason,'Prior advisory comparison');
+});
+
+test('verified moved URL can be approved while preserving the observed candidate identity',async()=>{
+ const c=await candidate();const moved={...c.proposed,source_url:'https://example.org/apply',normalized_url:'https://example.org/apply'};
+ await db.patch('source_candidates',{id:'eq.'+c.id},{proposed:moved});
+ assert.equal(await approveBacklog(db),1);
+ const [updated]=await db.select('source_candidates',{id:'eq.'+c.id});
+ assert.equal(updated.source_url,moved.source_url);assert.equal(updated.identity_key,c.identity_key);
+ assert.equal((await db.all('funding_programs'))[0].source_url,moved.source_url);
+});
+
+test('one failed approval cannot block other approvals or a free import at the daily cap',async()=>{
+ const bad=await candidate();await candidate({program_name:'Healthy Second Grant'},'healthy');
+ await db.insert('source_daily_usage',{usage_date:new Date().toISOString().slice(0,10),state_code:'FL',reserved_usd:10});
+ const job=await enqueue(db,{kind:'IMPORT',state:'FL',key:'recovery-import',payload:{text:'Imported Foundation|https://imported.example.org/grants|COMMUNITY_FOUNDATION_GRANT|Florida|youth'}});
+ const actualRpc=db.rpc.bind(db);let failedCalls=0;
+ const isolated={...db,rpc:async(name,body)=>{if(name==='source_automatically_approve'&&body.p_candidate===bad.id){failedCalls++;throw new Error('Simulated individual approval failure');}return actualRpc(name,body);}};
+ const result=await runWorker({db:isolated,provider:{},maxJobs:1});
+ assert.equal(result.automatic_decisions,1);assert.equal((await db.select('source_jobs',{id:'eq.'+job.id}))[0].status,'COMPLETED');
+ assert.equal((await db.all('source_import_rows')).length,1);assert.equal((await db.all('source_daily_usage'))[0].reserved_usd,'10.000000');
+ const [failed]=await db.select('source_candidates',{id:'eq.'+bad.id});assert.match(failed.automatic_approval_error,/Simulated/);
+ assert.ok(+new Date(failed.automatic_approval_retry_at)>Date.now());assert.equal(await approveBacklog(isolated),0);assert.equal(failedCalls,1);
+ const progress=await db.rpc('source_import_progress',{p_state:'FL'});assert.equal(progress.rows_staged,1);assert.equal(progress.imports_completed,1);assert.equal(progress.approval_errors,1);
+});
+
+test('backlog lookup failure does not prevent queued imports from running',async()=>{
+ const job=await enqueue(db,{kind:'IMPORT',state:'FL',key:'backlog-outage',payload:{text:'Imported Foundation|https://imported.example.org|COMMUNITY_FOUNDATION_GRANT|Florida|youth'}});
+ const actualRpc=db.rpc.bind(db);const isolated={...db,rpc:async(name,body)=>{if(name==='source_automatic_candidates')throw new Error('Temporary backlog lookup failure');return actualRpc(name,body);}};
+ await runWorker({db:isolated,provider:{},maxJobs:1});assert.equal((await db.select('source_jobs',{id:'eq.'+job.id}))[0].status,'COMPLETED');
 });

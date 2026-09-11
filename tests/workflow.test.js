@@ -51,6 +51,19 @@ test('independent discovery automatically approves and publishes evidenced new p
  const updated=(await db.select('source_coverage',{id:'eq.'+cell.id}))[0];assert.ok(updated.last_searched_at);assert.equal(updated.last_comprehensive_at,null);
 });
 test('API rejects an unauthenticated administration request',async()=>await assert.rejects(handle({httpMethod:'GET',headers:{},queryStringParameters:{view:'bootstrap'}},db),/Administrator/));
+test('file import reaches the registry export after automatic verification and reimport adds no duplicate',async()=>{
+ await enable();await db.patch('source_state_settings',{state_code:'eq.FL'},{discovery_enabled:false});
+ const text='Example Foundation Impact Grant|https://example.org/grants|COMMUNITY_FOUNDATION_GRANT|Florida|youth';
+ const event={httpMethod:'POST',headers:{authorization:'Bearer local-test'},body:JSON.stringify({action:'import',state:'FL',text})};
+ await handle(event,db);await runWorker({db,provider:{},maxJobs:1});assert.equal((await registry(db)).length,0);
+ const provider={model:'test',extract:async()=>({programs:[extracted],usage:{},cost:.001})};
+ await runWorker({db,provider,fetcher:async()=>({url:extracted.source_url,status:200,text:'Eligible Florida nonprofits. Applications are open.',hash:'imported',links:[]}),maxJobs:1});
+ const exportEvent={httpMethod:'GET',headers:{authorization:'Bearer local-test'},queryStringParameters:{view:'export',format:'pipe'}};
+ const first=await handle(exportEvent,db);assert.match(first.body,/Example Foundation Impact Grant\|https:\/\/example.org\/grants/);assert.equal(first.body.split('\n').length,2);
+ await handle(event,db);await runWorker({db,provider:{},maxJobs:1});assert.equal((await handle(exportEvent,db)).body,first.body);assert.equal((await registry(db)).length,1);
+ const progress=await handle({httpMethod:'GET',headers:{authorization:'Bearer local-test'},queryStringParameters:{view:'import_progress',state:'FL'}},db);
+ assert.equal(JSON.parse(progress.body).imports_completed,2);assert.equal(JSON.parse(progress.body).registry_total,1);
+});
 test('reconciliation follows a previously reviewed source without recreating its old identity',async()=>{
  const {seedBatch,seedRow}=require('../netlify/lib/source-intelligence/service');const {hash}=require('../netlify/lib/source-intelligence/identity');
  const snapshot=require('../data/legacy-watchlist.json');const item={origin:'github:'+snapshot.source_commit,origin_id:'1',raw:snapshot.rows[0]};const c=seedRow(item);
