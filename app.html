@@ -99,6 +99,9 @@ label{display:block;font-weight:600;font-size:.85rem;margin:0 0 .3rem;color:var(
 .s-good .score-num,.s-good .score-rec{color:var(--good)}
 .s-mid .score-num,.s-mid .score-rec{color:var(--warn)}
 .s-low .score-num,.s-low .score-rec{color:var(--bad)}
+.tag.s-good{color:var(--good);border-color:var(--good)}
+.tag.s-mid{color:var(--warn);border-color:var(--warn)}
+.tag.s-low{color:var(--bad);border-color:var(--bad)}
 .factors{display:grid;gap:.7rem;margin:1rem 0}
 .factors li{list-style:none;font-size:.88rem;color:var(--muted)}
 .factors .bar{display:block;height:8px;background:#eef2f4;border-radius:999px;overflow:hidden;margin-top:.3rem}
@@ -176,7 +179,11 @@ window.OA_CONFIG = {
     alertRules: [],
     foundationLeads: [],
     chat: [],       // {role, content} -- AI Assistant conversation, in memory only
-    currentOpp: null
+    currentOpp: null,
+    requirements: [],   // all requirement rows for this org's pipeline items
+    pursueDecisions: {},// opportunity_id -> latest {decision, system_recommendation, decided_at, reason}
+    currentPipelineItem: null,
+    pipelineActivity: [] // activity rows for the currently-open pipeline item, loaded on demand
   };
 
   // Stripe Payment Links -- fill these in once created in the Stripe Dashboard.
@@ -281,6 +288,29 @@ window.OA_CONFIG = {
   function loadAlertRules() {
     return sb.from("alert_rules").select("*").order("created_at", { ascending: false })
       .then(function (r) { state.alertRules = r.data || []; });
+  }
+  function loadRequirements() {
+    return sb.from("requirements").select("*")
+      .then(function (r) { state.requirements = r.data || []; });
+  }
+  function loadPursueDecisions() {
+    // One row per decision (append-only log -- see migration notes), newest first;
+    // keep only the latest decision per opportunity for dashboard/gate purposes.
+    return sb.from("pursue_decisions").select("*").order("decided_at", { ascending: false })
+      .then(function (r) {
+        var latest = {};
+        (r.data || []).forEach(function (row) { if (!latest[row.opportunity_id]) latest[row.opportunity_id] = row; });
+        state.pursueDecisions = latest;
+      });
+  }
+  // Records one durable, attributable timeline entry. Best-effort: a logging
+  // failure should never block the user-facing action that triggered it.
+  function logActivity(fields) {
+    var payload = Object.assign({ org_id: state.org.id, actor_id: state.user.id }, fields);
+    return sb.from("opportunity_activity").insert(payload).then(function (r) {
+      if (r.error) console.error("Activity log failed:", r.error.message);
+      return r;
+    });
   }
   function ensureFitScores() {
     var missingIds = state.opps.filter(function (o) { return !state.fit[o.id]; }).map(function (o) { return o.id; });
@@ -525,7 +555,7 @@ window.OA_CONFIG = {
     var navEl = shell.querySelector("#nav");
     nav.forEach(function (n) {
       var b = el('<button class="nav-link" data-v="' + n[0] + '"><span class="nav-ico">' + n[1] + '</span>' + n[2] + "</button>");
-      b.addEventListener("click", function () { state.view = n[0]; state.currentOpp = null; paint(); });
+      b.addEventListener("click", function () { state.view = n[0]; state.currentOpp = null; state.currentPipelineItem = null; paint(); });
       navEl.appendChild(b);
     });
     shell.querySelector("#logout").addEventListener("click", function () {
@@ -535,10 +565,11 @@ window.OA_CONFIG = {
   }
 
   function paint() {
-    document.querySelectorAll(".nav-link").forEach(function (b) { b.classList.toggle("active", b.dataset.v === state.view && !state.currentOpp); });
+    document.querySelectorAll(".nav-link").forEach(function (b) { b.classList.toggle("active", b.dataset.v === state.view && !state.currentOpp && !state.currentPipelineItem); });
     var main = document.getElementById("main");
     if (state.view === "setup") return renderOnboarding();
     if (state.currentOpp) return renderOppDetail(main);
+    if (state.currentPipelineItem) return renderPipelineItemDetail(main);
     if (state.view === "dashboard") return renderDashboard(main);
     if (state.view === "radar") return renderRadar(main);
       if (state.view === "foundations") return renderFoundationLeads(main);
@@ -552,6 +583,21 @@ window.OA_CONFIG = {
   }
 
   /* ---------- dashboard ---------- */
+  // An opportunity "needs a decision" once it's scored well enough to act on,
+  // isn't already in the pipeline, and nobody has recorded a pursue/pass call
+  // on it yet. Once decided (either way) it drops off this list -- a Pass
+  // still exists in pursue_decisions and stays visible/reconsiderable from
+  // Funding Radar, it's just no longer asking for attention here.
+  function needsDecisionList() {
+    return state.opps.filter(function (o) {
+      var f = state.fit[o.id];
+      if (!f || f.pending || f.headline < 60) return false;
+      if (state.pipeline.some(function (p) { return p.opportunity_id === o.id; })) return false;
+      if (state.pursueDecisions[o.id]) return false;
+      return true;
+    }).sort(function (a, b) { return (state.fit[b.id].headline || 0) - (state.fit[a.id].headline || 0); }).slice(0, 5);
+  }
+
   function renderDashboard(main) {
     var byStage = {};
     state.pipeline.forEach(function (p) { byStage[p.stage] = (byStage[p.stage] || 0) + 1; });
@@ -560,19 +606,22 @@ window.OA_CONFIG = {
     }, 0);
     var awarded = byStage["Awarded"] || 0;
     var strong = state.opps.filter(function (o) { return state.fit[o.id] && state.fit[o.id].headline >= 75; }).length;
+    var needsDecision = needsDecisionList();
     var closing = state.opps.filter(function (o) { var d = daysUntil(o.deadline); return d != null && d >= 0 && d <= 30; })
       .sort(function (a, b) { return new Date(a.deadline) - new Date(b.deadline); }).slice(0, 5);
     var renewing = state.contracts.filter(function (c) { var d = daysUntil(c.end_date); return d != null && d >= 0 && d <= 60; }).length;
     var alertMatches = state.alertRules.reduce(function (sum, rule) { return sum + state.opps.filter(function (o) { return matchesRule(rule, o); }).length; }, 0);
 
     main.innerHTML =
-      '<div class="topbar"><div><h1>Dashboard</h1><p class="sub">Your opportunity pipeline at a glance</p></div></div>' +
+      '<div class="topbar"><div><h1>Dashboard</h1><p class="sub">What needs your attention</p></div></div>' +
       '<div class="grid tiles">' +
       tile(state.opps.length, "Opportunities on radar") +
       tile(strong, "Strong matches (75%+)") +
       tile(state.pipeline.length, "In capture pipeline") +
       tile(money(pipelineValue), "Pipeline value") +
       "</div>" +
+      '<h2 class="section-title">Needs your decision</h2>' +
+      (needsDecision.length ? '<div class="opp-list" id="needsDecision"></div>' : '<div class="empty">Nothing new to decide on right now.</div>') +
       (state.alertRules.length || state.contracts.length
         ? '<div class="row" style="margin-top:14px">' +
           (state.alertRules.length ? '<div class="card" style="flex:1;min-width:220px">🔔 <strong>' + alertMatches + '</strong> opportunit' + (alertMatches === 1 ? "y matches" : "ies match") + ' your alert rules</div>' : "") +
@@ -582,10 +631,72 @@ window.OA_CONFIG = {
       '<h2 class="section-title">Closing soon</h2>' +
       (closing.length ? '<div class="opp-list" id="closing"></div>' : '<div class="empty">No deadlines in the next 30 days.</div>');
 
+    if (needsDecision.length) {
+      var dwrap = main.querySelector("#needsDecision");
+      needsDecision.forEach(function (o) { dwrap.appendChild(decisionRow(o)); });
+    }
     if (closing.length) {
       var wrap = main.querySelector("#closing");
       closing.forEach(function (o) { wrap.appendChild(oppRow(o)); });
     }
+  }
+
+  // Same shape as oppRow() but with an inline Pursue/Pass gate (spec section
+  // 11, Gate A): the row is still clickable through to full detail, and the
+  // two action buttons stop that click from also firing.
+  function decisionRow(o) {
+    var f = state.fit[o.id] || { headline: 0, rec: "—" };
+    var row = oppRow(o);
+    var actions = el(
+      '<div class="row" style="grid-column:1/-1;margin-top:10px;gap:8px">' +
+      '<button class="btn btn-primary btn-sm" data-act="pursue">Pursue</button>' +
+      '<button class="btn btn-ghost btn-sm" data-act="pass">Pass</button>' +
+      "</div>"
+    );
+    row.appendChild(actions);
+    actions.querySelector('[data-act="pursue"]').addEventListener("click", function (e) {
+      e.stopPropagation();
+      recordDecision(o, f, "pursue", { addToPipeline: true });
+    });
+    actions.querySelector('[data-act="pass"]').addEventListener("click", function (e) {
+      e.stopPropagation();
+      recordDecision(o, f, "pass", { addToPipeline: false });
+    });
+    return row;
+  }
+
+  // Writes the durable decision row, optionally creates the pipeline card,
+  // and logs both to the activity timeline -- the one place all three entry
+  // points (dashboard gate, manual "Add to Capture Pipeline", future ones)
+  // funnel through, so pursue_decisions stays the single source of truth.
+  function recordDecisionThen(o, f, decision, opts, onDone) {
+    return recordDecision(o, f, decision, opts, onDone);
+  }
+  function recordDecision(o, f, decision, opts, onDone) {
+    var decisionPayload = {
+      org_id: state.org.id, opportunity_id: o.id,
+      system_recommendation: f.rec || null, system_confidence: f.headline || null,
+      decision: decision, decided_by: state.user.id
+    };
+    var chain = sb.from("pursue_decisions").insert(decisionPayload).select().single().then(function (r) {
+      if (r.error) { alert(r.error.message); return; }
+      state.pursueDecisions[o.id] = r.data;
+    });
+    if (opts && opts.addToPipeline) {
+      chain = chain.then(function () {
+        return sb.from("pipeline_items").insert({ org_id: state.org.id, opportunity_id: o.id, title: o.title, stage: "Reviewing" })
+          .select("*, opportunities(funding_amount, funding_amount_label, deadline, category)").single().then(function (r) {
+            if (r.error) { alert(r.error.message); return; }
+            state.pipeline.push(r.data);
+            return logActivity({ opportunity_id: o.id, pipeline_item_id: r.data.id, action: "pursue_decision", detail: "Marked Pursue \u2014 added to Capture Pipeline" });
+          });
+      });
+    } else {
+      chain = chain.then(function () {
+        return logActivity({ opportunity_id: o.id, action: "pursue_decision", detail: "Marked Pass" });
+      });
+    }
+    chain.then(function () { if (onDone) onDone(); else paint(); });
   }
   function tile(num, lbl) { return '<div class="tile"><div class="num">' + esc(num) + '</div><div class="lbl">' + esc(lbl) + "</div></div>"; }
 
@@ -686,11 +797,7 @@ window.OA_CONFIG = {
     if (addBtn && !inPipeline) {
       addBtn.addEventListener("click", function () {
         addBtn.disabled = true;
-        sb.from("pipeline_items").insert({
-          org_id: state.org.id, opportunity_id: o.id, title: o.title, stage: "Reviewing"
-        }).select("*, opportunities(funding_amount, funding_amount_label, deadline, category)").single().then(function (r) {
-          if (r.error) { addBtn.disabled = false; alert(r.error.message); return; }
-          state.pipeline.push(r.data);
+        recordDecisionThen(o, f, "pursue", { addToPipeline: true }, function () {
           state.view = "pipeline"; state.currentOpp = null; paint();
         });
       });
@@ -709,9 +816,12 @@ window.OA_CONFIG = {
       var col = el('<div class="col" data-stage="' + esc(stage) + '"><h3>' + esc(stage) + '<span class="col-count">' + items.length + "</span></h3></div>");
       items.forEach(function (p) {
         var amt = p.opportunities && p.opportunities.funding_amount_label ? p.opportunities.funding_amount_label : "";
-        var c = el('<div class="pcard" draggable="true" data-id="' + p.id + '"><span class="pt">' + esc(p.title) + '</span><span class="pm">' + esc(amt) + "</span></div>");
+        var reqs = state.requirements.filter(function (rq) { return rq.pipeline_item_id === p.id; });
+        var reqBadge = reqs.length ? '<span class="pm" style="float:right">' + reqs.filter(function (rq) { return rq.status === "Complete"; }).length + "/" + reqs.length + "</span>" : "";
+        var c = el('<div class="pcard" draggable="true" data-id="' + p.id + '"><span class="pt">' + esc(p.title) + "</span>" + reqBadge + '<span class="pm">' + esc(amt) + "</span></div>");
         c.addEventListener("dragstart", function (e) { e.dataTransfer.setData("text/plain", p.id); c.classList.add("drag"); });
         c.addEventListener("dragend", function () { c.classList.remove("drag"); });
+        c.addEventListener("click", function (e) { if (c.classList.contains("drag")) return; state.currentPipelineItem = p; paint(); });
         col.appendChild(c);
       });
       col.addEventListener("dragover", function (e) { e.preventDefault(); col.classList.add("over"); });
@@ -727,11 +837,115 @@ window.OA_CONFIG = {
   function moveCard(id, stage) {
     var item = state.pipeline.filter(function (p) { return p.id === id; })[0];
     if (!item || item.stage === stage) return;
+    var oldStage = item.stage;
     item.stage = stage;
     paint();
     sb.from("pipeline_items").update({ stage: stage, updated_at: new Date().toISOString() }).eq("id", id).then(function (r) {
-      if (r.error) alert(r.error.message);
+      if (r.error) { alert(r.error.message); return; }
+      logActivity({
+        opportunity_id: item.opportunity_id, pipeline_item_id: id, action: "stage_changed",
+        detail: oldStage + " \u2192 " + stage, old_value: { stage: oldStage }, new_value: { stage: stage }
+      });
     });
+  }
+
+  /* ---------- pipeline item detail: requirements + activity timeline ---------- */
+  function statusClass(s) { return s === "Complete" ? "s-good" : s === "In Progress" ? "s-mid" : "s-low"; }
+  var NEXT_STATUS = { "Missing": "In Progress", "In Progress": "Complete", "Complete": "Missing", "Not Applicable": "Missing" };
+
+  function renderPipelineItemDetail(main) {
+    var p = state.currentPipelineItem;
+    var o = state.opps.filter(function (x) { return x.id === p.opportunity_id; })[0] || {};
+    var decision = state.pursueDecisions[p.opportunity_id];
+    var reqs = state.requirements.filter(function (rq) { return rq.pipeline_item_id === p.id; });
+    var applicable = reqs.filter(function (rq) { return rq.status !== "Not Applicable"; });
+    var complete = applicable.filter(function (rq) { return rq.status === "Complete"; }).length;
+    var readiness = applicable.length ? Math.round(100 * complete / applicable.length) : null;
+
+    main.innerHTML =
+      '<span class="back" id="back">\u2190 Back to Capture Pipeline</span>' +
+      '<div class="topbar"><div><h1>' + esc(p.title) + '</h1><p class="sub">' +
+        esc(o.category || "") + (o.geography ? " \u00b7 " + esc(o.geography) : "") +
+        (o.funding_amount_label || o.funding_amount ? " \u00b7 " + esc(o.funding_amount_label || money(o.funding_amount)) : "") +
+      '</p></div>' +
+      '<select id="stageSel" class="btn btn-ghost">' + STAGES.map(function (s) { return '<option value="' + esc(s) + '"' + (s === p.stage ? " selected" : "") + ">" + esc(s) + "</option>"; }).join("") + "</select>" +
+      "</div>" +
+      '<div class="detail-grid">' +
+      '<div class="card"><h2>Requirements' + (readiness != null ? ' <span class="tag">' + readiness + '% ready</span>' : "") + '</h2>' +
+      (decision ? '<p class="hint">Decision: <strong>' + esc(decision.decision) + "</strong> on " + esc(new Date(decision.decided_at).toLocaleDateString()) +
+        (decision.system_recommendation ? " \u2014 system recommended \u201c" + esc(decision.system_recommendation) + "\u201d at " + esc(decision.system_confidence) + "%" : "") + "</p>" : "") +
+      '<div id="reqList" style="margin-top:10px"></div>' +
+      '<div class="row" style="margin-top:10px;gap:8px"><input id="newReq" placeholder="Add a requirement\u2026" style="flex:1" /><button class="btn btn-primary btn-sm" id="addReq">Add</button></div>' +
+      (o.source_url ? '<p class="hint" style="margin-top:.8rem"><a href="' + esc(o.source_url) + '" target="_blank" rel="noopener">View original source \u2197</a></p>' : "") +
+      "</div>" +
+      '<div class="card"><h2>Activity</h2><div id="activityList"><p class="hint">Loading\u2026</p></div></div>' +
+      "</div>";
+
+    main.querySelector("#back").addEventListener("click", function () { state.currentPipelineItem = null; paint(); });
+    main.querySelector("#stageSel").addEventListener("change", function (e) { moveCard(p.id, e.target.value); state.currentPipelineItem = state.pipeline.filter(function (x) { return x.id === p.id; })[0]; });
+
+    var reqList = main.querySelector("#reqList");
+    if (!reqs.length) {
+      reqList.innerHTML = '<p class="hint">No requirements tracked yet.</p>';
+    } else {
+      reqs.forEach(function (rq) {
+        var row = el(
+          '<div class="row" style="justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid var(--line)">' +
+          '<span>' + esc(rq.requirement) + (rq.mandatory ? "" : ' <span class="tag">optional</span>') + "</span>" +
+          '<button class="tag ' + statusClass(rq.status) + '" data-id="' + rq.id + '" style="cursor:pointer;border:none">' + esc(rq.status) + "</button>" +
+          "</div>"
+        );
+        row.querySelector("button").addEventListener("click", function () { cycleRequirement(rq); });
+        reqList.appendChild(row);
+      });
+    }
+    main.querySelector("#addReq").addEventListener("click", function () {
+      var input = main.querySelector("#newReq");
+      var text = input.value.trim();
+      if (!text) return;
+      sb.from("requirements").insert({ org_id: state.org.id, pipeline_item_id: p.id, requirement: text }).select().single().then(function (r) {
+        if (r.error) { alert(r.error.message); return; }
+        state.requirements.push(r.data);
+        logActivity({ opportunity_id: p.opportunity_id, pipeline_item_id: p.id, action: "requirement_added", detail: "Added requirement: " + text });
+        input.value = "";
+        paint();
+      });
+    });
+
+    loadPipelineActivity(p.id);
+  }
+
+  function cycleRequirement(rq) {
+    var next = NEXT_STATUS[rq.status] || "Missing";
+    var old = rq.status;
+    sb.from("requirements").update({ status: next, updated_at: new Date().toISOString() }).eq("id", rq.id).then(function (r) {
+      if (r.error) { alert(r.error.message); return; }
+      rq.status = next;
+      logActivity({
+        opportunity_id: state.currentPipelineItem.opportunity_id, pipeline_item_id: rq.pipeline_item_id, action: "requirement_status_changed",
+        detail: rq.requirement + ": " + old + " \u2192 " + next, old_value: { status: old }, new_value: { status: next }
+      });
+      paint();
+    });
+  }
+
+  function loadPipelineActivity(pipelineItemId) {
+    sb.from("opportunity_activity").select("*").eq("pipeline_item_id", pipelineItemId).order("created_at", { ascending: false })
+      .then(function (r) {
+        state.pipelineActivity = r.data || [];
+        if (!state.currentPipelineItem || state.currentPipelineItem.id !== pipelineItemId) return; // navigated away before this returned
+        var wrap = document.getElementById("activityList");
+        if (!wrap) return;
+        if (!state.pipelineActivity.length) { wrap.innerHTML = '<p class="hint">No activity yet.</p>'; return; }
+        wrap.innerHTML = "";
+        state.pipelineActivity.forEach(function (a) {
+          wrap.appendChild(el(
+            '<div style="padding:6px 0;border-bottom:1px solid var(--line);font-size:.88rem">' +
+            '<div>' + esc(a.detail || a.action) + "</div>" +
+            '<div class="hint">' + esc(new Date(a.created_at).toLocaleString()) + "</div></div>"
+          ));
+        });
+      });
   }
 
   /* ---------- organization profile ---------- */
@@ -1111,7 +1325,7 @@ window.OA_CONFIG = {
         return sb.from("organizations").select("*").eq("id", state.profile.org_id).single().then(function (orgR) {
           if (orgR.error || !orgR.data) { renderOnboarding(); return; }
           state.org = orgR.data;
-          return Promise.all([loadOpps(), loadFitScores(), loadPipeline(), loadSubscription(), loadContracts(), loadAlertRules(), loadFoundationLeads(), loadAdminStatus()]).then(function () {
+          return Promise.all([loadOpps(), loadFitScores(), loadPipeline(), loadSubscription(), loadContracts(), loadAlertRules(), loadFoundationLeads(), loadAdminStatus(), loadRequirements(), loadPursueDecisions()]).then(function () {
             return ensureFitScores();
           }).then(function () { renderShell(); });
         });
