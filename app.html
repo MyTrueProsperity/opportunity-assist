@@ -1292,7 +1292,7 @@ window.OA_CONFIG = {
         '<div class="grid" id="adminList" style="gap:12px"></div>';
       var wrap = main.querySelector("#adminList");
       orgs.forEach(function (o) {
-        var sub = (o.subscriptions && o.subscriptions[0]) || { status: "inactive", plan: null };
+        var sub = (Array.isArray(o.subscriptions) ? o.subscriptions[0] : o.subscriptions) || { status: "inactive", plan: null };
         var card = el(
           '<div class="card">' +
           '<div class="row" style="justify-content:space-between;align-items:center;flex-wrap:wrap">' +
