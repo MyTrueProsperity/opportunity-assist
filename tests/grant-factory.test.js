@@ -193,6 +193,20 @@ test("AI parsing rejects invented locators or source quotes", () => {
     /untraceable/,
   );
 });
+
+test('live parser nullable metadata stays unknown while required source evidence remains strict', async () => {
+  const blocks = [{locator:'Line 1', text:'1. Describe your planned program. Maximum 150 words.'}];
+  const output = P.basic(blocks);
+  output.funding_purpose = null;
+  Object.assign(output.questions[0], {section:null, question_number:null, question_category:null, rubric_text:null});
+  const ai = provider({ANTHROPIC_API_KEY:'test'}, async () => ({ok:true,json:async()=>({content:[{type:'tool_use',name:'result',input:output}]})}));
+  const result = P.normalize((await ai.call('parse',{blocks})).data, blocks);
+  assert.equal(result.questions[0].rubric_text,null);
+  assert.equal(result.questions[0].limit_value,150);
+  assert.equal(result.questions[0].source_locator,'Line 1');
+  output.questions[0].source_quote = null;
+  await assert.rejects(ai.call('parse',{blocks}),/source_quote/);
+});
 test("DOCX extraction preserves paragraph locators, accented characters and table text", async () => {
   const {
     Document,
