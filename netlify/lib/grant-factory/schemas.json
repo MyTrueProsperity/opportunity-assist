@@ -15,7 +15,7 @@
         "type": ["string", "null"]
       },
       "funding_purpose": {
-        "type": "string"
+        "type": ["string", "null"]
       },
       "award_min": {
         "type": ["number", "null"]
@@ -66,10 +66,10 @@
           "type": "object",
           "properties": {
             "section": {
-              "type": "string"
+              "type": ["string", "null"]
             },
             "question_number": {
-              "type": "string"
+              "type": ["string", "null"]
             },
             "question_text": {
               "type": "string"
@@ -117,10 +117,10 @@
               "type": ["boolean", "null"]
             },
             "question_category": {
-              "type": "string"
+              "type": ["string", "null"]
             },
             "rubric_text": {
-              "type": "string"
+              "type": ["string", "null"]
             }
           },
           "required": [
