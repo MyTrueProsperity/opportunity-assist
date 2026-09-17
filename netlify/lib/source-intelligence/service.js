@@ -2,7 +2,7 @@
 const {STATES,CATEGORIES}=require('./config');
 const {hash,normalized,identityKey,normalizeUrl,normalizeProgram,organizationSignature,compareCandidate}=require('./identity');
 const {quality,healthTransition}=require('./quality');
-const {parsePipe}=require('./imports');
+const {parsePipe,parseJson}=require('./imports');
 const snapshot=require('../../../data/legacy-watchlist.json');
 
 const uuid=value=>typeof value==='string'&&/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
@@ -91,6 +91,59 @@ async function importBatch(db,job) {
   }
   await db.rpc('source_add_metrics',{p_run:job.run_id,p_metrics:{import_rows:parsed.length,import_errors:parsed.filter(r=>r.error).length}});
 }
+// Processes one chunk of a Trusted External Ingestion batch (see
+// netlify/functions/source-intelligence-import.js). Each chunk is its own
+// API_IMPORT job -- reusing the same submitCandidate/enqueue this module
+// already uses for manual paste imports and discovery leads, so an
+// externally-submitted row gets identical normalization, duplicate
+// detection, quality scoring and verification queueing to a human-pasted
+// one. A batch may span several chunk jobs; each just updates its shared
+// import_batches row and the batch is complete once no API_IMPORT job for
+// its run remains queued/running/paused.
+async function importExternalBatch(db,job) {
+  const parsed=job.payload.sources?parseJson(job.payload.sources):parsePipe(job.payload.text);
+  const [batch]=await db.select('import_batches',{id:'eq.'+job.payload.batch_id});
+  if(!batch)return {skipped:'batch not found'};
+  const records=await registry(db),aliases=await db.all('source_aliases');
+  const counts={new_candidate:0,exact_duplicate:0,possible_duplicate:0,invalid:0,verification_queued:0};
+  const errors=[];
+  for(const item of parsed) {
+    const key=hash('api|'+job.payload.batch_id+'|'+job.id+'|'+item.line);
+    if(item.error){counts.invalid++;errors.push({line:item.line,error:item.error});
+      await db.upsert('source_import_rows',{import_key:key,origin:'api:'+batch.source_system,origin_id:job.payload.batch_id+':'+item.line,raw_row:item.raw,import_error:item.error},'import_key',true);
+      continue;
+    }
+    const {row,duplicate}=await submitCandidate(db,{...item.candidate,target_state:batch.state_code},{runId:job.run_id,method:'API_'+batch.source_system,observationKey:key,provenance:{batch_id:job.payload.batch_id,source_system:batch.source_system,line:item.line,raw:item.raw},records,aliases});
+    await db.upsert('source_import_rows',{import_key:key,origin:'api:'+batch.source_system,origin_id:job.payload.batch_id+':'+item.line,raw_row:item.raw,candidate_id:row.id},'import_key',true);
+    if(duplicate.outcome==='EXISTING')counts.exact_duplicate++;
+    else if(['POSSIBLE_DUPLICATE_REVIEW','MATERIAL_DISTINCT_TRACK'].includes(duplicate.outcome))counts.possible_duplicate++;
+    else counts.new_candidate++;
+    if(!['APPROVED','REJECTED','MERGED','UPDATED'].includes(row.status)){
+      counts.verification_queued++;
+      await enqueue(db,{kind:'VALIDATE',state:batch.state_code,key:'validate:'+row.id,runId:job.run_id,payload:{candidate_id:row.id,url:row.source_url,name:row.source_name}});
+    }
+  }
+  const [current]=await db.select('import_batches',{id:'eq.'+job.payload.batch_id});
+  const processedTotal=current.processed_count+parsed.length;
+  // Exclude this job's own row: the worker hasn't called source_finish_job yet,
+  // so it is still RUNNING here and would otherwise always count as "pending".
+  const pending=await db.select('source_jobs',{run_id:'eq.'+job.run_id,kind:'eq.API_IMPORT',status:'in.(QUEUED,RUNNING,PAUSED)'});
+  const allDone=pending.every(p=>p.id===job.id);
+  const invalidTotal=current.invalid_count+counts.invalid;
+  await db.patch('import_batches',{id:'eq.'+job.payload.batch_id},{
+    processed_count:processedTotal,
+    new_candidate_count:current.new_candidate_count+counts.new_candidate,
+    exact_duplicate_count:current.exact_duplicate_count+counts.exact_duplicate,
+    possible_duplicate_count:current.possible_duplicate_count+counts.possible_duplicate,
+    invalid_count:invalidTotal,
+    verification_queued_count:current.verification_queued_count+counts.verification_queued,
+    errors:[...(current.errors||[]),...errors].slice(0,200),
+    status:allDone?(invalidTotal>0?'PARTIALLY_COMPLETED':'VERIFICATION_QUEUED'):'RECEIVED',
+    completed_at:allDone?new Date().toISOString():null,
+  });
+  await db.rpc('source_add_metrics',{p_run:job.run_id,p_metrics:{import_rows:parsed.length,import_errors:counts.invalid}});
+  return {processed:parsed.length,done:allDone};
+}
 function reviewPayload(candidate) {
   const c=normalized(candidate.proposed);
   return {program:{...c,identity_key:identityKey(c),canonical_program_name:c.program_name},organization:c.organization_name?{identity_key:hash(c.website_domain+'|'+organizationSignature(c.organization_name)),canonical_name:c.organization_name,normalized_name:organizationSignature(c.organization_name),website_domain:c.website_domain,primary_url:new URL(c.source_url).origin}:null};
@@ -148,4 +201,4 @@ async function approveBacklog(db) {
   }
   return approved;
 }
-module.exports={uuid,registry,enqueue,corpus,seedRow,seedBatch,submitCandidate,importBatch,reviewPayload,publish,automaticallyApprove,tryAutomaticApproval,approveBacklog};
+module.exports={uuid,registry,enqueue,corpus,seedRow,seedBatch,submitCandidate,importBatch,importExternalBatch,reviewPayload,publish,automaticallyApprove,tryAutomaticApproval,approveBacklog};
