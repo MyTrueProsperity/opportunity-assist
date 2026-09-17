@@ -26,6 +26,9 @@ Apply these additive files to the existing Supabase project in order:
 1. `supabase/grant-factory/202609170001_grant_factory.sql`
 2. `supabase/grant-factory/202609170002_private_storage.sql`
 3. `supabase/grant-factory/202609170003_voice.sql`
+4. `supabase/grant-factory/20260917194455_grant_factory_security_hardening.sql`
+
+The fourth migration revokes explicit hosted anonymous function grants and pins the immutable-history trigger's search path. The authenticated role lookup remains intentionally callable for RLS and returns only the signed-in user's protected membership for the requested organization.
 
 They are separate from the historical Source Intelligence migration runner because that runner's test fixtures do not include the Opportunity Assist core schema. Apply them explicitly during this release. They require existing `organizations`, `profiles`, `opportunities`, Supabase Auth roles, and Supabase Storage.
 

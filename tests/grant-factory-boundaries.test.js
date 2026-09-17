@@ -10,6 +10,35 @@ const { extract } = require("../netlify/lib/grant-factory/documents");
 const { exportPackage } = require("../netlify/lib/grant-factory/export");
 const { makeHandler } = require("../netlify/functions/grant-factory");
 
+test("hosted default function grants do not expose Grant Factory to anonymous callers", async () => {
+  const f = await createTestRepo();
+  try {
+    const result = await f.pg.query(
+      `select proname, has_function_privilege('anon',p.oid,'EXECUTE') as anonymous_execute from pg_proc p join pg_namespace n on n.oid=p.pronamespace where n.nspname='public' and proname like 'gf_%'`,
+    );
+    assert.ok(result.rows.length >= 6);
+    assert.ok(result.rows.every((r) => !r.anonymous_execute));
+    const config = await f.pg.query(
+      "select proconfig from pg_proc where proname='gf_immutable'",
+    );
+    assert.deepEqual(config.rows[0].proconfig, ["search_path=public, pg_temp"]);
+    await f.pg.exec(
+      `begin;set local role authenticated;select set_config('request.jwt.claim.sub','${OWNER}',true)`,
+    );
+    assert.equal(
+      (await f.pg.query("select gf_role($1) as role", [ORG])).rows[0].role,
+      "OWNER",
+    );
+    assert.equal(
+      (await f.pg.query("select gf_role($1) as role", [OTHER])).rows[0].role,
+      null,
+    );
+    await f.pg.exec("rollback");
+  } finally {
+    await f.pg.close();
+  }
+});
+
 test("workspace selection preserves the primary organization and uses the selected protected role", async () => {
   const f = await createTestRepo();
   try {

@@ -30,6 +30,17 @@ async function createTestRepo() {
       "utf8",
     ),
   );
+  // Reproduce Supabase's explicit default function grants before hardening.
+  await pg.exec("grant execute on function public.gf_role(uuid) to anon;");
+  const hardening = fs.readFileSync(
+    path.join(
+      __dirname,
+      "../../supabase/grant-factory/20260917194455_grant_factory_security_hardening.sql",
+    ),
+    "utf8",
+  );
+  await pg.exec(hardening);
+  await pg.exec(hardening);
   await pg.exec(
     `insert into gf_workspaces(org_id) values('${ORG}'),('${OTHER}');insert into gf_members values('${ORG}','${OWNER}','OWNER'),('${ORG}','${MANAGER}','GRANT_MANAGER'),('${OTHER}','${OUTSIDER}','OWNER');`,
   );
