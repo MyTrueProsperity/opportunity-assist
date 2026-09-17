@@ -5,6 +5,8 @@ Public marketing landing page for **Opportunity Assist**, a My True Prosperity p
 
 Static HTML/CSS/JavaScript app with Supabase and Netlify functions. The public-file allowlist build publishes `dist`. Source Intelligence adds the canonical funding registry, discovery, review and state-by-state rollout.
 
+Grant Factory Phase 1 adds private organization facts, program records, document intake, grant drafting, evidence review and immutable submission history. See [architecture](docs/grant-factory-architecture.md) and [deployment / operating guide](docs/grant-factory-deployment.md). Its database setup and explicit executive/manager access are required before use. Institute seed data is delivered as a private import file and is excluded from this public repository.
+
 ## Structure
 ```
 opportunity-assist-site/

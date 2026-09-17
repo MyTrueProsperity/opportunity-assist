@@ -1,0 +1,364 @@
+{
+  "parse": {
+    "type": "object",
+    "properties": {
+      "funder_name": {
+        "type": ["string", "null"]
+      },
+      "grant_program_name": {
+        "type": ["string", "null"]
+      },
+      "application_cycle": {
+        "type": ["string", "null"]
+      },
+      "deadline": {
+        "type": ["string", "null"]
+      },
+      "funding_purpose": {
+        "type": "string"
+      },
+      "award_min": {
+        "type": ["number", "null"]
+      },
+      "award_max": {
+        "type": ["number", "null"]
+      },
+      "grant_period": {
+        "type": ["string", "null"]
+      },
+      "match_requirement": {
+        "type": ["string", "null"]
+      },
+      "allowable_costs": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "prohibited_costs": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "rubric_or_scoring": {
+        "type": ["string", "null"]
+      },
+      "eligible_applicants": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "eligible_geographies": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "parser_confidence": {
+        "type": "string",
+        "enum": ["HIGH", "MEDIUM", "LOW"]
+      },
+      "questions": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "section": {
+              "type": "string"
+            },
+            "question_number": {
+              "type": "string"
+            },
+            "question_text": {
+              "type": "string"
+            },
+            "source_locator": {
+              "type": "string"
+            },
+            "source_quote": {
+              "type": "string"
+            },
+            "question_type": {
+              "type": "string",
+              "enum": [
+                "NARRATIVE",
+                "NUMBER",
+                "DATE",
+                "YES_NO",
+                "MULTI_SELECT",
+                "UPLOAD",
+                "BUDGET",
+                "CERTIFICATION",
+                "SIGNATURE",
+                "OTHER"
+              ]
+            },
+            "required": {
+              "type": "boolean"
+            },
+            "limit_type": {
+              "type": "string",
+              "enum": [
+                "WORDS",
+                "CHARACTERS",
+                "CHARACTERS_WITH_SPACES",
+                "CHARACTERS_WITHOUT_SPACES",
+                "PAGES",
+                "NONE",
+                "ADVISORY"
+              ]
+            },
+            "limit_value": {
+              "type": ["integer", "null"]
+            },
+            "spaces_count": {
+              "type": ["boolean", "null"]
+            },
+            "question_category": {
+              "type": "string"
+            },
+            "rubric_text": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "question_text",
+            "source_locator",
+            "source_quote",
+            "question_type",
+            "required",
+            "limit_type"
+          ]
+        }
+      },
+      "eligibility": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "rule": {
+              "type": "string"
+            },
+            "source_locator": {
+              "type": "string"
+            },
+            "source_quote": {
+              "type": "string"
+            },
+            "fact_key": {
+              "type": ["string", "null"]
+            },
+            "operator": {
+              "type": "string",
+              "enum": ["EXACT", "REVIEW"]
+            },
+            "expected_value": {
+              "type": ["string", "null"]
+            },
+            "commitment": {
+              "type": "boolean"
+            }
+          },
+          "required": ["rule", "source_locator", "source_quote"]
+        }
+      },
+      "attachments": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "title": {
+              "type": "string"
+            },
+            "source_locator": {
+              "type": "string"
+            },
+            "source_quote": {
+              "type": "string"
+            },
+            "required": {
+              "type": "boolean"
+            }
+          },
+          "required": ["title", "source_locator", "source_quote", "required"]
+        }
+      },
+      "warnings": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      }
+    },
+    "required": ["questions", "eligibility", "attachments", "warnings"]
+  },
+  "strategy": {
+    "type": "object",
+    "properties": {
+      "primary_case": {
+        "type": "string"
+      },
+      "funder_priorities": {
+        "type": "string"
+      },
+      "alignment_points": {
+        "type": "string"
+      },
+      "themes_to_emphasize": {
+        "type": "string"
+      },
+      "themes_to_deemphasize": {
+        "type": "string"
+      },
+      "likely_funding_use": {
+        "type": "string"
+      },
+      "evidence_gaps": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "primary_case",
+      "funder_priorities",
+      "alignment_points",
+      "themes_to_emphasize",
+      "themes_to_deemphasize",
+      "likely_funding_use",
+      "evidence_gaps"
+    ]
+  },
+  "write": {
+    "type": "object",
+    "properties": {
+      "status": {
+        "type": "string",
+        "enum": ["DRAFTED", "NEEDS_USER_INPUT"]
+      },
+      "answer": {
+        "type": "string"
+      },
+      "evidence_ids": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "missing_information": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "warnings": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      }
+    },
+    "required": [
+      "status",
+      "answer",
+      "evidence_ids",
+      "missing_information",
+      "warnings"
+    ]
+  },
+  "audit": {
+    "type": "object",
+    "properties": {
+      "coverage_complete": {
+        "type": "boolean"
+      },
+      "claims": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "claim": {
+              "type": "string"
+            },
+            "status": {
+              "type": "string",
+              "enum": [
+                "SUPPORTED",
+                "PROJECTED_CORRECTLY_STATED",
+                "OVERSTATED",
+                "UNSUPPORTED",
+                "CONFLICTED"
+              ]
+            },
+            "reason": {
+              "type": "string"
+            },
+            "evidence_ids": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "required": ["claim", "status", "reason", "evidence_ids"]
+        }
+      }
+    },
+    "required": ["coverage_complete", "claims"]
+  },
+  "extract_facts": {
+    "type": "object",
+    "properties": {
+      "facts": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "fact_key": {
+              "type": "string"
+            },
+            "display_name": {
+              "type": "string"
+            },
+            "value": {
+              "type": "string"
+            },
+            "source_locator": {
+              "type": "string"
+            },
+            "source_quote": {
+              "type": "string"
+            },
+            "confidence": {
+              "type": "string",
+              "enum": ["HIGH", "MEDIUM", "LOW"]
+            },
+            "temporal_context": {
+              "type": "string",
+              "enum": ["CURRENT", "HISTORICAL", "PLANNED", "UNKNOWN"]
+            },
+            "notes": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "fact_key",
+            "display_name",
+            "value",
+            "source_locator",
+            "source_quote",
+            "confidence",
+            "temporal_context"
+          ]
+        }
+      },
+      "warnings": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      }
+    },
+    "required": ["facts", "warnings"]
+  }
+}
