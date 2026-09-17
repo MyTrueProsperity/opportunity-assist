@@ -5,7 +5,7 @@ import os from 'node:os';
 import {execFileSync} from 'node:child_process';
 const results=await zipFunctions('netlify/functions','work/function-bundles',{basePath:process.cwd(),config:{'*':{nodeBundler:'esbuild',nodeVersion:'22',externalNodeModules:['pdfjs-dist','@napi-rs/canvas'],includedFiles:['data/legacy-watchlist.json','node_modules/@napi-rs/canvas-linux-x64-gnu/**']}}});
 for(const r of results)console.log(r.name+': '+path.basename(r.path));
-if(results.length!==13)throw new Error('Expected all 13 production functions');
+if(results.length!==15)throw new Error('Expected all 15 production functions');
 // Exercise the archived dependencies outside the checkout: installed development
 // dependencies must not mask a native binary missing from the deployed function.
 if(process.platform==='linux'&&process.arch==='x64'){
