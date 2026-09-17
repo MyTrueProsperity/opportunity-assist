@@ -22,6 +22,10 @@ async function handle(event,db=createDb()) {
     const q=event.queryStringParameters||{};
     if(q.view==='import_progress'){if(q.state)checkState(q.state);return json(200,await db.rpc('source_import_progress',{p_state:q.state||null}));}
     if(q.view==='bootstrap'||!q.view){const [settings,states]=await Promise.all([db.select('source_engine_settings'),db.select('source_state_settings',{order:'state_name'})]);return json(200,{engine:settings[0],states,categories:Object.keys(CATEGORIES),source_types:SOURCE_TYPES,reasons:REASONS});}
+    // Admin-facing credential management (self-service issuance/revocation of
+    // Trusted External Ingestion API tokens). Never selects token_hash; the
+    // plaintext token itself is returned exactly once, from create_credential below.
+    if(q.view==='credentials'){const rows=await db.select('api_credentials',{select:'id,name,source_system,status,token_prefix,max_batch_size,daily_source_limit,rate_limit_per_minute,created_at,last_used_at,last_successful_submission_at,revoked_at',order:'created_at.desc'});return json(200,{rows});}
     if(q.view==='export'){const rows=await registry(db);const data=exportRegistry(rows,q.format||'csv');return {statusCode:200,headers:{'Content-Type':q.format==='pipe'?'text/plain; charset=utf-8':'text/csv; charset=utf-8','Content-Disposition':'attachment; filename="opportunity-assist-sources.'+(q.format==='pipe'?'txt':'csv')+'"','Cache-Control':'no-store'},body:data};}
     if(q.view==='coverage_matrix'){checkState(q.state);return json(200,{rows:await db.all('source_coverage',{state_code:'eq.'+q.state,select:'*,source_geographies(name,kind)'})});}
     if(q.view==='detail'){
@@ -95,6 +99,30 @@ async function handle(event,db=createDb()) {
     }
     await db.patch('import_batches',{id:'eq.'+batchRow.id},{run_id:runId});
     return json(202,{batch_id:batchRow.id});
+  }
+  if(b.action==='create_credential'){
+    if(!b.name||typeof b.name!=='string'||!b.name.trim())throw new HttpError(400,'A name is required.');
+    const validSystems=['CHATGPT','CLAUDE','OA_DISCOVERY_AGENT','OTHER'];
+    if(!validSystems.includes(b.source_system))throw new HttpError(400,'source_system must be one of '+validSystems.join(', ')+'.');
+    const maxBatch=b.max_batch_size!=null?Number(b.max_batch_size):500;
+    const dailyLimit=b.daily_source_limit!=null?Number(b.daily_source_limit):2000;
+    const rateLimit=b.rate_limit_per_minute!=null?Number(b.rate_limit_per_minute):30;
+    if(!Number.isFinite(maxBatch)||maxBatch<1||maxBatch>5000)throw new HttpError(400,'Max sources per batch must be between 1 and 5000.');
+    if(!Number.isFinite(dailyLimit)||dailyLimit<1)throw new HttpError(400,'Max sources per day must be a positive number.');
+    if(!Number.isFinite(rateLimit)||rateLimit<1)throw new HttpError(400,'Requests per minute must be a positive number.');
+    const {generateToken}=require('../lib/source-intelligence/credentials');
+    const {token,tokenHash,tokenPrefix}=generateToken();
+    const [row]=await db.insert('api_credentials',{name:b.name.trim().slice(0,200),source_system:b.source_system,token_hash:tokenHash,token_prefix:tokenPrefix,max_batch_size:maxBatch,daily_source_limit:dailyLimit,rate_limit_per_minute:rateLimit,created_by:actor});
+    await db.insert('source_review_decisions',{actor_id:actor,action:'CREDENTIAL_CREATED',notes:row.name+' ('+row.source_system+')'});
+    // The only response that will ever carry the plaintext token; only its hash is stored.
+    return json(201,{credential:{id:row.id,name:row.name,source_system:row.source_system,token_prefix:row.token_prefix},token});
+  }
+  if(b.action==='revoke_credential'){
+    if(!uuid(b.credential_id))throw new HttpError(400,'Invalid credential.');
+    const [row]=await db.patch('api_credentials',{id:'eq.'+b.credential_id,status:'eq.active'},{status:'revoked',revoked_at:new Date().toISOString()});
+    if(!row)throw new HttpError(404,'Credential not found or already revoked.');
+    await db.insert('source_review_decisions',{actor_id:actor,action:'CREDENTIAL_REVOKED',notes:row.name});
+    return json(200,{ok:true});
   }
   if(b.action==='discover'){
     checkState(b.state);const [s]=await db.select('source_state_settings',{state_code:'eq.'+b.state});const [e]=await db.select('source_engine_settings',{id:'eq.true'});
