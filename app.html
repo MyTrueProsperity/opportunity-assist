@@ -282,7 +282,7 @@ window.OA_CONFIG = {
       .catch(function () { state.isAdmin = false; });
   }
   function loadContracts() {
-    return sb.from("contracts").select("*").order("end_date", { ascending: true })
+    return sb.from("contracts").select("*").order("renewal_date", { ascending: true })
       .then(function (r) { state.contracts = r.data || []; });
   }
   function loadAlertRules() {
@@ -312,24 +312,32 @@ window.OA_CONFIG = {
       return r;
     });
   }
-  function ensureFitScores() {
+  // Fast, synchronous, local-only estimate -- safe to call before the shell
+  // has rendered, since it touches no DOM and makes no network calls.
+  function applyLocalFitEstimates() {
     var missingIds = state.opps.filter(function (o) { return !state.fit[o.id]; }).map(function (o) { return o.id; });
-    if (!missingIds.length) return Promise.resolve();
-
-    // Instant local estimate so the Funding Radar isn't empty while the real AI score loads.
     missingIds.forEach(function (id) {
       var o = state.opps.filter(function (x) { return x.id === id; })[0];
       state.fit[id] = computeFit(state.org, o);
     });
+    return missingIds;
+  }
+
+  // Kicks off the real, paid AI scoring for whatever's still missing a real
+  // score, in the background. Callers must NOT await this before rendering
+  // the shell -- scoreChunk()'s success/failure handlers call paint(), which
+  // needs #main to already exist. Safe to call fire-and-forget from boot().
+  function fetchRealFitScores(missingIds) {
+    if (!missingIds.length) return Promise.resolve();
 
     // Guests, and orgs without an active subscription, get the free estimate only --
     // never a paid AI call. The server enforces this too; this just saves the round trip.
     if (state.user.is_anonymous || !isSubscribed()) {
-      missingIds.forEach(function (id) { state.fit[id].paywalled = true; });
+      missingIds.forEach(function (id) { if (state.fit[id]) state.fit[id].paywalled = true; });
       return Promise.resolve();
     }
 
-    missingIds.forEach(function (id) { state.fit[id].pending = true; });
+    missingIds.forEach(function (id) { if (state.fit[id]) state.fit[id].pending = true; });
 
     return sb.auth.getSession().then(function (s) {
       var token = s.data.session && s.data.session.access_token;
@@ -341,6 +349,15 @@ window.OA_CONFIG = {
       }, Promise.resolve());
     });
   }
+
+  // Combines both steps for call sites where blocking is actually fine --
+  // #main already exists, so scoreChunk()'s paint() calls are safe. boot()
+  // does NOT use this; it calls the two halves separately (see below).
+  function ensureFitScores() {
+    var missingIds = applyLocalFitEstimates();
+    return fetchRealFitScores(missingIds);
+  }
+
 
   function scoreChunk(ids, token) {
     return fetch("/.netlify/functions/score-opportunities", {
@@ -609,7 +626,7 @@ window.OA_CONFIG = {
     var needsDecision = needsDecisionList();
     var closing = state.opps.filter(function (o) { var d = daysUntil(o.deadline); return d != null && d >= 0 && d <= 30; })
       .sort(function (a, b) { return new Date(a.deadline) - new Date(b.deadline); }).slice(0, 5);
-    var renewing = state.contracts.filter(function (c) { var d = daysUntil(c.end_date); return d != null && d >= 0 && d <= 60; }).length;
+    var renewing = state.contracts.filter(function (c) { var d = daysUntil(c.renewal_date); return d != null && d >= 0 && d <= 60; }).length;
     var alertMatches = state.alertRules.reduce(function (sum, rule) { return sum + state.opps.filter(function (o) { return matchesRule(rule, o); }).length; }, 0);
 
     main.innerHTML =
@@ -1015,21 +1032,22 @@ window.OA_CONFIG = {
 
   /* ---------- contract watch ---------- */
   function renderContracts(main) {
-    var rows = state.contracts.slice().sort(function (a, b) { return new Date(a.end_date || "2999") - new Date(b.end_date || "2999"); });
+    var rows = state.contracts.slice().sort(function (a, b) { return new Date(a.renewal_date || "2999") - new Date(b.renewal_date || "2999"); });
     main.innerHTML =
       '<div class="topbar"><div><h1>Contract Watch</h1><p class="sub">Track renewal dates on contracts you already hold</p></div><button class="btn btn-primary" id="cAdd">Add contract</button></div>' +
       (rows.length ? '<div class="opp-list" id="cList"></div>' : '<div class="empty">No contracts tracked yet. Add one to get renewal visibility.</div>');
     if (rows.length) {
       var wrap = main.querySelector("#cList");
       rows.forEach(function (c) {
-        var d = daysUntil(c.end_date);
+        var d = daysUntil(c.renewal_date);
         var row = el(
           '<div class="opp">' +
-          '<div><h3>' + esc(c.title) + "</h3>" +
-          '<div class="meta"><span class="tag">' + esc(c.agency || "—") + "</span>" +
-          (c.contract_number ? "<span>#" + esc(c.contract_number) + "</span>" : "") +
-          (c.value ? "<span>" + money(c.value) + "</span>" : "") +
+          '<div><h3>' + esc(c.name) + "</h3>" +
+          '<div class="meta">' +
+          (c.status ? '<span class="tag">' + esc(c.status) + "</span>" : "") +
+          (c.incumbent ? "<span>Incumbent: " + esc(c.incumbent) + "</span>" : "") +
           (d != null ? "<span>" + (d < 0 ? "Expired" : "Renews in " + d + " days") + "</span>" : "") +
+          (c.expected_rebid ? "<span>Expected rebid: " + esc(c.expected_rebid) + "</span>" : "") +
           "</div>" +
           (c.notes ? '<p class="summary">' + esc(c.notes) + "</p>" : "") +
           "</div>" +
@@ -1053,31 +1071,29 @@ window.OA_CONFIG = {
       '<span class="back" id="cBack">← Back to Contract Watch</span>' +
       '<div class="topbar"><div><h1>Add contract</h1></div></div>' +
       '<div class="card" style="max-width:680px"><form id="cForm">' +
-      field("c_title", "Contract title *", "") +
-      '<div class="two-col">' + field("c_agency", "Agency / funder", "") + field("c_number", "Contract number", "") + "</div>" +
-      '<div class="two-col">' + field("c_start", "Start date", "") + field("c_end", "End / renewal date", "") + "</div>" +
-      field("c_value", "Contract value", "") +
+      field("c_name", "Contract name *", "") +
+      '<div class="two-col">' + field("c_incumbent", "Incumbent contractor", "") + field("c_status", "Status", "") + "</div>" +
+      '<div class="two-col">' + field("c_renewal", "Renewal date", "") + field("c_rebid", "Expected rebid date", "") + "</div>" +
       area("c_notes", "Notes", "") +
       '<div id="cMsg"></div>' +
       '<button class="btn btn-primary" type="submit">Save contract</button>' +
       "</form></div>";
-    main.querySelector("#c_start").type = "date";
-    main.querySelector("#c_end").type = "date";
+    main.querySelector("#c_renewal").type = "date";
+    main.querySelector("#c_rebid").type = "date";
     main.querySelector("#cBack").addEventListener("click", function () { renderContracts(main); });
     main.querySelector("#cForm").addEventListener("submit", function (e) {
       e.preventDefault();
       var msg = main.querySelector("#cMsg");
       var payload = {
         org_id: state.org.id,
-        title: main.querySelector("#c_title").value.trim(),
-        agency: main.querySelector("#c_agency").value.trim(),
-        contract_number: main.querySelector("#c_number").value.trim(),
-        start_date: main.querySelector("#c_start").value || null,
-        end_date: main.querySelector("#c_end").value || null,
-        value: main.querySelector("#c_value").value ? Number(main.querySelector("#c_value").value) : null,
+        name: main.querySelector("#c_name").value.trim(),
+        incumbent: main.querySelector("#c_incumbent").value.trim(),
+        status: main.querySelector("#c_status").value.trim(),
+        renewal_date: main.querySelector("#c_renewal").value || null,
+        expected_rebid: main.querySelector("#c_rebid").value || null,
         notes: main.querySelector("#c_notes").value.trim()
       };
-      if (!payload.title) { msg.innerHTML = '<p class="error">Contract title is required.</p>'; return; }
+      if (!payload.name) { msg.innerHTML = '<p class="error">Contract name is required.</p>'; return; }
       sb.from("contracts").insert(payload).select().single().then(function (r) {
         if (r.error) { msg.innerHTML = '<p class="error">' + esc(r.error.message) + "</p>"; return; }
         state.contracts.push(r.data);
@@ -1326,8 +1342,10 @@ window.OA_CONFIG = {
           if (orgR.error || !orgR.data) { renderOnboarding(); return; }
           state.org = orgR.data;
           return Promise.all([loadOpps(), loadFitScores(), loadPipeline(), loadSubscription(), loadContracts(), loadAlertRules(), loadFoundationLeads(), loadAdminStatus(), loadRequirements(), loadPursueDecisions()]).then(function () {
-            return ensureFitScores();
-          }).then(function () { renderShell(); });
+            var missingIds = applyLocalFitEstimates();
+            renderShell();
+            fetchRealFitScores(missingIds);
+          });
         });
       });
     }).catch(function (err) {
