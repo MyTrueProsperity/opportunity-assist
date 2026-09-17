@@ -1,11 +1,18 @@
 'use strict';
 const {createDb,HttpError}=require('../lib/source-intelligence/db');
 const {STATES,CATEGORIES,SOURCE_TYPES,REASONS}=require('../lib/source-intelligence/config');
-const {parsePipe,exportRegistry}=require('../lib/source-intelligence/imports');
+const {parsePipe,parseJson,exportRegistry}=require('../lib/source-intelligence/imports');
 const {uuid,registry,enqueue,reviewPayload,publish}=require('../lib/source-intelligence/service');
-const {normalizeUrl}=require('../lib/source-intelligence/identity');
+const {normalizeUrl,compareCandidate}=require('../lib/source-intelligence/identity');
 const json=(statusCode,data)=>({statusCode,headers:{'Content-Type':'application/json','Cache-Control':'no-store'},body:JSON.stringify(data)});
-const tables={queue:'source_candidates',duplicates:'source_candidates',rejected:'source_candidates',registry:'funding_programs',health:'funding_programs',coverage:'source_coverage',runs:'source_discovery_runs',decisions:'source_review_decisions',imports:'source_import_rows',jobs:'source_jobs'};
+// import_batches is the same status/count row the Trusted External Ingestion API
+// uses (netlify/functions/source-intelligence-import.js); a CSV upload here is
+// just another source_system for that same table, so a human admin's file and
+// an external AI's submission share one history view.
+const tables={queue:'source_candidates',duplicates:'source_candidates',rejected:'source_candidates',registry:'funding_programs',health:'funding_programs',coverage:'source_coverage',runs:'source_discovery_runs',decisions:'source_review_decisions',imports:'source_import_rows',jobs:'source_jobs',batches:'import_batches'};
+const CSV_PREVIEW_LIMIT=1000;
+const CSV_IMPORT_LIMIT=5000;
+const CSV_CHUNK_SIZE=500;
 function checkState(state){if(!STATES[state])throw new HttpError(400,'Select a valid state');return state;}
 async function handle(event,db=createDb()) {
   if(!['GET','POST'].includes(event.httpMethod))return json(405,{error:'Method not allowed'});
@@ -61,6 +68,33 @@ async function handle(event,db=createDb()) {
   if(b.action==='import'){
     checkState(b.state);const rows=parsePipe(b.text);if(!rows.length||rows.length>100)throw new HttpError(400,'Import requires 1–100 rows');
     const {hash}=require('../lib/source-intelligence/identity');return json(202,{job:await enqueue(db,{kind:'IMPORT',state:b.state,actor,key:'import:'+b.state+':'+hash(b.text),payload:{text:b.text}})});
+  }
+  // The other half of Part 15 (CSV/file import): the browser parses and
+  // column-maps the uploaded file (assets/source-intelligence.js), then sends
+  // plain {source_name,url,source_type?,geography?,keywords?} objects here --
+  // the exact same shape the Trusted External Ingestion API accepts, so both
+  // reuse parseJson/compareCandidate/enqueue rather than a second pipeline.
+  if(b.action==='csv_preview'){
+    checkState(b.state);
+    if(!Array.isArray(b.sources)||!b.sources.length)throw new HttpError(400,'No rows to preview.');
+    if(b.sources.length>CSV_PREVIEW_LIMIT)throw new HttpError(400,'Preview supports at most '+CSV_PREVIEW_LIMIT+' rows; queue the import to process a larger file.');
+    const parsed=parseJson(b.sources);
+    const existing=await registry(db),aliases=await db.all('source_aliases');
+    return json(200,{rows:parsed.map(r=>r.error?r:{...r,duplicate:compareCandidate(r.candidate,existing,aliases)})});
+  }
+  if(b.action==='csv_import'){
+    checkState(b.state);
+    if(!Array.isArray(b.sources)||!b.sources.length)throw new HttpError(400,'No rows to import.');
+    if(b.sources.length>CSV_IMPORT_LIMIT)throw new HttpError(400,'A single file import supports at most '+CSV_IMPORT_LIMIT+' rows.');
+    const [batchRow]=await db.insert('import_batches',{source_system:'CSV_IMPORT',batch_name:(b.batch_name||'').slice(0,200)||null,submitted_by:actor,mode:'QUEUE',state_code:b.state,submitted_count:b.sources.length});
+    let runId=null;
+    for(let i=0;i<b.sources.length;i+=CSV_CHUNK_SIZE){
+      const chunk=b.sources.slice(i,i+CSV_CHUNK_SIZE);
+      const job=await enqueue(db,{kind:'API_IMPORT',state:b.state,actor,runId,key:'csv-import:'+batchRow.id+':'+i,payload:{batch_id:batchRow.id,sources:chunk}});
+      if(!runId)runId=job.run_id;
+    }
+    await db.patch('import_batches',{id:'eq.'+batchRow.id},{run_id:runId});
+    return json(202,{batch_id:batchRow.id});
   }
   if(b.action==='discover'){
     checkState(b.state);const [s]=await db.select('source_state_settings',{state_code:'eq.'+b.state});const [e]=await db.select('source_engine_settings',{id:'eq.true'});
