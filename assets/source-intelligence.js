@@ -14,6 +14,25 @@
   function field(k,v){return '<div><span>'+esc(k)+'</span>'+esc(v==null||v===''?'Unknown':Array.isArray(v)?v.join(', '):v)+'</div>';}
   function choices(values,selected){return values.map(function(v){var a=Array.isArray(v)?v:[v,label(v)];return '<option value="'+esc(a[0])+'"'+(a[0]===selected?' selected':'')+'>'+esc(a[1])+'</option>';}).join('');}
   function evidence(e){return Object.keys(e||{}).map(function(k){return '<div class="si-evidence"><strong>'+esc(label(k))+'</strong><br>“'+esc(e[k].quote||'')+'”'+link(e[k].url,'Source')+'</div>';}).join('')||'<p class="si-muted">No verified excerpts yet. Verify the page before approval.</p>';}
+  // CSV/file import (Part 15). A minimal RFC4180-ish parser: quoted fields may
+  // contain commas, embedded newlines and doubled "" as an escaped quote.
+  // Blank/whitespace-only lines are dropped rather than becoming empty rows.
+  function parseCsv(text){
+    var rows=[],row=[],field='',inQuotes=false,i=0,len=text.length;
+    while(i<len){var c=text[i];
+      if(inQuotes){if(c==='"'){if(text[i+1]==='"'){field+='"';i+=2;continue;}inQuotes=false;i++;continue;}field+=c;i++;continue;}
+      if(c==='"'){inQuotes=true;i++;continue;}
+      if(c===','){row.push(field);field='';i++;continue;}
+      if(c==='\r'){i++;continue;}
+      if(c==='\n'){row.push(field);rows.push(row);row=[];field='';i++;continue;}
+      field+=c;i++;
+    }
+    if(field.length||row.length){row.push(field);rows.push(row);}
+    return rows.filter(function(r){return r.length>1||(r[0]||'').trim()!=='';});
+  }
+  var CSV_TARGET_FIELDS=[['source_name','Source name',true],['url','URL',true],['source_type','Source type',false],['geography','Geography',false],['keywords','Keywords',false]];
+  var CSV_GUESS_PATTERNS={source_name:/name|title|organization/i,url:/url|website|link/i,source_type:/type|category/i,geography:/geograph|location|area|state|region/i,keywords:/keyword|tag/i};
+  function guessCsvColumn(headers,key){return headers.findIndex(function(h){return CSV_GUESS_PATTERNS[key].test(h);});}
   async function render(){var ticket=++requestId;try{boot=await api({view:'bootstrap'});if(ticket!==requestId)return;
     root.innerHTML='<section class="si"><div class="si-head"><div><div class="si-eyebrow">Opportunity Assist / Admin</div><h1>Source Intelligence</h1><div class="si-muted">'+(boot.engine.automatic_approval_enabled?'Automatic approval · confirmed duplicates link to existing records':'Manual approval · verified sources await a decision')+'</div></div><button id="si-refresh" class="btn btn-ghost btn-sm">Refresh</button></div>'+
       '<div class="si-banner"><div><strong>'+ (boot.engine.engine_enabled?'Engine enabled':'Engine paused')+'</strong> · '+(boot.engine.seed_completed_at?'Corpus reconciled '+date(boot.engine.seed_completed_at):'Corpus import required')+'</div><div>'+ (boot.engine.florida_validated_at?'Florida pilot reviewed · additional states can be enabled individually':'Florida pilot · other states remain locked')+'</div><button id="si-process" class="btn btn-ghost btn-sm">Process queued work now</button></div><div id="si-notice" hidden role="status"></div>'+
@@ -72,14 +91,71 @@
     var f=content.querySelector('#si-state-form');f.onsubmit=async function(e){e.preventDefault();try{await action({action:'state',state:s.state_code,patch:{discovery_enabled:f.elements.discovery.checked,monitoring_enabled:f.elements.monitoring.checked,publication_enabled:f.elements.publication.checked,daily_query_limit:Number(f.elements.queries.value),daily_page_limit:Number(f.elements.pages.value),daily_budget_usd:Number(f.elements.budget.value),categories:Array.from(f.querySelectorAll('[name=category]:checked')).map(function(x){return x.value;})}},f.querySelector('button'));await render();}catch(e){}};
     var g=content.querySelector('#si-geo');g.onsubmit=async function(e){e.preventDefault();try{await action({action:'geography',state:s.state_code,kind:g.elements.kind.value,name:g.elements.name.value,notes:g.elements.notes.value},g.querySelector('button'));g.reset();}catch(e){}};
   }
-  function renderImport(){var content=root.querySelector('#si-content');content.innerHTML='<div class="si-panel"><h2>Human-discovered sources</h2><p class="si-muted">Paste up to 100 rows. The preview checks the complete registry. Automatic approval applies after source verification; confirmed duplicates link to existing records.</p><label for="si-import">SOURCE NAME|URL|SOURCE_TYPE|GEOGRAPHY|KEYWORDS</label><textarea id="si-import" rows="9" placeholder="Source name|https://example.org/grants|COMMUNITY_FOUNDATION_GRANT|Florida|youth, education"></textarea><div class="row" style="margin-top:14px"><button id="si-preview" class="btn btn-ghost btn-sm">Preview and check duplicates</button><button id="si-import-save" class="btn btn-primary btn-sm" disabled>Queue import for verification</button></div><div id="si-preview-result"></div></div><section class="si-panel" style="margin-top:18px"><h2>Export canonical registry</h2><p class="si-muted">New file imports appear here after verification and automatic approval. Confirmed duplicates reuse an existing record, so they do not increase the total. Imported files waiting for checks are shown in the progress panel above.</p><div class="row"><button data-export="csv" class="btn btn-ghost btn-sm">Download CSV</button><button data-export="pipe" class="btn btn-ghost btn-sm">Download pipe format</button></div></section>';
-    var progress=document.createElement('section');progress.className='si-panel';progress.style.marginTop='18px';content.insertBefore(progress,content.lastElementChild);
+  function renderImport(){var content=root.querySelector('#si-content');content.innerHTML='<div class="si-panel"><h2>Human-discovered sources</h2><p class="si-muted">Paste up to 100 rows. The preview checks the complete registry. Automatic approval applies after source verification; confirmed duplicates link to existing records.</p><label for="si-import">SOURCE NAME|URL|SOURCE_TYPE|GEOGRAPHY|KEYWORDS</label><textarea id="si-import" rows="9" placeholder="Source name|https://example.org/grants|COMMUNITY_FOUNDATION_GRANT|Florida|youth, education"></textarea><div class="row" style="margin-top:14px"><button id="si-preview" class="btn btn-ghost btn-sm">Preview and check duplicates</button><button id="si-import-save" class="btn btn-primary btn-sm" disabled>Queue import for verification</button></div><div id="si-preview-result"></div></div>'+
+      '<section class="si-panel" style="margin-top:18px"><h2>Upload a CSV file</h2><p class="si-muted">For larger files than the paste box holds. Choose a file, confirm which column is which, then preview and queue -- the same duplicate checks and verification queue as above. Expected columns: source name, URL, source type, geography, keywords (any header names; you map them below).</p><input type="file" id="si-csv-file" accept=".csv,text/csv"><div id="si-csv-mapping"></div><div id="si-csv-preview-result"></div></section>'+
+      '<section class="si-panel" style="margin-top:18px"><h2>Export canonical registry</h2><p class="si-muted">New file imports appear here after verification and automatic approval. Confirmed duplicates reuse an existing record, so they do not increase the total. Imported files waiting for checks are shown in the progress panel above.</p><div class="row"><button data-export="csv" class="btn btn-ghost btn-sm">Download CSV</button><button data-export="pipe" class="btn btn-ghost btn-sm">Download pipe format</button></div></section>'+
+      '<section class="si-panel" style="margin-top:18px"><h2>Recent import batches</h2><p class="si-muted">Every file upload and trusted external AI submission, whether still processing or complete.</p><div id="si-batches"><p class="si-progress">Loading…</p></div></section>';
+    var progress=document.createElement('section');progress.className='si-panel';progress.style.marginTop='18px';content.insertBefore(progress,content.children[1]);
     async function refreshProgress(){try{var p=await api({view:'import_progress',state:state||''});if(!progress.isConnected)return;progress.innerHTML='<h2>Import progress</h2><p class="si-muted">Saving a file does not use the AI-provider allowance. Website verification uses the daily allowance. Refresh this panel to see processing progress.</p><div class="si-meta">'+field('Batches waiting',p.imports_queued)+field('Batches importing',p.imports_running)+field('Batches imported',p.imports_completed)+field('Batches needing attention',p.imports_failed)+field('File rows saved',p.rows_staged)+field('Invalid file rows',p.invalid_rows)+field('Website checks queued / running',p.verification_queued)+field('Website checks waiting for budget',p.verification_budget_paused)+field('Approval errors awaiting retry',p.approval_errors)+field('Total registry records',p.registry_total)+'</div><p>Today: $'+Number(p.global_reserved_usd).toFixed(2)+' reserved against the $'+Number(p.global_budget_usd).toFixed(2)+' global allowance. This is a conservative reservation, not a confirmed provider bill. The allowance resets '+esc(new Date(p.budget_resets_at).toLocaleString())+'.</p><button class="btn btn-ghost btn-sm" data-progress-refresh>Refresh import progress</button><p class="si-muted">Discovery runs shows individual batch errors. The registry export includes registered sources; new file rows still awaiting verification are not included.</p>';progress.querySelector('[data-progress-refresh]').onclick=refreshProgress;}catch(e){progress.textContent='Could not load import progress: '+e.message;}}
     refreshProgress();
     var input=content.querySelector('#si-import'),save=content.querySelector('#si-import-save'),previewText='';input.oninput=function(){save.disabled=true;};
     content.querySelector('#si-preview').onclick=async function(){try{var r=await action({action:'import_preview',state:state||'FL',text:input.value},this);previewText=input.value;content.querySelector('#si-preview-result').innerHTML=table(['Line','Source','Outcome'],r.rows.map(function(row){return [String(row.line),esc(row.candidate?.source_name||row.raw),row.error?'<span class="error">'+esc(row.error)+'</span>':badge(row.duplicate.outcome)];}));save.disabled=!r.rows.length;}catch(e){}};
     save.onclick=async function(){if(input.value!==previewText){save.disabled=true;return;}try{await action({action:'import',state:state||'FL',text:input.value},save);save.disabled=true;await refreshProgress();}catch(e){}};
     content.querySelectorAll('[data-export]').forEach(function(b){b.onclick=async function(){b.disabled=true;try{var r=await fetch('/.netlify/functions/source-intelligence-admin?view=export&format='+b.dataset.export,{headers:{Authorization:'Bearer '+await token()}});if(!r.ok)throw new Error('Export failed');var url=URL.createObjectURL(await r.blob()),a=document.createElement('a');a.href=url;a.download='opportunity-assist-sources.'+(b.dataset.export==='csv'?'csv':'txt');a.click();setTimeout(function(){URL.revokeObjectURL(url);},1000);}catch(e){notice(e.message,true);}finally{b.disabled=false;}};});
+    // CSV upload: parse client-side, let the admin confirm the column mapping,
+    // then preview/queue through the exact same csv_preview/csv_import actions
+    // (server-side reuse of parseJson + submitCandidate -- see the admin function).
+    var csvHeaders=[],csvDataRows=[],csvMapping={},csvSources=[],csvFileName=null;
+    function renderCsvMapping(){
+      var box=content.querySelector('#si-csv-mapping');
+      if(!csvHeaders.length){box.innerHTML='';return;}
+      box.innerHTML='<form id="si-csv-map-form" style="margin-top:14px">'+CSV_TARGET_FIELDS.map(function(f){
+        var options='<option value="">-- none --</option>'+csvHeaders.map(function(h,i){return '<option value="'+i+'"'+(csvMapping[f[0]]===i?' selected':'')+'>'+esc(h)+'</option>';}).join('');
+        return '<label>'+esc(f[1])+(f[2]?' *':'')+'<select name="'+f[0]+'"'+(f[2]?' required':'')+'>'+options+'</select></label>';
+      }).join('')+'<div class="row" style="margin-top:14px"><button type="submit" class="btn btn-ghost btn-sm">Preview and check duplicates</button><button type="button" id="si-csv-import-save" class="btn btn-primary btn-sm" disabled>Queue import for verification</button></div></form>';
+      var mapForm=box.querySelector('#si-csv-map-form'),saveBtn=box.querySelector('#si-csv-import-save');
+      mapForm.onsubmit=async function(e){
+        e.preventDefault();
+        CSV_TARGET_FIELDS.forEach(function(f){var v=mapForm.elements[f[0]].value;csvMapping[f[0]]=v===''?-1:Number(v);});
+        csvSources=csvDataRows.map(function(cells){var obj={};CSV_TARGET_FIELDS.forEach(function(f){var idx=csvMapping[f[0]];if(idx>-1&&cells[idx]!=null){var val=cells[idx].trim();if(val)obj[f[0]]=val;}});return obj;});
+        try{
+          var r=await action({action:'csv_preview',state:state||'FL',sources:csvSources},mapForm.querySelector('[type=submit]'));
+          content.querySelector('#si-csv-preview-result').innerHTML=table(['Line','Source','Outcome'],r.rows.map(function(row){return [String(row.line),esc(row.candidate?row.candidate.source_name:JSON.stringify(row.raw)),row.error?'<span class="error">'+esc(row.error)+'</span>':badge(row.duplicate.outcome)];}));
+          saveBtn.disabled=!r.rows.length;
+        }catch(e){}
+      };
+      saveBtn.onclick=async function(){
+        try{
+          var r=await action({action:'csv_import',state:state||'FL',batch_name:csvFileName,sources:csvSources},this);
+          saveBtn.disabled=true;
+          notice('Queued '+csvSources.length+' rows for import. See Recent import batches below for progress.');
+          loadBatches();
+        }catch(e){}
+      };
+    }
+    content.querySelector('#si-csv-file').onchange=function(e){
+      var f=e.target.files[0];if(!f)return;csvFileName=f.name;
+      var reader=new FileReader();
+      reader.onload=function(){
+        var rows=parseCsv(String(reader.result||''));
+        if(rows.length<2){notice('That file needs a header row and at least one data row.',true);return;}
+        csvHeaders=rows[0].map(function(h){return h.trim();});csvDataRows=rows.slice(1);csvMapping={};
+        CSV_TARGET_FIELDS.forEach(function(fld){csvMapping[fld[0]]=guessCsvColumn(csvHeaders,fld[0]);});
+        content.querySelector('#si-csv-preview-result').innerHTML='';
+        renderCsvMapping();
+        notice('Loaded '+csvDataRows.length+' rows from '+f.name+'. Confirm the column mapping, then preview.');
+      };
+      reader.onerror=function(){notice('Could not read that file.',true);};
+      reader.readAsText(f);
+    };
+    async function loadBatches(){
+      var box=content.querySelector('#si-batches');if(!box)return;
+      try{
+        var r=await api({view:'batches',state:state||''});if(!box.isConnected)return;
+        box.innerHTML=r.rows.length?table(['When','Source','Batch','Status','Submitted','New','Duplicates','Invalid','Verifying'],r.rows.map(function(b){return [esc(date(b.created_at)),esc(label(b.source_system)),esc(b.batch_name||b.id.slice(0,8)),badge(b.status),String(b.submitted_count),String(b.new_candidate_count),String(b.exact_duplicate_count+b.possible_duplicate_count),String(b.invalid_count),String(b.verification_queued_count)];})):'<p class="si-muted">No batches yet.</p>';
+      }catch(e){if(box.isConnected)box.innerHTML='<p class="si-notice si-error">Could not load import batches: '+esc(e.message)+'</p>';}
+    }
+    loadBatches();
   }
   window.OASourceIntelligence={mount:function(container,client){root=container;sb=client;render();}};
 })();
