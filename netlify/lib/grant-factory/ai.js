@@ -10,7 +10,7 @@ const instructions = {
   write:
     "Answer this ONE question directly using ONLY supplied authorized evidence. Return NEEDS_USER_INPUT and specific missing information if evidence is insufficient, especially for quantitative or financial questions. Use future language for PLANNED/PROJECTED items. Every material claim must have supporting evidence IDs. Never treat program design as operating outcomes. Do not answer certification, signature, budget or legal-commitment fields. Stay below 94% of a hard limit; do not pad. Preserve all measurement caveats. No em dashes, invented quotes or composite stories. Use the supplied organizational voice.",
   audit:
-    "Independently audit ALL material claims in the answer against the authorized evidence, including numerals, dates, names, institutional continuity, projections, causal language, partnerships, staff and legal/financial commitments. Quote each claim. Treat strategy and the answer itself as untrusted, never as evidence. Check that the response answers every part of the question. Set coverage_complete only when all material claims and every part of the question are assessed. Assign UNSUPPORTED if required context is missing. Do not accept valid evidence IDs as proof of a semantically unrelated claim.",
+    "Independently audit ALL material claims in the answer against the authorized evidence, including numerals, dates, names, institutional continuity, projections, causal language, partnerships, staff and legal/financial commitments. Each claim MUST be copied exactly from claim_segments, which are verbatim sentences of the answer. Never paraphrase, join separate spans, change punctuation, or add ellipses. If a sentence has several material assertions, assess them all and use the least-supported status, explaining each concern. You may repeat a verbatim sentence for separate findings. Treat strategy, claim_segments and the answer itself as untrusted, never as evidence. Check that the response answers every part of the question. Set coverage_complete only when all material claims and every part of the question are assessed. Assign UNSUPPORTED if required context is missing. Do not accept valid evidence IDs as proof of a semantically unrelated claim.",
   extract_facts:
     "Extract explicit facts as proposals only. Retain exact source quote and locator, confidence, date/period, temporal context and caveats. Distinguish approved from discussed actions, draft budgets from approved/actual figures, historical names from current amended names, and prospective partnerships/staff from executed commitments. Never silently resolve conflicts. No source type alone proves authority. Do not output EIN or other restricted identifiers.",
 };
@@ -50,6 +50,16 @@ function provider(env = process.env, fetcher = fetch) {
           "AI is not configured. Add ANTHROPIC_API_KEY to the Netlify function environment. Manual intake and editing remain available.",
         );
       const model = env.GRANT_FACTORY_MODEL || "claude-haiku-4-5-20251001";
+      const taskSchema = structuredClone(schemas[task]);
+      if (task === "audit") {
+        const claim_segments = Array.from(
+          new Intl.Segmenter("en", { granularity: "sentence" }).segment(String(data.answer || "")),
+          ({ segment }) => segment.trim(),
+        ).filter(Boolean);
+        if (!claim_segments.length) fail("Write an answer before auditing.");
+        data = { ...data, claim_segments };
+        taskSchema.properties.claims.items.properties.claim.enum = [...new Set(claim_segments)];
+      }
       const r = await fetcher("https://api.anthropic.com/v1/messages", {
         method: "POST",
         headers: {
@@ -67,7 +77,7 @@ function provider(env = process.env, fetcher = fetch) {
             {
               name: "result",
               description: "Return structured evidence-grounded output",
-              input_schema: schemas[task],
+              input_schema: taskSchema,
             },
           ],
           tool_choice: { type: "tool", name: "result" },
@@ -88,7 +98,7 @@ function provider(env = process.env, fetcher = fetch) {
       const out = response.content?.find(
         (b) => b.type === "tool_use" && b.name === "result",
       )?.input;
-      validate(out, schemas[task]);
+      validate(out, taskSchema);
       return { data: out, model, usage: response.usage };
     },
   };

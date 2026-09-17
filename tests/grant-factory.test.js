@@ -287,6 +287,22 @@ test("AI provider rejects malformed tool responses and never invents a fallback 
   await assert.rejects(provider({}).call("write", {}), /not configured/);
 });
 
+test('audit constrains quoted claims to verbatim answer sentences without weakening validation', async () => {
+  const answer = 'The planned program will teach financial capability. Historical evidence does not establish causation.';
+  let claim = 'The program teaches financial capability.';
+  let sent;
+  const ai = provider({ANTHROPIC_API_KEY:'test'}, async (url, options) => {
+    sent = JSON.parse(options.body);
+    return {ok:true,json:async()=>({content:[{type:'tool_use',name:'result',input:{coverage_complete:false,claims:[{claim,status:'UNSUPPORTED',reason:'Test evidence is absent.',evidence_ids:[]}]}}]})};
+  });
+  await assert.rejects(ai.call('audit',{answer,evidence:[]}),/invalid result.claims\[0\].claim/);
+  const anchors = JSON.parse(sent.messages[0].content).claim_segments;
+  assert.deepEqual(anchors, ['The planned program will teach financial capability.', 'Historical evidence does not establish causation.']);
+  assert.deepEqual(sent.tools[0].input_schema.properties.claims.items.properties.claim.enum, anchors);
+  claim = anchors[0];
+  assert.equal((await ai.call('audit',{answer,evidence:[]})).data.claims[0].claim, claim);
+});
+
 let fixture;
 test.before(async () => {
   fixture = await createTestRepo();
