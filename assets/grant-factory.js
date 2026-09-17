@@ -130,6 +130,7 @@
       busy: false,
       query: "",
       unsaved: {},
+      orgId: null,
     };
     session = s;
     main.innerHTML =
@@ -144,7 +145,7 @@
           "Content-Type": "application/json",
           Authorization: "Bearer " + token,
         },
-        body: JSON.stringify({ action, ...payload }),
+        body: JSON.stringify({ action, org_id: s.orgId, ...payload }),
       });
       let data;
       try {
@@ -166,6 +167,7 @@
     }
     async function refresh() {
       s.data = await api("bootstrap");
+      s.orgId = s.data.org_id;
       if (s.app) {
         const r = await api("get_application", { application_id: s.app.id });
         s.app = r.app;
@@ -278,6 +280,12 @@
       ).length;
       main.innerHTML =
         '<section class="gf"><header class="gf-head"><div><div class="gf-eyebrow">Opportunity Assist / Funding operations</div><h1>Grant Factory</h1><p class="gf-sub">From the application to an evidence-backed draft, with your judgment at every commitment.</p></div><div>' +
+        '<label>Organization<select id="gf-workspace" aria-label="Grant Factory organization">' +
+        options(
+          d.workspaces.map((w) => [w.org_id, w.name]),
+          s.orgId,
+        ) +
+        "</select></label>" +
         pill(d.role) +
         (d.role === "OWNER" ? btn("seed", "Import Institute seed data") : "") +
         '</div></header><nav class="gf-tabs" aria-label="Grant Factory">' +
@@ -302,6 +310,42 @@
           .join("") +
         '</nav><div id="gf-message" role="status" class="gf-message"></div><div id="gf-content"></div></section>';
       s.root = main.querySelector(".gf");
+      main.querySelector("#gf-workspace").onchange = async (event) => {
+        const target = event.target;
+        if (
+          s.busy ||
+          Object.keys(s.unsaved).some(
+            (id) =>
+              s.unsaved[id] !==
+              s.app?.answers.find((a) => a.question_id === id)?.draft_text,
+          )
+        ) {
+          target.value = s.orgId;
+          message(
+            "Finish the current action and save your answers before switching organizations.",
+            true,
+          );
+          return;
+        }
+        s.busy = true;
+        target.disabled = true;
+        try {
+          const next = await api("bootstrap", { org_id: target.value });
+          s.data = next;
+          s.orgId = next.org_id;
+          s.app = null;
+          s.snapshots = [];
+          s.unsaved = {};
+          s.tab = "applications";
+          render();
+        } catch (e) {
+          target.value = s.orgId;
+          message(e.message, true);
+        } finally {
+          s.busy = false;
+          target.disabled = false;
+        }
+      };
       const content = main.querySelector("#gf-content");
       if (s.app && s.tab === "applications") renderApplication(content);
       else if (s.tab === "applications") renderApplications(content);

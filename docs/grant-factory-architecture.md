@@ -20,6 +20,7 @@ The older local Source Intelligence checkout is on `42b52f3` and has uncommitted
 - Documents: private Supabase Storage bucket, original bytes and SHA-256, bounded PDF/DOCX/text extraction, stable source locators, explicit extraction errors. Unreviewed extracted document facts are proposals. The supplied Institute seed and original report are imported from a private file; neither is committed to the public repository or bundled into the static site.
 - Generation: question-scoped approved evidence, projected-language rules, deterministic limits, independent claim audit, per-organization AI run limits and recorded failures. Uploaded text is untrusted evidence, never instructions.
 - Approval: owner approves institutional truth and final application; managers edit, assemble and export drafts. Legal/financial/certification commitments require explicit owner review. Changed facts invalidate prior review through a workspace revision.
+- Workspace selection: protected Grant Factory memberships determine available organizations and the current role. The user's existing primary organization remains unchanged; every requested workspace is checked against independent membership before data access.
 - Phase 2: no new harvesting, auto-pursuit, portal login/submission, email monitoring, awards/reporting automation or advanced request-amount inference.
 
 ## Source precedence

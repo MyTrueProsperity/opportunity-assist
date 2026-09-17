@@ -210,10 +210,26 @@ async function createTestRepo() {
     (await db.select("gf_applications", { org_id: "eq." + ctx.org_id })).map(
       flatten,
     );
-  repo.context = async (event) => {
+  repo.context = async (event, requestedOrg) => {
     if (event.headers?.authorization !== "Bearer test")
       throw Object.assign(Error("Sign in"), { status: 401 });
-    return { org_id: ORG, user_id: OWNER, role: "OWNER" };
+    const memberships = await db.select("gf_members", {
+      user_id: "eq." + OWNER,
+    });
+    const member = memberships.find((m) => m.org_id === (requestedOrg || ORG));
+    if (!member)
+      throw Object.assign(Error("No Grant Factory access"), { status: 403 });
+    return {
+      org_id: member.org_id,
+      user_id: OWNER,
+      role: member.role,
+      workspaces: memberships.map((m) => ({
+        org_id: m.org_id,
+        role: m.role,
+        name:
+          m.org_id === ORG ? "Institute preview" : "Second workspace preview",
+      })),
+    };
   };
   return {
     pg,

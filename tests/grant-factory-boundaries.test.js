@@ -8,6 +8,54 @@ const { createTestRepo, OWNER, ORG, OTHER } = require("./helpers/grant-db");
 const { testPack } = require("./helpers/grant-seed");
 const { extract } = require("../netlify/lib/grant-factory/documents");
 const { exportPackage } = require("../netlify/lib/grant-factory/export");
+const { makeHandler } = require("../netlify/functions/grant-factory");
+
+test("workspace selection preserves the primary organization and uses the selected protected role", async () => {
+  const f = await createTestRepo();
+  try {
+    await f.pg.query(
+      "insert into gf_members(org_id,user_id,role) values($1,$2,'GRANT_MANAGER')",
+      [OTHER, OWNER],
+    );
+    const handler = makeHandler({ repo: f.repo, ai: { enabled: false } });
+    const request = (body) =>
+      handler({
+        httpMethod: "POST",
+        headers: { authorization: "Bearer test" },
+        body: JSON.stringify(body),
+      });
+    const initial = await request({ action: "bootstrap" });
+    assert.equal(JSON.parse(initial.body).role, "OWNER");
+    const selected = await request({ action: "bootstrap", org_id: OTHER });
+    const data = JSON.parse(selected.body);
+    assert.equal(selected.statusCode, 200);
+    assert.equal(data.org_id, OTHER);
+    assert.equal(data.role, "GRANT_MANAGER");
+    assert.equal(data.workspaces.length, 2);
+    assert.equal(
+      (await request({ action: "seed", org_id: OTHER, pack: testPack() }))
+        .statusCode,
+      403,
+    );
+    assert.equal(
+      (await request({ action: "bootstrap", org_id: C.randomUUID() }))
+        .statusCode,
+      403,
+    );
+    const profile = await f.pg.query(
+      "select org_id from profiles where id=$1",
+      [OWNER],
+    );
+    assert.equal(profile.rows[0].org_id, ORG);
+    const grantFacts = await f.pg.query(
+      "select count(*)::integer as n from gf_facts where org_id=$1",
+      [OTHER],
+    );
+    assert.equal(grantFacts.rows[0].n, 0);
+  } finally {
+    await f.pg.close();
+  }
+});
 
 test("derived evidence fails closed for missing, expired or cyclic source chains", () => {
   const base = {
@@ -171,6 +219,7 @@ test("canonical snapshot hashes survive JSONB key ordering and detect changes", 
 });
 test("production authorization validates the session and independently checks protected membership", async () => {
   let selectedOrg = ORG;
+  let memberships = [{ org_id: ORG, role: "OWNER" }];
   const seen = [];
   const fetcher = async (url, options) => {
     seen.push(url);
@@ -184,11 +233,24 @@ test("production authorization validates the session and independently checks pr
     if (url.includes("/gf_members?")) {
       const u = new URL(url);
       assert.equal(u.searchParams.get("user_id"), "eq." + OWNER);
-      assert.equal(u.searchParams.get("org_id"), "eq." + selectedOrg);
+      assert.equal(u.searchParams.has("org_id"), false);
+      return {
+        ok: true,
+        text: async () => JSON.stringify(memberships),
+      };
+    }
+    if (url.includes("/organizations?")) {
+      const u = new URL(url);
+      assert.equal(
+        u.searchParams.get("id"),
+        "in.(" + memberships.map((m) => m.org_id).join(",") + ")",
+      );
       return {
         ok: true,
         text: async () =>
-          JSON.stringify(selectedOrg === ORG ? [{ role: "OWNER" }] : []),
+          JSON.stringify(
+            memberships.map((m) => ({ id: m.org_id, name: "Test workspace" })),
+          ),
       };
     }
     throw Error("Unexpected URL");
@@ -206,12 +268,38 @@ test("production authorization validates the session and independently checks pr
   });
   assert.equal(ctx.org_id, ORG);
   selectedOrg = OTHER;
+  const separate = await repo.context({
+    headers: { authorization: "Bearer user-session" },
+  });
+  assert.equal(
+    separate.org_id,
+    ORG,
+    "Changing the primary profile does not change protected grant access",
+  );
+  assert.equal(separate.workspaces.length, 1);
+  await assert.rejects(
+    repo.context({ headers: { authorization: "Bearer user-session" } }, OTHER),
+    /do not have Grant Factory access/,
+  );
+  memberships.push({ org_id: OTHER, role: "GRANT_MANAGER" });
+  const manager = await repo.context(
+    { headers: { authorization: "Bearer user-session" } },
+    OTHER,
+  );
+  assert.equal(manager.role, "GRANT_MANAGER");
+  assert.equal(manager.org_id, OTHER);
+  const executive = await repo.context(
+    { headers: { authorization: "Bearer user-session" } },
+    ORG,
+  );
+  assert.equal(executive.role, "OWNER");
+  memberships = [];
   await assert.rejects(
     repo.context({ headers: { authorization: "Bearer user-session" } }),
     /not been enabled/,
   );
   await assert.rejects(repo.context({ headers: {} }), /Sign in/);
-  assert.equal(seen.filter((u) => u.endsWith("/auth/v1/user")).length, 2);
+  assert.equal(seen.filter((u) => u.endsWith("/auth/v1/user")).length, 6);
 });
 test("missing input stays application-specific and pending until an executive approves it", async () => {
   const f = await createTestRepo();

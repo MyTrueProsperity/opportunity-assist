@@ -3,12 +3,16 @@
 const http = require("node:http"),
   fs = require("node:fs"),
   path = require("node:path");
-const { createTestRepo } = require("../tests/helpers/grant-db");
+const { createTestRepo, OWNER, OTHER } = require("../tests/helpers/grant-db");
 const { testPack } = require("../tests/helpers/grant-seed");
 const { makeHandler } = require("../netlify/functions/grant-factory");
 const { service } = require("../netlify/lib/grant-factory/service");
 (async () => {
-  const { repo, owner } = await createTestRepo();
+  const { repo, owner, pg } = await createTestRepo();
+  await pg.query(
+    "insert into gf_members(org_id,user_id,role) values($1,$2,'GRANT_MANAGER')",
+    [OTHER, OWNER],
+  );
   const ai = {
     enabled: false,
     async call() {

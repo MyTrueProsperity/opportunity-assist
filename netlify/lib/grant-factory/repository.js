@@ -19,7 +19,7 @@ function repository(env = process.env, fetcher = fetch) {
   return {
     db,
     env,
-    async context(event) {
+    async context(event, requestedOrg) {
       const token = String(
         event.headers?.authorization || event.headers?.Authorization || "",
       ).match(/^Bearer\s+(.+)$/i)?.[1];
@@ -36,17 +36,39 @@ function repository(env = process.env, fetcher = fetch) {
         { id: "eq." + user.id, select: "org_id" },
         token,
       );
-      if (!profile?.org_id) fail("Set up your organization first.", 403);
-      const [member] = await db.select("gf_members", {
-        org_id: "eq." + profile.org_id,
+      const memberships = await db.select("gf_members", {
         user_id: "eq." + user.id,
       });
-      if (!member)
+      if (!memberships.length)
         fail(
           "Grant Factory access has not been enabled for your account.",
           403,
         );
-      return { org_id: profile.org_id, user_id: user.id, role: member.role };
+      const selected = requestedOrg
+        ? id(requestedOrg)
+        : (
+            memberships.find((m) => m.org_id === profile?.org_id) ||
+            memberships[0]
+          ).org_id;
+      const member = memberships.find((m) => m.org_id === selected);
+      if (!member)
+        fail("You do not have Grant Factory access to this organization.", 403);
+      const organizations = await db.select("organizations", {
+        id: "in.(" + memberships.map((m) => m.org_id).join(",") + ")",
+        select: "id,name",
+      });
+      return {
+        org_id: selected,
+        user_id: user.id,
+        role: member.role,
+        workspaces: memberships.map((m) => ({
+          org_id: m.org_id,
+          role: m.role,
+          name:
+            organizations.find((o) => o.id === m.org_id)?.name ||
+            "Grant workspace",
+        })),
+      };
     },
     async brain(ctx) {
       const [[workspace], facts, programs, documents] = await Promise.all([

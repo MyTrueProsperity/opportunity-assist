@@ -35,7 +35,7 @@ function makeHandler({ repo, ai } = {}) {
         };
       }
       const repositoryInstance = repo || repository();
-      const ctx = await repositoryInstance.context(event);
+      const ctx = await repositoryInstance.context(event, body.org_id);
       const result = await service(repositoryInstance, ai || provider()).handle(
         ctx,
         body,

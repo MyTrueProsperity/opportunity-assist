@@ -29,7 +29,9 @@ Apply these additive files to the existing Supabase project in order:
 
 They are separate from the historical Source Intelligence migration runner because that runner's test fixtures do not include the Opportunity Assist core schema. Apply them explicitly during this release. They require existing `organizations`, `profiles`, `opportunities`, Supabase Auth roles, and Supabase Storage.
 
-Provision access using `docs/grant-factory-provision.sql` after identifying the actual Institute organization and Bill/Claudia profile IDs. The template refuses to run until those IDs are supplied. No user is assigned authority by matching a name or by editing their client-writable profile. Bill should be OWNER and Claudia GRANT_MANAGER, after verifying their real accounts. Only trusted database administration may alter memberships.
+Provision access using `docs/grant-factory-provision.sql` after identifying the actual Institute organization and executive profile ID. The template refuses to run until those required IDs are supplied; the manager ID may stay null until that person has an existing, verified account. Bill should be OWNER and Claudia GRANT_MANAGER only after their real accounts and access are approved. No user is assigned authority by matching a name or by editing their client-writable profile. Only trusted database administration may alter memberships.
+
+Grant Factory memberships are separate from a profile's primary Opportunity Assist organization. A person can select only explicitly provisioned organizations in the Grant Factory header, with the role checked for that organization on every request. Provisioning Institute access does not move the person's existing profile or affect their other Opportunity Assist work. Saved applications, facts, documents and drafts stay within the selected workspace.
 
 All `gf_*` tables have row-level security. Browser roles have scoped reads and no direct write permission. Mutations are server-only and membership checked. Facts and documents marked RESTRICTED are owner-only; detailed immutable history and archived submission packages are owner-only. Grant managers can export the current application, assemble attachments and review narrative answers, but cannot approve institutional truth or final submission.
 
@@ -52,7 +54,7 @@ Do not put service credentials in `app.html`, source control or public assets. T
 
 ## First use
 
-1. Sign in with the provisioned executive account and open Grant Factory.
+1. Sign in with the provisioned executive account, open Grant Factory and confirm the Institute organization in its header.
 2. Import the private Institute seed file. The import is idempotent and preserves previously edited seed records.
 3. Review Truth Review and upload governing documents. The expected-document list is a collection checklist, not proof that documents exist.
 4. Confirm the legal name against current corporate records; the supplied name is user-confirmed, with document confirmation pending. Confirm Board records, legal officer authority, EIN, tax-exempt evidence, addresses and budgets.

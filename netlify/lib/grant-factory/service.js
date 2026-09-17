@@ -206,6 +206,10 @@ function service(repo, ai) {
       if (action === "bootstrap")
         return {
           role: ctx.role,
+          org_id: ctx.org_id,
+          workspaces: ctx.workspaces || [
+            { org_id: ctx.org_id, role: ctx.role, name: "Grant workspace" },
+          ],
           brain: repo.publicBrain(brain, ctx),
           applications: await repo.listApps(ctx),
           ai_enabled: ai.enabled,
