@@ -5,7 +5,7 @@ const {fetchPage}=require('./fetch-page');
 const {STATES,queriesFor,enabledFor}=require('./config');
 const {normalizeUrl,normalizeProgram,hash}=require('./identity');
 const {healthTransition,resolveGeographicEvidence,GEOGRAPHY_EVIDENCE_VERSION}=require('./quality');
-const {registry,enqueue,seedBatch,submitCandidate,importBatch,publish,tryAutomaticApproval,approveBacklog}=require('./service');
+const {registry,enqueue,seedBatch,submitCandidate,importBatch,importExternalBatch,publish,tryAutomaticApproval,approveBacklog}=require('./service');
 class Paused extends Error {}
 async function gate(db,job,kind) {
   const [e]=await db.select('source_engine_settings',{id:'eq.true'});
@@ -128,6 +128,7 @@ async function runWorker({db=createDb(),provider=createProvider(),fetcher=fetchP
       let result;
       if(job.kind==='SEED')result=await seedBatch(db,job);
       else if(job.kind==='IMPORT')result=await importBatch(db,job);
+      else if(job.kind==='API_IMPORT')result=await importExternalBatch(db,job);
       else if(job.kind==='DISCOVER')result=await discover(db,provider,job,fetcher);
       else if(job.kind==='VALIDATE')result=await inspect(db,provider,job,job.payload.url,job.payload.name,null,fetcher);
       else if(job.kind==='MONITOR'){const [p]=await db.select('funding_programs',{id:'eq.'+job.payload.program_id});if(!p||p.superseded_by)throw new Error('Program is missing or superseded');result=await inspect(db,provider,job,p.source_url,p.source_name,p,fetcher);}
