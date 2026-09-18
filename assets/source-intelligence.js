@@ -1,7 +1,7 @@
 (function(){
   'use strict';
   var root,sb,boot,view='queue',state='FL',offset=0,search='',category='',requestId=0;
-  var tabs=[['queue','Awaiting verification'],['registry','Source registry'],['duplicates','Duplicate checks'],['health','Source health'],['coverage','Coverage'],['runs','Discovery runs'],['decisions','Decision history'],['rejected','Rejected'],['import','Import / export'],['settings','State controls']];
+  var tabs=[['queue','Awaiting verification'],['registry','Source registry'],['duplicates','Duplicate checks'],['health','Source health'],['coverage','Coverage'],['runs','Discovery runs'],['decisions','Decision history'],['rejected','Rejected'],['import','Import / export'],['credentials','API credentials'],['settings','State controls']];
   function esc(s){return String(s==null?'':s).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];});}
   function label(s){return String(s||'Unknown').replace(/_/g,' ').toLowerCase().replace(/^./,function(c){return c.toUpperCase();});}
   function date(s){return s?new Date(s).toLocaleDateString(undefined,{month:'short',day:'numeric',year:'numeric'}):'Not yet';}
@@ -46,7 +46,7 @@
     root.querySelector('#si-state').onchange=function(e){state=e.target.value;offset=0;render();};
     var find=root.querySelector('#si-find');if(find){find.onclick=function(){search=root.querySelector('#si-search').value;offset=0;render();};root.querySelector('#si-search').onkeydown=function(e){if(e.key==='Enter')find.click();};}
     var cat=root.querySelector('#si-category');if(cat)cat.onchange=function(e){category=e.target.value;render();};
-    if(view==='settings')return renderSettings();if(view==='import')return renderImport();if(view==='coverage')return renderCoverage(ticket);
+    if(view==='settings')return renderSettings();if(view==='import')return renderImport();if(view==='credentials')return renderCredentials();if(view==='coverage')return renderCoverage(ticket);
     var data=await api({view,state,offset,search});if(ticket!==requestId)return;var content=root.querySelector('#si-content');content.innerHTML='';
     if(!data.rows.length)content.innerHTML='<div class="si-empty"><h2>No records in this view</h2><p>Try another state or choose “All states / unresolved”. Discovery results appear here as jobs finish.</p></div>';
     else if(['queue','duplicates','rejected'].includes(view)){content.className='si-cards';data.rows.forEach(function(c){content.appendChild(candidateCard(c));});}
@@ -90,6 +90,33 @@
     content.querySelector('#si-seed').onclick=async function(){try{await action({action:'seed'},this);}catch(e){}};
     var f=content.querySelector('#si-state-form');f.onsubmit=async function(e){e.preventDefault();try{await action({action:'state',state:s.state_code,patch:{discovery_enabled:f.elements.discovery.checked,monitoring_enabled:f.elements.monitoring.checked,publication_enabled:f.elements.publication.checked,daily_query_limit:Number(f.elements.queries.value),daily_page_limit:Number(f.elements.pages.value),daily_budget_usd:Number(f.elements.budget.value),categories:Array.from(f.querySelectorAll('[name=category]:checked')).map(function(x){return x.value;})}},f.querySelector('button'));await render();}catch(e){}};
     var g=content.querySelector('#si-geo');g.onsubmit=async function(e){e.preventDefault();try{await action({action:'geography',state:s.state_code,kind:g.elements.kind.value,name:g.elements.name.value,notes:g.elements.notes.value},g.querySelector('button'));g.reset();}catch(e){}};
+  }
+  function renderCredentials(){
+    var content=root.querySelector('#si-content');
+    content.innerHTML='<div class="si-panel"><h2>Issue a new credential</h2><p class="si-muted">For an external AI or automated system submitting sources through the Trusted External Ingestion API. The token is shown once, immediately after creation -- copy it somewhere safe; it cannot be retrieved again.</p><form id="si-cred-form"><label>Name<input name="name" required maxlength="200" placeholder="e.g. ChatGPT Research Agent"></label><label>System<select name="source_system">'+choices([['CHATGPT','ChatGPT'],['CLAUDE','Claude'],['OA_DISCOVERY_AGENT','Opportunity Assist discovery agent'],['OTHER','Other']],'CHATGPT')+'</select></label><label>Max sources per batch<input name="max_batch_size" type="number" min="1" max="5000" value="500" required></label><label>Max sources per day<input name="daily_source_limit" type="number" min="1" value="2000" required></label><label>Requests per minute<input name="rate_limit_per_minute" type="number" min="1" value="30" required></label><button class="btn btn-primary btn-sm" style="margin-top:14px">Create credential</button></form><div id="si-cred-token"></div></div>'+
+      '<section class="si-panel" style="margin-top:18px"><h2>Existing credentials</h2><div id="si-cred-list"><p class="si-progress">Loading…</p></div></section>';
+    var form=content.querySelector('#si-cred-form'),tokenBox=content.querySelector('#si-cred-token');
+    form.onsubmit=async function(e){
+      e.preventDefault();
+      try{
+        var r=await action({action:'create_credential',name:form.elements.name.value,source_system:form.elements.source_system.value,max_batch_size:Number(form.elements.max_batch_size.value),daily_source_limit:Number(form.elements.daily_source_limit.value),rate_limit_per_minute:Number(form.elements.rate_limit_per_minute.value)},form.querySelector('button'));
+        tokenBox.innerHTML='<div class="si-notice"><strong>'+esc(r.credential.name)+'</strong> created. Copy this token now -- it will not be shown again:<pre id="si-cred-token-value">'+esc(r.token)+'</pre><button type="button" class="btn btn-ghost btn-sm" id="si-cred-copy">Copy token</button></div>';
+        tokenBox.querySelector('#si-cred-copy').onclick=function(){navigator.clipboard.writeText(r.token);this.textContent='Copied';};
+        form.reset();form.elements.max_batch_size.value=500;form.elements.daily_source_limit.value=2000;form.elements.rate_limit_per_minute.value=30;
+        loadCredentials();
+      }catch(e){}
+    };
+    async function loadCredentials(){
+      var box=content.querySelector('#si-cred-list');if(!box)return;
+      try{
+        var r=await api({view:'credentials'});if(!box.isConnected)return;
+        box.innerHTML=r.rows.length?table(['Name','System','Status','Token','Batch limit','Daily limit','Rate limit','Created','Last used',''],r.rows.map(function(c){
+          return [esc(c.name),esc(label(c.source_system)),badge(c.status),esc(c.token_prefix)+'…',String(c.max_batch_size),String(c.daily_source_limit),String(c.rate_limit_per_minute),esc(date(c.created_at)),esc(date(c.last_used_at)),c.status==='active'?'<button data-revoke="'+c.id+'" class="btn btn-ghost btn-sm">Revoke</button>':''];
+        })):'<p class="si-muted">No credentials yet.</p>';
+        box.querySelectorAll('[data-revoke]').forEach(function(b){b.onclick=async function(){try{await action({action:'revoke_credential',credential_id:b.dataset.revoke},b);loadCredentials();}catch(e){}};});
+      }catch(e){if(box.isConnected)box.innerHTML='<p class="si-notice si-error">Could not load credentials: '+esc(e.message)+'</p>';}
+    }
+    loadCredentials();
   }
   function renderImport(){var content=root.querySelector('#si-content');content.innerHTML='<div class="si-panel"><h2>Human-discovered sources</h2><p class="si-muted">Paste up to 100 rows. The preview checks the complete registry. Automatic approval applies after source verification; confirmed duplicates link to existing records.</p><label for="si-import">SOURCE NAME|URL|SOURCE_TYPE|GEOGRAPHY|KEYWORDS</label><textarea id="si-import" rows="9" placeholder="Source name|https://example.org/grants|COMMUNITY_FOUNDATION_GRANT|Florida|youth, education"></textarea><div class="row" style="margin-top:14px"><button id="si-preview" class="btn btn-ghost btn-sm">Preview and check duplicates</button><button id="si-import-save" class="btn btn-primary btn-sm" disabled>Queue import for verification</button></div><div id="si-preview-result"></div></div>'+
       '<section class="si-panel" style="margin-top:18px"><h2>Upload a CSV file</h2><p class="si-muted">For larger files than the paste box holds. Choose a file, confirm which column is which, then preview and queue -- the same duplicate checks and verification queue as above. Expected columns: source name, URL, source type, geography, keywords (any header names; you map them below).</p><input type="file" id="si-csv-file" accept=".csv,text/csv"><div id="si-csv-mapping"></div><div id="si-csv-preview-result"></div></section>'+
