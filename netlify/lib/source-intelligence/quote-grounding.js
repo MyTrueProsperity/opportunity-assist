@@ -68,4 +68,13 @@ function groundQuote({page_text,quote}={}){
   return {applicable:true,grounded,normalized_quote,normalized_page_text};
 }
 
-module.exports={normalizeForGrounding,groundQuote,MIN_QUOTE_LENGTH};
+// Adapts groundQuote to the (quote,text)=>boolean shape quality.js's own
+// hasQuote uses, so it can be passed straight into validateExtraction as
+// its pluggable matcher for a trusted submitter's own page_text. A missing
+// quote is "not applicable" above; here, matching hasQuote's contract, that
+// is simply false -- validateExtraction already treats a false match as
+// "no evidence for this field" and never surfaces the applicable/not
+// distinction beyond this module.
+function hasGroundedQuote(quote,text){return groundQuote({page_text:text,quote}).grounded===true;}
+
+module.exports={normalizeForGrounding,groundQuote,hasGroundedQuote,MIN_QUOTE_LENGTH};

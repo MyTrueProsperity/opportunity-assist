@@ -1,6 +1,6 @@
 'use strict';
 const test=require('node:test');const assert=require('node:assert/strict');
-const {normalizeForGrounding,groundQuote,MIN_QUOTE_LENGTH}=require('../netlify/lib/source-intelligence/quote-grounding');
+const {normalizeForGrounding,groundQuote,hasGroundedQuote,MIN_QUOTE_LENGTH}=require('../netlify/lib/source-intelligence/quote-grounding');
 
 test('an exact quote in the supplied page text is grounded',()=>{
   const r=groundQuote({page_text:'Community Impact Grant. Eligible Florida nonprofits can apply.',quote:'Eligible Florida nonprofits can apply.'});
@@ -72,6 +72,12 @@ test('no quote supplied is not a failure -- the check is simply not applicable',
 test('missing or non-string page text simply fails to ground a real quote, without throwing',()=>{
   assert.equal(groundQuote({quote:'Awards up to $25,000'}).grounded,false);
   assert.equal(groundQuote({page_text:null,quote:'Awards up to $25,000'}).grounded,false);
+});
+
+test('hasGroundedQuote matches hasQuote\'s (quote,text)=>boolean contract for use as a pluggable matcher',()=>{
+  assert.equal(hasGroundedQuote('Eligible Florida nonprofits can apply.','Community Impact Grant. Eligible Florida nonprofits can apply.'),true);
+  assert.equal(hasGroundedQuote('Applications open February 1, 2026.','Applications open January 1, 2026.'),false);
+  assert.equal(hasGroundedQuote(undefined,'Some page text.'),false);
 });
 
 test('normalizeForGrounding is pure and leaves the caller\'s original strings untouched',()=>{
