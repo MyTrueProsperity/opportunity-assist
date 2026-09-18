@@ -74,4 +74,4 @@ async function fetchPage(url,cache=null,request=requestPublic) {
   if(text.length<80||/just a moment|verify you are human|enable javascript and cookies|checking your browser/i.test(text.slice(0,900)))throw new Error('Unreadable or bot-protected page; investigation required');
   return {url:r.url,status:r.status,text:text.slice(0,40000),hash:contentHash(text),links,etag:r.headers.etag||null,last_modified:r.headers['last-modified']||null,redirected:normalizeUrl(r.url)!==normalizeUrl(url)};
 }
-module.exports={publicIp,validateTarget,requestPublic,htmlToText,extractLinks,robotsAllowed,fetchPage};
+module.exports={publicIp,validateTarget,requestPublic,htmlToText,extractLinks,robotsAllowed,fetchPage,decodeHtmlEntities:decode};
