@@ -18,23 +18,56 @@
 //       QUEUE (the default external-AI mode: saved, deduplicated, and queued
 //       for the existing verification pipeline; returns a batch_id right
 //       away -- see source-intelligence-batch-status.js to poll progress).
-//       TRUSTED_AUTOMATION is defined in the schema for a future,
-//       administrator-controlled mode; it is deliberately not implemented
-//       yet and this endpoint rejects it.
+//
+//       TRUSTED_AUTOMATION is an administrator-controlled mode (see
+//       SOURCE_INTELLIGENCE_TRUSTED_AUTOMATION in credentials.js's
+//       permission check below) for a submitter that supplies its own
+//       already-extracted evidence instead of a bare URL. "sources" items
+//       take a different, richer shape for this mode:
+//         { source_url, page_text, page_title?, retrieved_at? or observed_at?,
+//           submitter_type?, links?: [{url,text}],
+//           programs: [{ program_name?, organization_name?, funding_mechanism?,
+//             applicable_states?, current_status?, current_cycle_open?,
+//             current_deadline?, award_min?, award_max?, ..., -- every
+//             factual field either omitted or {value, quote}, exactly the
+//             shape provider.js's own AI extraction produces }, ...] }
+//       page_text is the rendered/extracted readable text the submitter
+//       actually reviewed (not raw HTML) -- see docs/trusted-external-
+//       ingestion-api.md. Each claim's quote is checked against that
+//       page_text locally (quote-grounding.js): this proves the quote the
+//       submitter claims to have read is actually present in the text they
+//       supplied, never that the live page still says the same thing, and
+//       never anything beyond an exact substring after formatting-only
+//       normalization -- no paraphrase or semantic matching. A claim whose
+//       quote doesn't ground is simply dropped, exactly like an
+//       unverifiable claim from the system's own AI extraction; it does
+//       not fail the whole submission. One page may propose several
+//       programs (up to 6, matching the AI extraction's own limit); each
+//       becomes its own candidate. From there -- duplicate detection,
+//       quality scoring, automatic-approval eligibility -- every record
+//       goes through the exact same pipeline as any other import; the only
+//       thing this mode changes is how last_verified_at gets established,
+//       so a fully-evidenced submission skips the redundant independent
+//       re-fetch a QUEUE submission still gets queued for.
 //
 // Auth: Authorization: Bearer <token> against api_credentials (see
 // netlify/lib/source-intelligence/credentials.js) -- a separate concern
 // from db.admin()'s Supabase-session check that source-intelligence-admin.js
 // uses, since this caller is a service, not a signed-in human.
+// TRUSTED_AUTOMATION additionally requires the credential to carry the
+// SOURCE_INTELLIGENCE_TRUSTED_AUTOMATION permission -- granted per credential
+// from the admin credentials screen -- on top of the SOURCE_INTELLIGENCE_IMPORT
+// permission every mode already requires.
 
 'use strict';
 const {createDb,HttpError}=require('../lib/source-intelligence/db');
 const {authenticate,checkAndLogRequest}=require('../lib/source-intelligence/credentials');
-const {parsePipe,parseJson}=require('../lib/source-intelligence/imports');
+const {parsePipe,parseJson,parseTrusted}=require('../lib/source-intelligence/imports');
 const {compareCandidate,normalized}=require('../lib/source-intelligence/identity');
 const {quality}=require('../lib/source-intelligence/quality');
 const {registry,enqueue}=require('../lib/source-intelligence/service');
 const {STATES}=require('../lib/source-intelligence/config');
+const TRUSTED_AUTOMATION_PERMISSION='SOURCE_INTELLIGENCE_TRUSTED_AUTOMATION';
 
 const json=(statusCode,data)=>({statusCode,headers:{'Content-Type':'application/json','Cache-Control':'no-store'},body:JSON.stringify(data)});
 const CHUNK_SIZE=500;
@@ -55,12 +88,16 @@ async function handle(event,db=createDb()) {
   const credential=await authenticate(db,event);
 
   const mode=body.mode||'QUEUE';
-  if(mode==='TRUSTED_AUTOMATION')throw new HttpError(400,'TRUSTED_AUTOMATION mode is not yet available; use QUEUE.');
-  if(!['DRY_RUN','QUEUE'].includes(mode))throw new HttpError(400,'mode must be DRY_RUN or QUEUE.');
+  if(!['DRY_RUN','QUEUE','TRUSTED_AUTOMATION'].includes(mode))throw new HttpError(400,'mode must be DRY_RUN, QUEUE, or TRUSTED_AUTOMATION.');
   if(!body.state||!STATES[body.state])throw new HttpError(400,'A valid two-letter state code is required.');
   if(!body.source_system)throw new HttpError(400,'source_system is required.');
+  if(mode==='TRUSTED_AUTOMATION'&&!credential.permissions.includes(TRUSTED_AUTOMATION_PERMISSION))throw new HttpError(403,'This credential does not have the '+TRUSTED_AUTOMATION_PERMISSION+' permission.');
 
-  const parsed=Array.isArray(body.sources)?parseJson(body.sources):typeof body.text==='string'?parsePipe(body.text):null;
+  let parsed;
+  if(mode==='TRUSTED_AUTOMATION'){
+    if(!Array.isArray(body.sources))throw new HttpError(400,'TRUSTED_AUTOMATION requires a "sources" array; pipe-delimited "text" has no room for page_text or evidence.');
+    parsed=parseTrusted(body.sources,body.state);
+  } else parsed=Array.isArray(body.sources)?parseJson(body.sources):typeof body.text==='string'?parsePipe(body.text):null;
   if(!parsed)throw new HttpError(400,'Provide either a "sources" array or pipe-delimited "text".');
   if(!parsed.length)throw new HttpError(400,'At least one source is required.');
   if(parsed.length>credential.max_batch_size)throw new HttpError(400,'Batch of '+parsed.length+' exceeds this credential\'s limit of '+credential.max_batch_size+'.');
@@ -81,7 +118,10 @@ async function handle(event,db=createDb()) {
     return json(200,{mode:'DRY_RUN',submitted_count:parsed.length,new_candidate_count:newCount,exact_duplicate_count:exactCount,possible_duplicate_count:possibleCount,invalid_count:invalidCount,results});
   }
 
-  // QUEUE
+  // QUEUE and TRUSTED_AUTOMATION persist identically from here -- both
+  // create an import_batches row and chunk into API_IMPORT jobs; the
+  // difference in how each row's candidate gets built lives entirely in
+  // importExternalBatch (service.js), keyed off batch.mode.
   const idempotencyKey=body.idempotency_key||null;
   if(idempotencyKey){
     const [existing]=await db.select('import_batches',{credential_id:'eq.'+credential.id,idempotency_key:'eq.'+idempotencyKey,limit:1});
@@ -89,7 +129,7 @@ async function handle(event,db=createDb()) {
   }
   await checkAndLogRequest(db,credential,{mode,sourcesSubmitted:parsed.length});
   const [batch]=await db.insert('import_batches',{credential_id:credential.id,source_system:body.source_system,batch_name:body.batch_name||null,
-    submitted_by:body.submitted_by||null,mode:'QUEUE',state_code:body.state,submitted_count:parsed.length,idempotency_key:idempotencyKey});
+    submitted_by:body.submitted_by||null,mode,state_code:body.state,submitted_count:parsed.length,idempotency_key:idempotencyKey});
   let runId=null;
   for(let i=0;i<parsed.length;i+=CHUNK_SIZE){
     const chunk=parsed.slice(i,i+CHUNK_SIZE).map(p=>p.raw);

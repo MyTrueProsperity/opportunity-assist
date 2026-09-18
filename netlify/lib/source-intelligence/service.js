@@ -2,7 +2,7 @@
 const {STATES,CATEGORIES}=require('./config');
 const {hash,normalized,identityKey,normalizeUrl,normalizeProgram,organizationSignature,compareCandidate}=require('./identity');
 const {quality,healthTransition}=require('./quality');
-const {parsePipe,parseJson}=require('./imports');
+const {parsePipe,parseJson,parseTrusted}=require('./imports');
 const snapshot=require('../../../data/legacy-watchlist.json');
 
 const uuid=value=>typeof value==='string'&&/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
@@ -101,9 +101,14 @@ async function importBatch(db,job) {
 // import_batches row and the batch is complete once no API_IMPORT job for
 // its run remains queued/running/paused.
 async function importExternalBatch(db,job) {
-  const parsed=job.payload.sources?parseJson(job.payload.sources):parsePipe(job.payload.text);
   const [batch]=await db.select('import_batches',{id:'eq.'+job.payload.batch_id});
   if(!batch)return {skipped:'batch not found'};
+  // TRUSTED_AUTOMATION rows arrive with the submitter's own extracted
+  // evidence and page_text already validated (parseTrusted, reusing
+  // validateExtraction with local quote-grounding -- see
+  // quote-grounding.js/imports.js); every other mode is still a bare
+  // lead this system extracts itself later, exactly as before.
+  const parsed=batch.mode==='TRUSTED_AUTOMATION'?parseTrusted(job.payload.sources,batch.state_code):job.payload.sources?parseJson(job.payload.sources):parsePipe(job.payload.text);
   const records=await registry(db),aliases=await db.all('source_aliases');
   const counts={new_candidate:0,exact_duplicate:0,possible_duplicate:0,invalid:0,verification_queued:0};
   const errors=[];
@@ -118,7 +123,17 @@ async function importExternalBatch(db,job) {
     if(duplicate.outcome==='EXISTING')counts.exact_duplicate++;
     else if(['POSSIBLE_DUPLICATE_REVIEW','MATERIAL_DISTINCT_TRACK'].includes(duplicate.outcome))counts.possible_duplicate++;
     else counts.new_candidate++;
-    if(!['APPROVED','REJECTED','MERGED','UPDATED'].includes(row.status)){
+    // A trusted submission that came back verified (parseTrusted always sets
+    // fetched_at once page_text was processed, whether or not any individual
+    // claim was grounded) already went through the exact check this VALIDATE
+    // job exists to perform, so queueing one here would just re-fetch the
+    // same page this submitter already supplied -- exactly the redundant
+    // network/AI cost TRUSTED_AUTOMATION exists to avoid. A submission that
+    // for any reason wasn't verified (parseTrusted only sets fetched_at when
+    // it successfully processed page_text) still falls through to the same
+    // VALIDATE pipeline as any other import.
+    const alreadyVerified=batch.mode==='TRUSTED_AUTOMATION'&&!!row.last_verified_at;
+    if(!['APPROVED','REJECTED','MERGED','UPDATED'].includes(row.status)&&!alreadyVerified){
       counts.verification_queued++;
       await enqueue(db,{kind:'VALIDATE',state:batch.state_code,key:'validate:'+row.id,runId:job.run_id,payload:{candidate_id:row.id,url:row.source_url,name:row.source_name}});
     }

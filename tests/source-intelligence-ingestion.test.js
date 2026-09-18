@@ -109,9 +109,68 @@ test('the daily source limit rejects a batch that would exceed it',async()=>{
   const {token}=await makeCredential({daily_source_limit:1});
   await assert.rejects(importHandle(event({mode:'QUEUE',state:'FL',source_system:'CHATGPT',sources:[validSource,{...validSource,url:'https://example.org/other'}]},token),db),e=>{assert.equal(e.status,429);return true;});
 });
-test('TRUSTED_AUTOMATION mode is rejected -- not yet implemented',async()=>{
+const claim=(value,quote)=>({value,quote});
+const trustedPageText='Community Impact Grant. This is a competitive grant from the Example Foundation. Eligible Florida nonprofits can apply. Applications are now open. Awards up to $25,000.';
+const trustedSource={
+  source_url:'https://example.org/grants',
+  page_text:trustedPageText,
+  submitter_type:'CLAUDE',
+  programs:[{
+    organization_name:claim('Example Foundation','Example Foundation'),
+    program_name:claim('Community Impact Grant','Community Impact Grant'),
+    funding_mechanism:claim('competitive grant','This is a competitive grant'),
+    applicable_states:claim(['FL'],'Eligible Florida nonprofits can apply'),
+    current_cycle_open:claim(true,'Applications are now open'),
+    award_max:claim(25000,'Awards up to $25,000'),
+  }],
+};
+test('TRUSTED_AUTOMATION is rejected for a credential without the permission',async()=>{
   const {token}=await makeCredential();
-  await assert.rejects(importHandle(event({mode:'TRUSTED_AUTOMATION',state:'FL',source_system:'CHATGPT',sources:[validSource]},token),db),/not yet available/);
+  await assert.rejects(importHandle(event({mode:'TRUSTED_AUTOMATION',state:'FL',source_system:'CHATGPT',sources:[trustedSource]},token),db),e=>{assert.equal(e.status,403);assert.match(e.message,/SOURCE_INTELLIGENCE_TRUSTED_AUTOMATION/);return true;});
+});
+test('TRUSTED_AUTOMATION requires a sources array, not pipe-delimited text',async()=>{
+  const {token}=await makeCredential({permissions:['SOURCE_INTELLIGENCE_IMPORT','SOURCE_INTELLIGENCE_TRUSTED_AUTOMATION']});
+  await assert.rejects(importHandle(event({mode:'TRUSTED_AUTOMATION',state:'FL',source_system:'CHATGPT',text:'Example|https://example.org|COMMUNITY_FOUNDATION_GRANT|Florida|youth'},token),db),/requires a "sources" array/);
+});
+test('a permitted credential\'s grounded TRUSTED_AUTOMATION submission is verified immediately, with no redundant VALIDATE job',async()=>{
+  const {token}=await makeCredential({permissions:['SOURCE_INTELLIGENCE_IMPORT','SOURCE_INTELLIGENCE_TRUSTED_AUTOMATION']});
+  const res=await importHandle(event({mode:'TRUSTED_AUTOMATION',state:'FL',source_system:'CLAUDE',sources:[trustedSource]},token),db);
+  assert.equal(res.statusCode,202);
+  const {batch_id}=JSON.parse(res.body);
+  await runWorker({db,maxJobs:5});
+  const candidates=await db.all('source_candidates');
+  assert.equal(candidates.length,1);
+  assert.equal(candidates[0].discovery_method,'API_CLAUDE');
+  assert.ok(candidates[0].last_verified_at);
+  assert.equal(candidates[0].proposed.program_name,'Community Impact Grant');
+  assert.equal(candidates[0].proposed.evidence.program_name.quote,'Community Impact Grant');
+  // Verified at submission means no VALIDATE job was ever queued for it --
+  // the whole point of supplying evidence instead of a bare URL.
+  const jobs=await db.all('source_jobs');
+  assert.equal(jobs.filter(j=>j.kind==='VALIDATE').length,0);
+  const statusRes=await statusHandle(event(null,token,'GET',{batch_id}),db);
+  const status=JSON.parse(statusRes.body);
+  assert.equal(status.new_candidate_count,1);
+  assert.equal(status.verification_queued_count,0);
+});
+test('an ungrounded claim in a TRUSTED_AUTOMATION submission is dropped from that one field, without failing the rest of the submission',async()=>{
+  const {token}=await makeCredential({permissions:['SOURCE_INTELLIGENCE_IMPORT','SOURCE_INTELLIGENCE_TRUSTED_AUTOMATION']});
+  await importHandle(event({mode:'TRUSTED_AUTOMATION',state:'FL',source_system:'CLAUDE',sources:[{...trustedSource,programs:[{...trustedSource.programs[0],award_max:claim(999999,'not on the page')}]}]},token),db);
+  await runWorker({db,maxJobs:5});
+  const candidates=await db.all('source_candidates');
+  assert.equal(candidates.length,1);
+  assert.equal(candidates[0].proposed.award_max,null);
+  assert.ok(candidates[0].last_verified_at,'the submission overall is still verified; only the ungrounded field is dropped');
+});
+test('a source with no page_text is reported as an invalid row rather than silently accepted as unverified',async()=>{
+  const {token}=await makeCredential({permissions:['SOURCE_INTELLIGENCE_IMPORT','SOURCE_INTELLIGENCE_TRUSTED_AUTOMATION']});
+  const res=await importHandle(event({mode:'TRUSTED_AUTOMATION',state:'FL',source_system:'CLAUDE',sources:[{source_url:'https://example.org/x',programs:trustedSource.programs}]},token),db);
+  const {batch_id}=JSON.parse(res.body);
+  await runWorker({db,maxJobs:5});
+  const statusRes=await statusHandle(event(null,token,'GET',{batch_id}),db);
+  const status=JSON.parse(statusRes.body);
+  assert.equal(status.invalid_count,1);
+  assert.equal((await db.all('source_candidates')).length,0);
 });
 test('existing manual paste import is unaffected by the new ingestion path',async()=>{
   const {parsePipe}=require('../netlify/lib/source-intelligence/imports');
