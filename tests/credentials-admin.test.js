@@ -75,3 +75,58 @@ test('credential management requires admin authentication',async()=>{
   const unauth={httpMethod:'POST',headers:{},body:JSON.stringify({action:'create_credential',name:'X',source_system:'CHATGPT'})};
   await assert.rejects(handle(unauth,db),e=>{assert.equal(e.status,403);return true;});
 });
+test('create_credential defaults to no trusted-automation permission',async()=>{
+  const res=await handle(admin({action:'create_credential',name:'Default Agent',source_system:'CHATGPT'}),db);
+  const body=JSON.parse(res.body);
+  const [row]=await db.select('api_credentials',{id:'eq.'+body.credential.id});
+  assert.deepEqual(row.permissions,['SOURCE_INTELLIGENCE_IMPORT']);
+});
+test('create_credential with trusted_automation grants both permissions up front',async()=>{
+  const res=await handle(admin({action:'create_credential',name:'Trusted Agent',source_system:'CLAUDE',trusted_automation:true}),db);
+  const body=JSON.parse(res.body);
+  const [row]=await db.select('api_credentials',{id:'eq.'+body.credential.id});
+  assert.deepEqual(row.permissions,['SOURCE_INTELLIGENCE_IMPORT','SOURCE_INTELLIGENCE_TRUSTED_AUTOMATION']);
+});
+test('create_credential rejects a non-boolean trusted_automation',async()=>{
+  await assert.rejects(handle(admin({action:'create_credential',name:'X',source_system:'CHATGPT',trusted_automation:'yes'}),db),/must be true or false/);
+});
+test('set_trusted_automation grants the permission to an already-issued credential without reissuing it',async()=>{
+  const created=JSON.parse((await handle(admin({action:'create_credential',name:'Upgrade Me',source_system:'CHATGPT'}),db)).body);
+  const [before]=await db.select('api_credentials',{id:'eq.'+created.credential.id});
+  const res=await handle(admin({action:'set_trusted_automation',credential_id:created.credential.id,enabled:true}),db);
+  assert.equal(res.statusCode,200);
+  const [row]=await db.select('api_credentials',{id:'eq.'+created.credential.id});
+  assert.deepEqual(row.permissions,['SOURCE_INTELLIGENCE_IMPORT','SOURCE_INTELLIGENCE_TRUSTED_AUTOMATION']);
+  assert.equal(row.token_hash,before.token_hash); // the credential's token is untouched, not reissued
+});
+test('set_trusted_automation revokes the permission and leaves the base permission intact',async()=>{
+  const created=JSON.parse((await handle(admin({action:'create_credential',name:'Downgrade Me',source_system:'CHATGPT',trusted_automation:true}),db)).body);
+  await handle(admin({action:'set_trusted_automation',credential_id:created.credential.id,enabled:false}),db);
+  const [row]=await db.select('api_credentials',{id:'eq.'+created.credential.id});
+  assert.deepEqual(row.permissions,['SOURCE_INTELLIGENCE_IMPORT']);
+});
+test('set_trusted_automation is idempotent -- granting it twice never duplicates the permission',async()=>{
+  const created=JSON.parse((await handle(admin({action:'create_credential',name:'Idempotent',source_system:'CHATGPT'}),db)).body);
+  await handle(admin({action:'set_trusted_automation',credential_id:created.credential.id,enabled:true}),db);
+  await handle(admin({action:'set_trusted_automation',credential_id:created.credential.id,enabled:true}),db);
+  const [row]=await db.select('api_credentials',{id:'eq.'+created.credential.id});
+  assert.deepEqual(row.permissions,['SOURCE_INTELLIGENCE_IMPORT','SOURCE_INTELLIGENCE_TRUSTED_AUTOMATION']);
+});
+test('set_trusted_automation rejects an unknown credential and a non-boolean enabled',async()=>{
+  await assert.rejects(handle(admin({action:'set_trusted_automation',credential_id:'00000000-0000-4000-8000-000000000000',enabled:true}),db),e=>{assert.equal(e.status,404);return true;});
+  const created=JSON.parse((await handle(admin({action:'create_credential',name:'Bad Input',source_system:'CHATGPT'}),db)).body);
+  await assert.rejects(handle(admin({action:'set_trusted_automation',credential_id:created.credential.id,enabled:'yes'}),db),/must be true or false/);
+});
+test('set_trusted_automation logs a review decision',async()=>{
+  const created=JSON.parse((await handle(admin({action:'create_credential',name:'Logged Grant',source_system:'CHATGPT'}),db)).body);
+  await handle(admin({action:'set_trusted_automation',credential_id:created.credential.id,enabled:true}),db);
+  const decisions=await db.all('source_review_decisions',{action:'eq.CREDENTIAL_TRUSTED_AUTOMATION_GRANTED'});
+  assert.equal(decisions.length,1);
+  assert.match(decisions[0].notes,/Logged Grant/);
+});
+test('the credentials view includes permissions',async()=>{
+  await handle(admin({action:'create_credential',name:'Permissions Visible',source_system:'CHATGPT',trusted_automation:true}),db);
+  const res=await handle(adminGet({view:'credentials'}),db);
+  const body=JSON.parse(res.body);
+  assert.deepEqual(body.rows[0].permissions,['SOURCE_INTELLIGENCE_IMPORT','SOURCE_INTELLIGENCE_TRUSTED_AUTOMATION']);
+});
