@@ -93,6 +93,25 @@ test('increasing the budget resumes eligible paused work without resetting usage
  assert.equal(await scalar('select source_requeue_budget_jobs()'),0);
 });
 
+test('a due PAUSED job is reclaimed by source_claim_job directly, not just via source_requeue_budget_jobs',async()=>{
+ await pg.exec("update source_engine_settings set engine_enabled=true;update source_state_settings set monitoring_enabled=true where state_code='FL'");
+ const r=await scalar("insert into source_discovery_runs(strategy,state_code) values('MONITOR','FL') returning id");
+ const j=await scalar("insert into source_jobs(dedupe_key,run_id,kind,state_code,status,attempts,last_error,available_at) values('resume-me',$1,'MONITOR','FL','PAUSED',1,'Coverage category is disabled',now()-interval '1 hour') returning id",[r]);
+ const [claimed]=(await pg.query('select * from source_claim_job()')).rows;
+ assert.equal(claimed.id,j);assert.equal(claimed.status,'RUNNING');assert.equal(claimed.attempts,2);
+});
+test('a PAUSED job not yet due is left alone',async()=>{
+ await pg.exec("update source_engine_settings set engine_enabled=true;update source_state_settings set monitoring_enabled=true where state_code='FL'");
+ const r=await scalar("insert into source_discovery_runs(strategy,state_code) values('MONITOR','FL') returning id");
+ await pg.query("insert into source_jobs(dedupe_key,run_id,kind,state_code,status,attempts,last_error,available_at) values('not-yet',$1,'MONITOR','FL','PAUSED',1,'Coverage category is disabled',now()+interval '1 hour')",[r]);
+ assert.equal((await pg.query('select * from source_claim_job()')).rows.length,0);
+});
+test('a PAUSED job for a genuinely disabled state is still not reclaimed, even when due',async()=>{
+ await pg.exec("update source_engine_settings set engine_enabled=true;update source_state_settings set monitoring_enabled=false,discovery_enabled=false where state_code='FL'");
+ const r=await scalar("insert into source_discovery_runs(strategy,state_code) values('MONITOR','FL') returning id");
+ await pg.query("insert into source_jobs(dedupe_key,run_id,kind,state_code,status,attempts,last_error,available_at) values('still-disabled',$1,'MONITOR','FL','PAUSED',1,'This state is disabled for source verification',now()-interval '1 hour')",[r]);
+ assert.equal((await pg.query('select * from source_claim_job()')).rows.length,0);
+});
 test('paid work is chronological so new validation pages cannot starve older source monitors',async()=>{
  await pg.exec("update source_engine_settings set engine_enabled=true;update source_state_settings set monitoring_enabled=true where state_code='FL'");
  const r=await scalar("insert into source_discovery_runs(strategy,state_code) values('MONITOR','FL') returning id");
