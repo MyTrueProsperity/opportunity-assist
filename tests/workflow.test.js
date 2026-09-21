@@ -50,6 +50,26 @@ test('independent discovery automatically approves and publishes evidenced new p
  const decision=(await db.all('source_review_decisions'))[0];assert.equal(decision.decision_origin,'AUTOMATIC');assert.equal(decision.actor_id,null);
  const updated=(await db.select('source_coverage',{id:'eq.'+cell.id}))[0];assert.ok(updated.last_searched_at);assert.equal(updated.last_comprehensive_at,null);
 });
+test('import-origin verification is uncapped even when the daily budget is exhausted',async()=>{
+ await enable();await db.patch('source_state_settings',{state_code:'eq.FL'},{discovery_enabled:false});
+ const text='Example Foundation Impact Grant|https://example.org/grants|COMMUNITY_FOUNDATION_GRANT|Florida|youth';
+ const event={httpMethod:'POST',headers:{authorization:'Bearer local-test'},body:JSON.stringify({action:'import',state:'FL',text})};
+ await handle(event,db);await runWorker({db,provider:{},maxJobs:1});
+ await db.insert('source_daily_usage',{usage_date:new Date().toISOString().slice(0,10),state_code:'FL',reserved_usd:20});
+ const provider={model:'test',extract:async()=>({programs:[extracted],usage:{},cost:.001})};
+ await runWorker({db,provider,fetcher:async()=>({url:extracted.source_url,status:200,text:'Eligible Florida nonprofits. Applications are open.',hash:'imported',links:[]}),maxJobs:1});
+ const [job]=await db.select('source_jobs',{kind:'eq.VALIDATE'});
+ assert.equal(job.status,'COMPLETED');assert.equal((await registry(db)).length,1);
+});
+test('organic verification still respects the daily budget',async()=>{
+ await enable();await db.patch('source_state_settings',{state_code:'eq.FL'},{discovery_enabled:false});
+ await enqueue(db,{kind:'VALIDATE',state:'FL',key:'organic-check',payload:{url:'https://example.org/organic',name:'Organic Lead'}});
+ await db.insert('source_daily_usage',{usage_date:new Date().toISOString().slice(0,10),state_code:'FL',reserved_usd:20});
+ const provider={model:'test',extract:async()=>({programs:[extracted],usage:{},cost:.001})};
+ await runWorker({db,provider,fetcher:async()=>({url:'https://example.org/organic',status:200,text:'Eligible Florida nonprofits. Applications are open.',hash:'organic',links:[]}),maxJobs:1});
+ const [job]=await db.select('source_jobs',{kind:'eq.VALIDATE'});
+ assert.equal(job.status,'PAUSED');assert.match(job.last_error,/Daily state or global budget reached/);
+});
 test('API rejects an unauthenticated administration request',async()=>await assert.rejects(handle({httpMethod:'GET',headers:{},queryStringParameters:{view:'bootstrap'}},db),/Administrator/));
 test('file import reaches the registry export after automatic verification and reimport adds no duplicate',async()=>{
  await enable();await db.patch('source_state_settings',{state_code:'eq.FL'},{discovery_enabled:false});

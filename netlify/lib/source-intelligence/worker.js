@@ -15,11 +15,20 @@ async function gate(db,job,kind) {
   if(kind&&!enabledFor(s,kind,!!e.florida_validated_at))throw new Paused('State '+kind+' is disabled');
   return s;
 }
-async function reserve(db,job,queries,pages,cost){if(!await db.rpc('source_reserve_usage',{p_state:job.state_code,p_queries:queries,p_pages:pages,p_usd:cost}))throw new Paused('Daily state or global budget reached; resume after the UTC reset');}
+async function reserve(db,job,queries,pages,cost,importOrigin=false){if(importOrigin)return;if(!await db.rpc('source_reserve_usage',{p_state:job.state_code,p_queries:queries,p_pages:pages,p_usd:cost}))throw new Paused('Daily state or global budget reached; resume after the UTC reset');}
 async function usage(db,job,result){await db.rpc('source_add_metrics',{p_run:job.run_id,p_metrics:{ai_calls:1,input_tokens:result.usage?.input_tokens||0,output_tokens:result.usage?.output_tokens||0,search_requests:result.usage?.server_tool_use?.web_search_requests||0},p_cost:result.cost||0});}
+// A VALIDATE job's run carries an 'IMPORT'/'API_IMPORT' strategy exactly
+// when, and only when, it exists because a source was imported rather
+// than found by the system itself (see the priority-ordering migration
+// for why that link is reliable). Imports are deliberately uncapped: the
+// person doing the importing already decided this is worth verifying,
+// so it shouldn't compete with -- or be blocked by -- the same daily
+// budget that governs the system's own ongoing discovery and monitoring.
+async function isImportOrigin(db,job){if(!job.run_id)return false;const [run]=await db.select('source_discovery_runs',{id:'eq.'+job.run_id,select:'strategy'});return !!run&&['IMPORT','API_IMPORT'].includes(run.strategy);}
 async function inspect(db,provider,job,url,name,program,fetcher=fetchPage) {
   await gate(db,job,job.kind==='MONITOR'?'monitoring':job.kind==='DISCOVER'?'discovery':null);
-  await reserve(db,job,0,1,0);const start=Date.now();let page,extracted,cost=0;
+  const importOrigin=await isImportOrigin(db,job);
+  await reserve(db,job,0,1,0,importOrigin);const start=Date.now();let page,extracted,cost=0;
   const cache=(await db.select('source_page_cache',{normalized_url:'eq.'+normalizeUrl(url),limit:1}))[0];
   const geographies=await db.all('source_geographies',{state_code:'eq.'+job.state_code,select:'id,name,kind,state_code'});
   await db.rpc('source_add_metrics',{p_run:job.run_id,p_metrics:{pages_attempted:1}});
@@ -31,7 +40,7 @@ async function inspect(db,provider,job,url,name,program,fetcher=fetchPage) {
     else {
       if(page.unchanged)page=await fetcher(url,null);
       // 40k chars + 80 links and bounded output fit under a conservative $0.12 reservation.
-      await reserve(db,job,0,0,.12);extracted={...await provider.extract(page,job.state_code),verification_state:job.state_code};cost+=extracted.cost;await usage(db,job,extracted);
+      await reserve(db,job,0,0,.12,importOrigin);extracted={...await provider.extract(page,job.state_code),verification_state:job.state_code};cost+=extracted.cost;await usage(db,job,extracted);
     }
     if(page.text)extracted={...extracted,geography_evidence_version:GEOGRAPHY_EVIDENCE_VERSION,programs:(extracted.programs||[]).map(c=>resolveGeographicEvidence(c,page,job.state_code,geographies))};
     await db.upsert('source_page_cache',{normalized_url:normalizeUrl(url),resolved_url:page.url,page_hash:page.hash,extracted,links:page.links,etag:page.etag||cache?.etag||null,last_modified:page.last_modified||cache?.last_modified||null,fetched_at:new Date().toISOString()},'normalized_url');
@@ -51,7 +60,7 @@ async function inspect(db,provider,job,url,name,program,fetcher=fetchPage) {
         // A byte per input token plus 2,000 prompt/format tokens is a conservative
         // bound for this text-only request; reserve all 900 possible output tokens.
         const comparisonBudget=(Buffer.byteLength(JSON.stringify({candidate:c,existing:similar}))+2000+900*5)/1e6;
-        await reserve(db,job,0,0,comparisonBudget);
+        await reserve(db,job,0,0,comparisonBudget,importOrigin);
         const semantic=await provider.compare(c,similar);await usage(db,job,semantic);cost+=semantic.cost;
         await db.patch('source_candidates',{id:'eq.'+result.row.id,version:'eq.'+result.row.version,status:'in.(PENDING,INVESTIGATING,MATCHED)'},{proposed:{...result.row.proposed,semantic_judgment:semantic.judgment}});
       }

@@ -112,6 +112,22 @@ test('a PAUSED job for a genuinely disabled state is still not reclaimed, even w
  await pg.query("insert into source_jobs(dedupe_key,run_id,kind,state_code,status,attempts,last_error,available_at) values('still-disabled',$1,'MONITOR','FL','PAUSED',1,'This state is disabled for source verification',now()-interval '1 hour')",[r]);
  assert.equal((await pg.query('select * from source_claim_job()')).rows.length,0);
 });
+test('an import-origin VALIDATE job jumps ahead of organic discovery and monitoring work',async()=>{
+ await pg.exec("update source_engine_settings set engine_enabled=true;update source_state_settings set monitoring_enabled=true where state_code='FL'");
+ const organicRun=await scalar("insert into source_discovery_runs(strategy,state_code) values('MONITOR','FL') returning id");
+ const importRun=await scalar("insert into source_discovery_runs(strategy,state_code) values('API_IMPORT','FL') returning id");
+ await pg.query("insert into source_jobs(dedupe_key,run_id,kind,state_code,created_at) values('older-organic',$1,'MONITOR','FL',now()-interval '2 hours'),('newer-import-validate',$2,'VALIDATE','FL',now()-interval '1 hour')",[organicRun,importRun]);
+ const [claimed]=(await pg.query('select * from source_claim_job()')).rows;
+ assert.equal(claimed.dedupe_key,'newer-import-validate');
+});
+test('SEED still takes priority over an import-origin VALIDATE job',async()=>{
+ await pg.exec("update source_engine_settings set engine_enabled=true;update source_state_settings set monitoring_enabled=true where state_code='FL'");
+ const importRun=await scalar("insert into source_discovery_runs(strategy,state_code) values('API_IMPORT','FL') returning id");
+ const seedRun=await scalar("insert into source_discovery_runs(strategy) values('SEED') returning id");
+ await pg.query("insert into source_jobs(dedupe_key,run_id,kind,state_code,created_at) values('import-validate',$1,'VALIDATE','FL',now()-interval '2 hours'),('seed-job',$2,'SEED',null,now())",[importRun,seedRun]);
+ const [claimed]=(await pg.query('select * from source_claim_job()')).rows;
+ assert.equal(claimed.kind,'SEED');
+});
 test('paid work is chronological so new validation pages cannot starve older source monitors',async()=>{
  await pg.exec("update source_engine_settings set engine_enabled=true;update source_state_settings set monitoring_enabled=true where state_code='FL'");
  const r=await scalar("insert into source_discovery_runs(strategy,state_code) values('MONITOR','FL') returning id");

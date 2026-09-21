@@ -137,6 +137,15 @@ for this credential, the existing batch is returned unchanged with
 `"idempotent_replay": true` instead of reprocessing the submission -- safe
 to retry a request after a network failure without double-importing.
 
+Verification for an import submitted through this API is deliberately
+uncapped and prioritized ahead of the system's own ongoing discovery and
+monitoring: it does not draw against, or get paused by, the daily
+per-state budget that governs organic work, and its VALIDATE jobs are
+worked off before the system's own never-ending discovery/monitoring
+queue gets a turn. The one exception is when the engine or the state
+itself is disabled entirely (not a budget condition) -- that still applies
+to everything, imports included.
+
 ### mode: TRUSTED_AUTOMATION
 
 Reserved for a future, administrator-controlled mode with a different trust
