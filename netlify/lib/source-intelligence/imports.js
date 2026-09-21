@@ -37,6 +37,30 @@ function parseJson(sources) {
 const MAX_PAGE_TEXT_LENGTH = 40000;
 // Matches provider.js's own extract(): at most 6 real mechanisms per page.
 const MAX_PROGRAMS_PER_SOURCE = 6;
+// A bare date or a full date-time, optionally with fractional seconds and a
+// Z/offset. Deliberately stricter than the free-text date parsing
+// quality.js's own deadline handling does (that has to cope with prose on a
+// real page); this is a structured API field, so we ask for real ISO 8601.
+const ISO_8601_RE = /^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}(:\d{2}(\.\d{1,9})?)?(Z|[+-]\d{2}:\d{2}|[+-]\d{4})?)?$/;
+
+// Resolves the timestamp a trusted submission's evidence should be treated
+// as verified as of -- the submitter's own retrieved_at/observed_at, when
+// it is a real, parseable, non-future ISO date -- or null when there is
+// none to trust. Ingestion (ie. when we happened to process the request)
+// and observation (when the submitter actually read the page) are
+// deliberately kept distinct: this function only ever answers the second
+// question. A future-dated claim is rejected outright, not merely
+// distrusted, because if it were used as last_verified_at it would let a
+// submission look freshly verified indefinitely -- the 7-day
+// re-verification window in source_automatically_approve compares against
+// last_verified_at directly, so a future timestamp would never age out.
+function resolvedObservationTime(item) {
+  const raw = item.retrieved_at ?? item.observed_at;
+  if (typeof raw !== 'string' || !ISO_8601_RE.test(raw.trim())) return null;
+  const parsed = new Date(raw);
+  if (!Number.isFinite(parsed.getTime()) || parsed.getTime() > Date.now()) return null;
+  return parsed.toISOString();
+}
 
 // Parses a Trusted External Ingestion submission where the caller supplies
 // its own extracted evidence -- page_text plus per-field {value,quote}
@@ -86,6 +110,16 @@ function parseTrusted(sources, targetState) {
       if (!program || typeof program !== 'object') { rows.push({ raw: { ...raw, program }, line, error: 'Each program must be an object' }); return; }
       try {
         const candidate = normalized(validateExtraction(program, page, targetState, hasGroundedQuote));
+        // validateExtraction stamps fetched_at with the moment we happened
+        // to process this request (ingestion time). For a trusted
+        // submission, the evidence itself may be older than that --
+        // correct it to when the submitter says it actually observed the
+        // page, when that claim is real, parseable, and not in the
+        // future. Left alone (no valid claim supplied), fetched_at keeps
+        // validateExtraction's own ingestion-time value, exactly as every
+        // other import already gets.
+        const observedAt = resolvedObservationTime(item);
+        if (observedAt) candidate.fetched_at = observedAt;
         rows.push({ raw: { ...raw, program }, line, candidate, identity_key: identityKey(candidate) });
       } catch (e) { rows.push({ raw: { ...raw, program }, line, error: e.message }); }
     });

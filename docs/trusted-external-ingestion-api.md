@@ -169,7 +169,7 @@ extract on its own. `sources` takes a different shape from `DRY_RUN`/`QUEUE`:
       "source_url": "https://example.org/grants",
       "page_text": "Community Impact Grant. This is a competitive grant from the Example Foundation. Eligible Florida nonprofits can apply. Applications are now open. Awards up to $25,000.",
       "page_title": "Community Impact Grant | Example Foundation",   // optional
-      "retrieved_at": "2026-09-18T12:00:00.000Z",                     // optional; "observed_at" also accepted
+      "retrieved_at": "2026-09-18T12:00:00.000Z",                     // optional but meaningful -- see below; "observed_at" also accepted
       "submitter_type": "CLAUDE",                                     // optional, free text
       "links": [{ "url": "https://example.org/apply", "text": "Apply" }], // optional; needed only if a program's application_url should validate
       "programs": [
@@ -226,6 +226,16 @@ marked verified as soon as its `page_text` is processed (whether or not
 every individual claim happened to ground), so a fully-evidenced submission
 is never re-queued for this system's own independent fetch the way a
 `QUEUE` submission still is.
+
+That verification timestamp -- what automatic approval's 7-day freshness
+window actually checks -- is `retrieved_at` or `observed_at` when either is
+a real, parseable, non-future ISO date, not the moment this system happened
+to process the request. Ingestion time and page-observation time are kept
+deliberately distinct: submitting a page a submitter read two weeks ago
+does not make it look freshly verified today, and a submitter cannot claim
+a future observation time to make a record look fresh indefinitely (a
+future-dated claim is ignored outright, falling back to ingestion time,
+same as no timestamp being supplied at all).
 
 The response shape is identical to `QUEUE`'s `202 Accepted` batch summary
 below; poll it the same way.

@@ -5,6 +5,7 @@ const {generateToken}=require('../netlify/lib/source-intelligence/credentials');
 const {handle:importHandle}=require('../netlify/functions/source-intelligence-import');
 const {handle:statusHandle}=require('../netlify/functions/source-intelligence-batch-status');
 const {runWorker}=require('../netlify/lib/source-intelligence/worker');
+const {automaticallyApprove}=require('../netlify/lib/source-intelligence/service');
 let db;
 test.before(async()=>{db=await localDb();});
 test.after(async()=>db.pg.close());
@@ -177,4 +178,29 @@ test('existing manual paste import is unaffected by the new ingestion path',asyn
   const rows=parsePipe('Example Grant|https://example.org/manual|COMMUNITY_FOUNDATION_GRANT|FLORIDA|YOUTH');
   assert.equal(rows.length,1);
   assert.equal(rows[0].error,undefined);
+});
+test('a genuinely stale retrieved_at withholds automatic approval instead of looking freshly verified at ingestion time',async()=>{
+  await db.patch('source_state_settings',{state_code:'eq.FL'},{monitoring_enabled:true,publication_enabled:true});
+  const {token}=await makeCredential({permissions:['SOURCE_INTELLIGENCE_IMPORT','SOURCE_INTELLIGENCE_TRUSTED_AUTOMATION']});
+  const staleRetrievedAt=new Date(Date.now()-10*864e5).toISOString();
+  await importHandle(event({mode:'TRUSTED_AUTOMATION',state:'FL',source_system:'CLAUDE',sources:[{...trustedSource,retrieved_at:staleRetrievedAt}]},token),db);
+  await runWorker({db,maxJobs:5});
+  const [candidate]=await db.all('source_candidates');
+  assert.equal(+new Date(candidate.last_verified_at),+new Date(staleRetrievedAt));
+  assert.equal(candidate.quality_ready,true,'the record must otherwise be eligible, so staleness alone is what withholds approval');
+  // Before this fix, last_verified_at would have been ingestion time (now),
+  // which would clear automatic approval's 7-day freshness gate even though
+  // the underlying evidence is genuinely 10 days old.
+  const result=await automaticallyApprove(db,candidate);
+  assert.equal(result.outcome,'AWAITING_EVIDENCE');
+  assert.equal((await db.all('funding_programs')).length,0);
+});
+test('QUEUE mode ignores retrieved_at/observed_at entirely -- the new logic is confined to TRUSTED_AUTOMATION',async()=>{
+  const {token}=await makeCredential();
+  await importHandle(event({mode:'QUEUE',state:'FL',source_system:'CHATGPT',sources:[{...validSource,retrieved_at:'2020-01-01T00:00:00.000Z'}]},token),db);
+  await runWorker({db,maxJobs:5});
+  const [row]=await db.all('source_import_rows');
+  assert.equal(row.raw_row.retrieved_at,'2020-01-01T00:00:00.000Z','the field is preserved verbatim in raw_row...');
+  const [candidate]=await db.all('source_candidates');
+  assert.equal(candidate.last_verified_at,null,'...but is never interpreted as verification evidence -- QUEUE still awaits its own independent VALIDATE fetch');
 });
