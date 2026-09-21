@@ -14,7 +14,9 @@
 //     sources: [{ source_name, url, source_type?, geography?, keywords? }, ...] }
 //   -- or, in place of "sources": { text: "SOURCE NAME|URL|SOURCE_TYPE|GEOGRAPHY|KEYWORDS\n..." }
 //
-// mode: DRY_RUN (analyze only, returns immediately, nothing is written) or
+// mode: DRY_RUN (analyze only, returns immediately, nothing is written --
+//       also accepts TRUSTED_AUTOMATION's richer payload shape below, for
+//       previewing evidence grounding before actually submitting it) or
 //       QUEUE (the default external-AI mode: saved, deduplicated, and queued
 //       for the existing verification pipeline; returns a batch_id right
 //       away -- see source-intelligence-batch-status.js to poll progress).
@@ -57,7 +59,10 @@
 // TRUSTED_AUTOMATION additionally requires the credential to carry the
 // SOURCE_INTELLIGENCE_TRUSTED_AUTOMATION permission -- granted per credential
 // from the admin credentials screen -- on top of the SOURCE_INTELLIGENCE_IMPORT
-// permission every mode already requires.
+// permission every mode already requires. The same permission gates a
+// DRY_RUN preview of the trusted shape too, since it runs the identical
+// grounding logic; only actually persisting anything is unique to the
+// named mode.
 
 'use strict';
 const {createDb,HttpError}=require('../lib/source-intelligence/db');
@@ -79,6 +84,22 @@ function batchSummary(batch,idempotentReplay){
     new_candidate_count:batch.new_candidate_count,exact_duplicate_count:batch.exact_duplicate_count,possible_duplicate_count:batch.possible_duplicate_count,
     invalid_count:batch.invalid_count,verification_queued_count:batch.verification_queued_count,needs_review_count:batch.needs_review_count};
 }
+// True when "sources" is TRUSTED_AUTOMATION's richer per-program-evidence
+// shape rather than the bare {source_name,url,...} lead every other mode
+// uses -- the two schemas share no field names, so a page_text on any item
+// is an unambiguous signal, never a false positive against the bare shape.
+function looksTrusted(sources){return Array.isArray(sources)&&sources.some(s=>s&&typeof s==='object'&&typeof s.page_text==='string');}
+// Which of a trusted row's own submitted claims actually grounded against
+// its page_text, for a DRY_RUN caller to see before committing anything --
+// only fields represented as a real {value,quote} claim are considered;
+// keywords/applicant_types/source_type/authority aren't quote-shaped claims
+// and are outside what this is meant to show.
+function groundingSummary(item){
+  const program=item.raw?.program||{};
+  const attempted=Object.keys(program).filter(k=>program[k]&&typeof program[k]==='object'&&typeof program[k].quote==='string');
+  const grounded=attempted.filter(k=>item.candidate.evidence&&k in item.candidate.evidence);
+  return {fields_grounded:grounded,fields_not_grounded:attempted.filter(k=>!grounded.includes(k))};
+}
 
 async function handle(event,db=createDb()) {
   if(event.httpMethod!=='POST')return json(405,{error:'Method not allowed.'});
@@ -91,10 +112,19 @@ async function handle(event,db=createDb()) {
   if(!['DRY_RUN','QUEUE','TRUSTED_AUTOMATION'].includes(mode))throw new HttpError(400,'mode must be DRY_RUN, QUEUE, or TRUSTED_AUTOMATION.');
   if(!body.state||!STATES[body.state])throw new HttpError(400,'A valid two-letter state code is required.');
   if(!body.source_system)throw new HttpError(400,'source_system is required.');
-  if(mode==='TRUSTED_AUTOMATION'&&!credential.permissions.includes(TRUSTED_AUTOMATION_PERMISSION))throw new HttpError(403,'This credential does not have the '+TRUSTED_AUTOMATION_PERMISSION+' permission.');
+  // TRUSTED_AUTOMATION always means the trusted shape, regardless of what
+  // the payload looks like (so a malformed submission still gets that
+  // mode's own, more specific errors below, not silently reinterpreted as
+  // a bare lead). DRY_RUN additionally supports previewing the trusted
+  // shape -- detected from the payload, since DRY_RUN's whole point is
+  // never persisting anything, there is no separate "mode" value for it.
+  // QUEUE never does, on purpose: persisting trusted evidence stays gated
+  // behind the explicit mode and permission below, never inferred from shape.
+  const trustedShape=mode==='TRUSTED_AUTOMATION'||(mode==='DRY_RUN'&&looksTrusted(body.sources));
+  if(trustedShape&&!credential.permissions.includes(TRUSTED_AUTOMATION_PERMISSION))throw new HttpError(403,'This credential does not have the '+TRUSTED_AUTOMATION_PERMISSION+' permission.');
 
   let parsed;
-  if(mode==='TRUSTED_AUTOMATION'){
+  if(trustedShape){
     if(!Array.isArray(body.sources))throw new HttpError(400,'TRUSTED_AUTOMATION requires a "sources" array; pipe-delimited "text" has no room for page_text or evidence.');
     parsed=parseTrusted(body.sources,body.state);
   } else parsed=Array.isArray(body.sources)?parseJson(body.sources):typeof body.text==='string'?parsePipe(body.text):null;
@@ -113,9 +143,10 @@ async function handle(event,db=createDb()) {
       const q=quality(normalized(item.candidate),duplicate);
       const status=summarize(duplicate);
       if(status==='duplicate')exactCount++;else if(status==='possible_duplicate')possibleCount++;else newCount++;
-      return {line:item.line,source_name:item.candidate.source_name,status,existing_source_id:duplicate.matched_program_id||undefined,match_reason:duplicate.reason,quality_ready:q.quality_ready};
+      const row={line:item.line,source_name:item.candidate.source_name,status,existing_source_id:duplicate.matched_program_id||undefined,match_reason:duplicate.reason,quality_ready:q.quality_ready};
+      return trustedShape?{...row,...groundingSummary(item)}:row;
     });
-    return json(200,{mode:'DRY_RUN',submitted_count:parsed.length,new_candidate_count:newCount,exact_duplicate_count:exactCount,possible_duplicate_count:possibleCount,invalid_count:invalidCount,results});
+    return json(200,{mode:'DRY_RUN',submission_shape:trustedShape?'TRUSTED_AUTOMATION':'STANDARD',submitted_count:parsed.length,new_candidate_count:newCount,exact_duplicate_count:exactCount,possible_duplicate_count:possibleCount,invalid_count:invalidCount,results});
   }
 
   // QUEUE and TRUSTED_AUTOMATION persist identically from here -- both

@@ -204,3 +204,36 @@ test('QUEUE mode ignores retrieved_at/observed_at entirely -- the new logic is c
   const [candidate]=await db.all('source_candidates');
   assert.equal(candidate.last_verified_at,null,'...but is never interpreted as verification evidence -- QUEUE still awaits its own independent VALIDATE fetch');
 });
+test('DRY_RUN previews the trusted shape when the credential is permitted, and writes nothing',async()=>{
+  const {token}=await makeCredential({permissions:['SOURCE_INTELLIGENCE_IMPORT','SOURCE_INTELLIGENCE_TRUSTED_AUTOMATION']});
+  const res=await importHandle(event({mode:'DRY_RUN',state:'FL',source_system:'CLAUDE',sources:[trustedSource]},token),db);
+  assert.equal(res.statusCode,200);
+  const body=JSON.parse(res.body);
+  assert.equal(body.submission_shape,'TRUSTED_AUTOMATION');
+  assert.equal(body.new_candidate_count,1);
+  assert.equal(body.results[0].quality_ready,true);
+  assert.deepEqual(new Set(body.results[0].fields_grounded),new Set(['organization_name','program_name','funding_mechanism','applicable_states','current_cycle_open','award_max']));
+  assert.deepEqual(body.results[0].fields_not_grounded,[]);
+  assert.equal((await db.all('source_candidates')).length,0);
+  assert.equal((await db.all('import_batches')).length,0);
+});
+test('DRY_RUN of the trusted shape reports which claimed fields did not ground',async()=>{
+  const {token}=await makeCredential({permissions:['SOURCE_INTELLIGENCE_IMPORT','SOURCE_INTELLIGENCE_TRUSTED_AUTOMATION']});
+  const withBadClaim={...trustedSource,programs:[{...trustedSource.programs[0],award_max:claim(999999,'not on the page')}]};
+  const res=await importHandle(event({mode:'DRY_RUN',state:'FL',source_system:'CLAUDE',sources:[withBadClaim]},token),db);
+  const body=JSON.parse(res.body);
+  assert.deepEqual(body.results[0].fields_not_grounded,['award_max']);
+  assert.equal(body.results[0].fields_grounded.includes('award_max'),false);
+  assert.equal((await db.all('source_candidates')).length,0);
+});
+test('DRY_RUN of the trusted shape is rejected for a credential without the permission',async()=>{
+  const {token}=await makeCredential();
+  await assert.rejects(importHandle(event({mode:'DRY_RUN',state:'FL',source_system:'CLAUDE',sources:[trustedSource]},token),db),e=>{assert.equal(e.status,403);assert.match(e.message,/SOURCE_INTELLIGENCE_TRUSTED_AUTOMATION/);return true;});
+});
+test('DRY_RUN of the standard shape is unaffected -- no permission needed, submission_shape is STANDARD',async()=>{
+  const {token}=await makeCredential();
+  const res=await importHandle(event({mode:'DRY_RUN',state:'FL',source_system:'CHATGPT',sources:[validSource]},token),db);
+  const body=JSON.parse(res.body);
+  assert.equal(body.submission_shape,'STANDARD');
+  assert.equal(body.results[0].fields_grounded,undefined);
+});

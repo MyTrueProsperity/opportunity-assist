@@ -84,8 +84,9 @@ Only `source_name` and `url` are required per source. `source_type`,
 `source_type` is not validated against the enum at ingestion time --
 unrecognized values pass through and can be corrected during review.
 
-This `sources` shape is for `DRY_RUN` and `QUEUE`. `TRUSTED_AUTOMATION`
-uses a different, richer shape described in its own section below.
+This `sources` shape is the standard one, usable with `DRY_RUN` or `QUEUE`.
+`TRUSTED_AUTOMATION` uses a different, richer shape described in its own
+section below -- which `DRY_RUN` also accepts, for previewing it.
 
 ### mode: DRY_RUN
 
@@ -122,6 +123,51 @@ and daily quota.
 A row with `"status": "invalid"` carries an `error` string instead of the
 other fields (for example `"url is required"`) and does not stop the rest
 of the batch from being analyzed.
+
+**Previewing a `TRUSTED_AUTOMATION` submission.** `DRY_RUN` also accepts
+`TRUSTED_AUTOMATION`'s richer `sources` shape (`page_text` plus per-field
+claims in `programs[]` -- see that mode's section below) for exactly the
+same reason `DRY_RUN` exists at all: check what a submission would produce
+before committing to it. This still requires the credential to carry
+`SOURCE_INTELLIGENCE_TRUSTED_AUTOMATION`, since it runs the identical
+grounding logic; only actually persisting anything is unique to
+`TRUSTED_AUTOMATION` mode itself. Nothing about which shape you send is a
+separate field -- it's detected from `sources` itself (a `page_text` on any
+item is unambiguous, since the standard shape has no such field), and the
+response says which one was used:
+
+```jsonc
+// 200 OK
+{
+  "mode": "DRY_RUN",
+  "submission_shape": "TRUSTED_AUTOMATION",  // or "STANDARD" for the shape above
+  "submitted_count": 1,
+  "new_candidate_count": 1,
+  "exact_duplicate_count": 0,
+  "possible_duplicate_count": 0,
+  "invalid_count": 0,
+  "results": [
+    {
+      "line": 1,
+      "source_name": "Community Impact Grant",
+      "status": "new_candidate",
+      "match_reason": "No materially equivalent record found in complete registry",
+      "quality_ready": true,
+      "fields_grounded": ["program_name", "funding_mechanism", "applicable_states"],
+      "fields_not_grounded": ["award_max"]
+    }
+  ]
+}
+```
+
+`fields_grounded`/`fields_not_grounded` list which of the claims you
+submitted (only ones shaped as `{value, quote}`; `keywords`,
+`applicant_types`, `source_type` and `authority` aren't quote-grounded
+claims and aren't included) actually matched their `page_text` and which
+didn't -- exactly what would happen to each field if you submitted this
+same payload for real. `submitted_count` counts flattened programs, not
+`sources` items, the same as it does for a real `TRUSTED_AUTOMATION`
+submission -- one page proposing 3 programs counts as 3.
 
 ### mode: QUEUE
 
@@ -238,10 +284,8 @@ future-dated claim is ignored outright, falling back to ingestion time,
 same as no timestamp being supplied at all).
 
 The response shape is identical to `QUEUE`'s `202 Accepted` batch summary
-below; poll it the same way.
-
-`DRY_RUN` does not support the `TRUSTED_AUTOMATION` payload shape -- there
-is currently no preview-only path for a trusted submission.
+below; poll it the same way. See *mode: DRY_RUN* above for previewing this
+shape before submitting it for real.
 
 One known gap: `applicable_states` only grounds from an explicit state
 name in a quote (as shown above). The county-based eligibility inference
