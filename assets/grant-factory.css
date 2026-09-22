@@ -259,6 +259,10 @@
   font-size: 0.85rem;
   color: #647881;
 }
+.gf-note.error {
+  color: #a34242;
+  font-weight: 600;
+}
 .gf-statusline {
   display: flex;
   gap: 8px;

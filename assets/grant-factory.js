@@ -163,6 +163,10 @@
       if (node) {
         node.textContent = text;
         node.className = "gf-message" + (error ? " error" : "");
+        // A failure triggered from a button deep in a long question list is easy to miss if
+        // the message only appears at the top of the page. Bring it into view so it is
+        // actually seen at the moment the action fails.
+        if (text) node.scrollIntoView({ behavior: "smooth", block: "center" });
       }
     }
     async function refresh() {
@@ -205,7 +209,12 @@
         ["", "Select a document"],
         ...s.data.brain.documents.map((d) => [
           d.id,
-          d.title + " · " + label(d.status),
+          d.title +
+            " · " +
+            label(d.status) +
+            (d.external_use_allowed
+              ? ""
+              : " · Not approved for external use yet"),
         ]),
       ];
     }
@@ -296,6 +305,7 @@
           ["programs", "Programs"],
           ["vault", "Document Vault"],
           ["input", "Needs My Input"],
+          ["help", "Help"],
         ]
           .map(
             ([id, title]) =>
@@ -352,6 +362,7 @@
       else if (["brain", "truth"].includes(s.tab)) renderBrain(content);
       else if (s.tab === "programs") renderPrograms(content);
       else if (s.tab === "vault") renderVault(content);
+      else if (s.tab === "help") renderHelp(content);
       else renderInputs(content);
       main.querySelectorAll("[data-tab]").forEach(
         (b) =>
@@ -559,6 +570,79 @@
           .join("") +
         "</tbody></table></div>";
     }
+    function renderHelp(el) {
+      el.innerHTML =
+        '<div class="gf-row"><div><h2>Help</h2><p class="gf-note">How Grant Factory works and how to get a question un-stuck.</p></div></div>' +
+        '<div class="gf-card"><h3>Overview</h3><p>Grant Factory turns verified facts and uploaded documents into first-draft answers for grant applications. It does the first-draft writing; you and your team do the deciding.</p><p>Facts you have verified, plus documents you have uploaded, become evidence. Evidence becomes draft answers. Draft answers get reviewed, edited and approved by a person before anything leaves the building. It will not submit an application, decide eligibility, or state a fact it cannot support: when it lacks solid evidence for a claim, it opens a Needs My Input request instead of guessing.</p></div>' +
+        '<div class="gf-card gf-scroll"><h3>Where things live</h3><table><thead><tr><th>Area</th><th>What it is for</th></tr></thead><tbody>' +
+        [
+          [
+            "Organization Brain",
+            "The verified fact store: EIN, tax status, programs, mission, address and every other reusable fact the org has confirmed.",
+          ],
+          [
+            "Truth Review",
+            "The queue of gaps and unverified claims, grouped by how ready each one is to use.",
+          ],
+          [
+            "Document Vault",
+            "Source documents and their extracted text. A document also carries its own \"approved for external use\" setting, separate from any fact built from it (see below).",
+          ],
+          ["Programs", "The org's program records and their operating status."],
+          [
+            "Applications",
+            "The grant-writing workspace: upload, choose strategy, draft and audit, then human review and export.",
+          ],
+          [
+            "Needs My Input",
+            "Specific facts a drafting attempt could not find solid evidence for. This is the system asking for help instead of guessing.",
+          ],
+        ]
+          .map(
+            ([name, desc]) =>
+              "<tr><td>" + esc(name) + "</td><td>" + esc(desc) + "</td></tr>",
+          )
+          .join("") +
+        "</tbody></table></div>" +
+        '<div class="gf-card gf-scroll"><h3>Organization Brain: what each status means</h3><table><thead><tr><th>Status</th><th>Usable as grant evidence?</th></tr></thead><tbody>' +
+        [
+          ["VERIFIED", "Yes, backed by an exact quote from a specific page in an approved document."],
+          ["APPROVED", "Yes, but treat as internal until a document backs it."],
+          ["PROJECTED", "Yes, but must be phrased as planned, not current."],
+          ["NEEDS_VERIFICATION / CONFLICTED", "No, shows as an open gap in Truth Review."],
+          ["INTERNAL_ONLY / EXPIRED / SUPERSEDED", "No, blocked from grant use by design."],
+        ]
+          .map(
+            ([status, desc]) =>
+              "<tr><td>" + esc(status) + "</td><td>" + esc(desc) + "</td></tr>",
+          )
+          .join("") +
+        "</tbody></table><p class=\"gf-note\">When adding a fact, use the exact source excerpt as it literally appears in the document's own extracted text (open the document and check \"Extracted source text\"). A paraphrase or a quote spanning a line break will not validate.</p></div>" +
+        '<div class="gf-card"><h3>Two approvals, not one</h3><p>A fact needs to be verified <em>and</em> its source document needs to be separately marked "Approved for external use" in Document Vault. New documents default to not approved. If a well-verified fact still will not draft, check the document it cites first: the fact editor\'s Source document list flags any document that is not yet approved.</p></div>' +
+        '<div class="gf-card"><h3>Running an application</h3><ol>' +
+        [
+          "Start the application with the funder's name, the grant name, and the real application document (uploaded or pasted). Link a matching Funding Radar opportunity if one exists.",
+          'Review the extraction under Application source, then click "Confirm extraction review." Drafting is blocked until this is confirmed, and it resets whenever a question is added, removed or re-parsed.',
+          "Choose strategy: review funder priorities, evidence gaps and themes on the Strategy & eligibility tab, then approve it.",
+          '"Draft from evidence" for each question, then "Audit claims" to see a sentence-by-sentence check of what is supported.',
+          "Once every answer is approved, use QA & human review, then export as DOCX, a full package, or evidence JSON.",
+          "Submit it yourself through the funder's own process. Grant Factory prepares the draft; it does not send it.",
+        ]
+          .map((s) => "<li>" + esc(s) + "</li>")
+          .join("") +
+        "</ol></div>" +
+        '<div class="gf-card"><h3>Before you submit</h3><ul>' +
+        [
+          'Extraction reviewed is confirmed on the application you are working in.',
+          "Every fact the answer depends on is VERIFIED or APPROVED, and its source document is approved for external use.",
+          "Audit claims has been run, and every sentence reads SUPPORTED.",
+          "The Needs My Input tab is empty, or every open item there is resolved or deliberately still open.",
+          "A person has read the final answer against the actual funder question and word limit.",
+        ]
+          .map((s) => "<li>" + esc(s) + "</li>")
+          .join("") +
+        "</ul></div>";
+    }
     function renderInputs(el) {
       const apps = s.data.applications.filter((a) =>
         (a.inputs || []).some((i) => i.status !== "RESOLVED"),
@@ -705,7 +789,11 @@
                     q,
                   ),
                 ) +
-                '</p><div class="gf-toolbar">' +
+                "</p>" +
+                (!locked && !a.parser_reviewed
+                  ? '<p class="gf-note error">Drafting is blocked until extraction review is reconfirmed. Scroll up to Application source and click "Confirm extraction review."</p>'
+                  : "") +
+                '<div class="gf-toolbar">' +
                 (!locked
                   ? btn("draft", "Draft from evidence", q.id) +
                     btn("save-answer", "Save & select evidence", q.id, true) +
@@ -1121,7 +1209,7 @@
                 ? '<p class="gf-note">Your changes will be proposed for executive approval.</p>'
                 : ""),
             async (v) => {
-              await mutate("save_fact", {
+              const result = await mutate("save_fact", {
                 id: id || null,
                 revision: f.revision,
                 brain_revision: s.data.brain.revision,
@@ -1148,6 +1236,7 @@
                   resolve_conflict: v.has("resolve_conflict"),
                 },
               });
+              if (result.warning) message(result.warning, true);
             },
           );
         } else if (action === "program") {
