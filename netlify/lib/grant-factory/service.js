@@ -281,7 +281,18 @@ function service(repo, ai) {
         await repo.writeBrain(ctx, brain, [
           { table: "gf_facts", id: body.id || C.randomUUID(), content: fact },
         ]);
-        return { saved: true };
+        let warning = null;
+        if (fact.source_document_id && fact.grant_use_allowed) {
+          const sourceDoc = brain.documents.find(
+            (d) => d.id === fact.source_document_id,
+          );
+          if (sourceDoc && sourceDoc.external_use_allowed !== true)
+            warning =
+              'Saved. The source document ("' +
+              (sourceDoc.title || "this document") +
+              '") is not yet approved for external use in Document Vault, so this fact will not be usable as grant-drafting evidence until that document is approved there too.';
+        }
+        return { saved: true, warning };
       }
       if (action === "save_program") {
         owner(ctx);
@@ -689,9 +700,13 @@ function service(repo, ai) {
         };
         invalidateAnswers(app);
       } else if (action === "draft") {
-        if (!app.content.parser_reviewed || !app.content.strategy?.approved)
+        if (!app.content.parser_reviewed)
           C.fail(
-            "Review the extracted application and strategy before drafting.",
+            'Extraction review needs to be reconfirmed before drafting. This resets whenever a question is added, removed or re-parsed. Scroll up to Application source and click "Confirm extraction review," then try drafting again.',
+          );
+        if (!app.content.strategy?.approved)
+          C.fail(
+            "Approve the strategy before drafting. Open the Strategy & eligibility tab and approve it.",
           );
         const q = app.questions.find((q) => q.id === body.question_id);
         if (!q) C.fail("Question not found", 404);
@@ -746,6 +761,12 @@ function service(repo, ai) {
           .concat(a);
         if (result.status === "NEEDS_USER_INPUT") {
           app.content.status = "NEEDS_INPUT";
+          // Retrying "Draft from evidence" on a still-unresolved question used to pile up a
+          // fresh duplicate ticket per attempt. Clear this question's own open tickets first
+          // so a retry replaces them instead of stacking on top.
+          app.content.inputs = (app.content.inputs || []).filter(
+            (i) => !(i.question_id === q.id && i.status === "OPEN"),
+          );
           for (const prompt of result.missing_information.length
             ? result.missing_information
             : ["Provide supporting evidence for this answer."])
