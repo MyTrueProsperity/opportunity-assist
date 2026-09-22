@@ -843,3 +843,97 @@ test("AI concurrency caps are enforced transactionally per organization", async 
     }),
   );
 });
+test("retrying an unresolved draft replaces its own open input tickets instead of piling up duplicates", async () => {
+  const local = await createTestRepo();
+  try {
+    const { repo, owner } = local;
+    const s = service(repo, { enabled: false });
+    const startBrain = await repo.brain(owner);
+    await s.handle(owner, {
+      action: "save_program",
+      brain_revision: startBrain.revision,
+      program: { name: "Test Program", status: "PLANNING" },
+    });
+    const brain = await repo.brain(owner);
+    let app = await s.handle(owner, {
+      action: "new_application",
+      funder_name: "Test Foundation",
+      grant_program_name: "No-evidence check",
+      text: "1. State the Zqxelbrahm Torvenak designation code. Maximum 30 words.",
+    });
+    const appId = app.id,
+      qId = app.questions[0].id;
+    app = await s.handle(owner, {
+      action: "save_application",
+      application_id: appId,
+      revision: app.revision,
+      application: {
+        primary_program_id: brain.programs[0].id,
+        strategy: { primary_case: "n/a" },
+        strategy_approved: true,
+      },
+    });
+    app = await s.handle(owner, {
+      action: "confirm_parser",
+      application_id: appId,
+      revision: app.revision,
+    });
+    app = await s.handle(owner, {
+      action: "draft",
+      application_id: appId,
+      revision: app.revision,
+      question_id: qId,
+    });
+    assert.equal(app.content.status, "NEEDS_INPUT");
+    const openAfterFirst = app.content.inputs.filter(
+      (i) => i.question_id === qId && i.status === "OPEN",
+    );
+    assert.equal(openAfterFirst.length, 1);
+    app = await s.handle(owner, {
+      action: "draft",
+      application_id: appId,
+      revision: app.revision,
+      question_id: qId,
+    });
+    const openAfterSecond = app.content.inputs.filter(
+      (i) => i.question_id === qId && i.status === "OPEN",
+    );
+    assert.equal(
+      openAfterSecond.length,
+      1,
+      "a retry should replace the question's open ticket, not add another one",
+    );
+  } finally {
+    await local.pg.close();
+  }
+});
+test("saving a fact sourced from a not-yet-approved document warns instead of failing silently", async () => {
+  const { repo, owner } = fixture;
+  const s = service(repo, { enabled: false });
+  const doc = await s.handle(owner, {
+    action: "upload_document",
+    filename: "letter.txt",
+    base64: Buffer.from("EIN: 11-2233445").toString("base64"),
+    document_type: "IRS_DETERMINATION",
+  });
+  assert.equal(doc.external_use_allowed, false);
+  const brain = await repo.brain(owner);
+  const result = await s.handle(owner, {
+    action: "save_fact",
+    id: null,
+    brain_revision: brain.revision,
+    fact: fact({
+      id: undefined,
+      fact_key: "ein_test",
+      display_name: "EIN",
+      value: "11-2233445",
+      verification_status: "VERIFIED",
+      source_document_id: doc.id,
+      source_locator: "Line 1",
+      source_reference: null,
+      source_quote: "EIN: 11-2233445",
+    }),
+  });
+  assert.equal(result.saved, true);
+  assert.match(result.warning, /not yet approved for external use/);
+});
