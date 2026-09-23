@@ -55,6 +55,33 @@ test('document suggestions resume atomically, reject ungrounded quotes and do no
   } finally { await f.pg.close(); }
 });
 
+test('intake preserves traceable suggestions when a model miscopies quotes or source locators', async () => {
+  const f = await createTestRepo();
+  try {
+    const make = (key, quote, locator) => ({fact_key:key,display_name:key,value:quote,source_quote:quote,source_locator:locator,confidence:'HIGH',temporal_context:'CURRENT'});
+    const s = service(f.repo, {enabled:true,async call() {
+      return {data:{facts:[
+        make('mission','Our mission connects education and work.','Line 1'),
+        make('program','The program began in 2020.','Line 1'),
+        make('unsupported','We served 9999 people.','Line 1'),
+        make('ambiguous','Shared statement.','Line 1'),
+      ],warnings:[]}};
+    }});
+    const original = 'Our mission  connects education and work.\nThe program began in 2020.\nShared statement.\nShared statement.';
+    const doc = await s.handle(f.owner,{action:'upload_document',filename:'program.txt',base64:Buffer.from(original).toString('base64')});
+    const out = await s.handle(f.owner,{action:'propose_facts',id:doc.id,batch_index:0});
+    assert.equal(out.proposals,2);
+    assert.equal(out.progress.status,'COMPLETE');
+    assert.equal(out.progress.omitted_proposals,2);
+    assert.match(out.warnings.join(' '),/2 suggestion\(s\) were omitted/);
+    const facts = (await f.repo.brain(f.owner)).facts;
+    assert.equal(facts.find(x=>x.fact_key==='mission').source_quote,'Our mission  connects education and work.');
+    assert.equal(facts.find(x=>x.fact_key==='program').source_locator,'Line 2');
+    assert.ok(facts.every(x=>x.verification_status==='NEEDS_VERIFICATION' && !x.grant_use_allowed));
+    assert.ok(!facts.some(x=>['unsupported','ambiguous'].includes(x.fact_key)));
+  } finally { await f.pg.close(); }
+});
+
 test('readiness explains source approval and an owner can approve source and fact atomically', async () => {
   const f=await createTestRepo();
   try {

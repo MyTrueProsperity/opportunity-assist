@@ -1020,7 +1020,7 @@
           meter.max = progress.total_batches || 1; meter.value = progress.next_batch;
         }
         if (modal.isConnected) {
-          status.textContent = progress?.status === 'COMPLETE' ? 'All ' + progress.total_batches + ' sections processed. ' + progress.proposals + ' fact suggestions saved for review.' : 'Paused. Completed sections are saved. Choose Resume reading in Document Vault to continue.';
+          status.textContent = (progress?.status === 'COMPLETE' ? 'All ' + progress.total_batches + ' sections processed. ' + progress.proposals + ' fact suggestions saved for review.' : 'Paused. Completed sections are saved. Choose Resume reading in Document Vault to continue.') + (progress?.omitted_proposals ? ' ' + progress.omitted_proposals + ' suggestions were omitted because their quotations could not be traced; review the original for missing facts.' : '');
           modal.querySelector('#gf-reading-result').innerHTML = (progress?.warnings || []).map(w => '<p class="gf-note">' + esc(w) + '</p>').join('') + btn('review-document', 'Review these facts', id, true);
           modal.querySelector('[data-action="review-document"]').onclick = () => { modal.close(); s.reviewDocument = id; s.tab = 'truth'; s.app = null; render(); };
         }
