@@ -5,6 +5,7 @@ const P = require("./parser");
 const { seed } = require("./seed");
 const { researchRules } = require("./research");
 const { exportPackage } = require("./export");
+const { proposeBatch } = require("./intake");
 const DOCUMENT_TYPES = [
   "IRS_DETERMINATION",
   "W9",
@@ -291,9 +292,18 @@ function service(repo, ai) {
         delete fact.id;
         delete fact.revision;
         delete fact.updated_at;
-        await repo.writeBrain(ctx, brain, [
-          { table: "gf_facts", id: body.id || C.randomUUID(), content: fact },
-        ]);
+        delete fact.draft_ready;
+        delete fact.draft_blockers;
+        const changes = [{ table: "gf_facts", id: body.id || C.randomUUID(), content: fact }];
+        if (body.approve_source === true) {
+          owner(ctx);
+          const source = brain.documents.find(d => d.id === fact.source_document_id);
+          if (!source || source.sensitivity_level === "RESTRICTED" || source.extraction_status !== "COMPLETE" || source.status !== "AVAILABLE")
+            C.fail("This source cannot be approved for grant use. Review the document first.");
+          const { id, revision, updated_at, ...content } = source;
+          changes.push({ table: "gf_documents", id, content: { ...content, external_use_allowed: true } });
+        }
+        await repo.writeBrain(ctx, brain, changes);
         return { saved: true };
       }
       if (action === "save_program") {
@@ -416,7 +426,7 @@ function service(repo, ai) {
           await repo.writeBrain(ctx, brain, [
             { table: "gf_documents", id, content },
           ]);
-          return { saved: true };
+          return { saved: true, extraction_status: d.extraction_status, extraction_error: d.extraction_error };
         }
         if (d.sensitivity_level === "RESTRICTED")
           C.fail(
@@ -424,46 +434,7 @@ function service(repo, ai) {
           );
         if (d.extraction_status !== "COMPLETE")
           C.fail("Complete text extraction first.");
-        const proposed = await call(ctx, "extract_facts", {
-          document_type: d.document_type,
-          document_date: d.document_date,
-          blocks: d.blocks,
-        });
-        const changes = [];
-        for (const f of proposed.facts) {
-          if (!P.sourceGrounded(f, d.blocks))
-            C.fail(
-              "An extracted fact had an untraceable source. No proposals were saved.",
-              502,
-            );
-          const conflicts = brain.facts
-            .filter((x) => x.fact_key === f.fact_key && x.value !== f.value)
-            .map((x) => x.id);
-          changes.push({
-            table: "gf_facts",
-            id: C.randomUUID(),
-            content: {
-              ...f,
-              source_document_id: d.id,
-              source_reference: d.title,
-              verification_status: "NEEDS_VERIFICATION",
-              conflict_ids: conflicts,
-              external_use_allowed: false,
-              grant_use_allowed: false,
-              internal_only: false,
-              sensitivity_level: "INTERNAL",
-              category: "Document proposals",
-              created_by: ctx.user_id,
-              notes:
-                (f.notes || "") +
-                (conflicts.length
-                  ? " Conflicts with existing facts; executive resolution required."
-                  : ""),
-            },
-          });
-        }
-        if (changes.length) await repo.writeBrain(ctx, brain, changes);
-        return { proposals: changes.length, warnings: proposed.warnings };
+        return proposeBatch(repo, call, ctx, brain, d, body);
       }
       if (action === "new_application") {
         let source = brain.documents.find(
@@ -529,7 +500,7 @@ function service(repo, ai) {
       if (action === "get_application")
         return {
           app,
-          brain: repo.publicBrain(brain, ctx),
+          brain: repo.publicBrain(brain, ctx, app.id),
           snapshots: await repo.db.select("gf_snapshots", {
             org_id: "eq." + ctx.org_id,
             application_id: "eq." + app.id,
@@ -703,10 +674,10 @@ function service(repo, ai) {
         };
         invalidateAnswers(app);
       } else if (action === "draft") {
-        if (!app.content.parser_reviewed || !app.content.strategy?.approved)
-          C.fail(
-            "Review the extracted application and strategy before drafting.",
-          );
+        if (!app.content.parser_reviewed)
+          C.fail("First check the questions against the funder's application, then choose Confirm extraction review at the top of Questions & drafts. Adding or changing a question requires this check again.");
+        if (!app.content.strategy?.approved)
+          C.fail("Open Strategy & eligibility, choose your program, and save a reviewed strategy before drafting.");
         const q = app.questions.find((q) => q.id === body.question_id);
         if (!q) C.fail("Question not found", 404);
         if (q.question_type !== "NARRATIVE")
@@ -759,16 +730,20 @@ function service(repo, ai) {
         app.answers = app.answers
           .filter((x) => x.question_id !== q.id)
           .concat(a);
+        // Replace only unanswered, automatically generated requests for this
+        // question. Keep human responses and resolved history intact.
+        app.content.inputs = (app.content.inputs || []).filter(i => !(i.question_id === q.id && i.status === "OPEN" && (i.origin === "DRAFT" || i.reason === "Evidence is insufficient for drafting.")));
         if (result.status === "NEEDS_USER_INPUT") {
           app.content.status = "NEEDS_INPUT";
-          for (const prompt of result.missing_information.length
+          for (const prompt of [...new Set(result.missing_information.length
             ? result.missing_information
-            : ["Provide supporting evidence for this answer."])
+            : ["Provide supporting evidence for this answer."])])
             app.content.inputs.push({
               id: C.randomUUID(),
               question_id: q.id,
               prompt,
               reason: "Evidence is insufficient for drafting.",
+              origin: "DRAFT",
               status: "OPEN",
             });
         }
