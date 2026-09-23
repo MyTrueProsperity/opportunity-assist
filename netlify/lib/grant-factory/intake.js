@@ -29,6 +29,24 @@ function intakeState(doc, parts) {
     proposals: 0, warnings: [], status: "NOT_STARTED",
   };
 }
+// Recover formatting-only copying errors, then store the actual source text.
+// A misplaced locator can be repaired only when the quotation identifies one
+// block in this section. Changed words, punctuation and ambiguous sources fail.
+function sourceExcerpt(fact, blocks) {
+  if (P.sourceGrounded(fact, blocks)) return fact;
+  const quote = fact.source_quote?.trim();
+  if (!quote) return null;
+  const pattern = new RegExp(quote.split(/\s+/u)
+    .map(word => word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("\\s+"), "u");
+  const matches = candidates => candidates.flatMap(block => {
+    const match = pattern.exec(block.text);
+    return match ? [{ ...fact, source_locator: block.locator, source_quote: match[0] }] : [];
+  });
+  const located = matches(blocks.filter(b => b.locator === fact.source_locator || b.id === fact.source_locator));
+  if (located.length === 1) return located[0];
+  const anywhere = matches(blocks);
+  return anywhere.length === 1 ? anywhere[0] : null;
+}
 async function proposeBatch(repo, call, ctx, brain, doc, body) {
   const parts = batches(doc.blocks);
   const state = intakeState(doc, parts);
@@ -45,11 +63,13 @@ async function proposeBatch(repo, call, ctx, brain, doc, body) {
     blocks: parts[state.next_batch], part: state.next_batch + 1, total_parts: parts.length,
   });
   const changes = [];
+  const grounded = proposed.facts.map(f => sourceExcerpt(f, parts[state.next_batch])).filter(Boolean);
+  const omitted = proposed.facts.length - grounded.length;
+  if (proposed.facts.length && !grounded.length)
+    C.fail("The suggestions could not be matched to this section. Earlier sections are saved. Resume to retry this section; no untraceable fact was added.", 502);
   const key = f => C.hash([f.source_document_id, f.source_locator, f.source_quote, f.value]);
   const existing = new Set(brain.facts.map(key));
-  for (const f of proposed.facts) {
-    if (!P.sourceGrounded(f, parts[state.next_batch]))
-      C.fail("A suggested fact could not be matched to this section. Earlier sections are saved. Resume to retry this section; no untraceable fact was added.", 502);
+  for (const f of grounded) {
     const content = {
       ...f, source_document_id: doc.id, source_reference: doc.title,
       verification_status: "NEEDS_VERIFICATION", external_use_allowed: false,
@@ -63,9 +83,11 @@ async function proposeBatch(repo, call, ctx, brain, doc, body) {
   }
   state.next_batch++;
   state.proposals += changes.length;
+  state.omitted_proposals = (state.omitted_proposals || 0) + omitted;
   state.status = state.next_batch === parts.length ? "COMPLETE" : "IN_PROGRESS";
   state.updated_at = C.now();
-  state.warnings = [...new Set([...state.warnings, ...(proposed.warnings || [])])].slice(-30);
+  const warning = omitted ? [`Section ${state.next_batch}: ${omitted} suggestion(s) were omitted because the quotation could not be traced to one source block. Check this section of the original for missing facts.`] : [];
+  state.warnings = [...new Set([...state.warnings, ...warning, ...(proposed.warnings || [])])].slice(-30);
   const { id, revision, updated_at, ...content } = doc;
   content.fact_extraction = state;
   changes.push({ table: "gf_documents", id, content });
