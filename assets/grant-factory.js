@@ -123,7 +123,7 @@
       main,
       sb,
       data: null,
-      tab: "applications",
+      tab: "start",
       app: null,
       appTab: "questions",
       snapshots: [],
@@ -134,6 +134,7 @@
       researchQuery: "",
       researchPacket: "",
       researchBackground: null,
+      reviewDocument: null,
     };
     session = s;
     main.innerHTML =
@@ -166,6 +167,7 @@
       if (node) {
         node.textContent = text;
         node.className = "gf-message" + (error ? " error" : "");
+        if (error) node.scrollIntoView({ block: "center", behavior: "smooth" });
       }
     }
     async function refresh() {
@@ -213,6 +215,7 @@
       ];
     }
     function allowed(f) {
+      if (typeof f.draft_ready === "boolean") return f.draft_ready;
       return (
         ["APPROVED", "VERIFIED", "PROJECTED", "DERIVED"].includes(
           f.verification_status,
@@ -276,13 +279,9 @@
       if (session !== s || !main.isConnected) return;
       const d = s.data,
         b = d.brain;
-      const pending = b.facts.filter(f => !f.research).filter((f) =>
-        ["NEEDS_VERIFICATION", "CONFLICTED", "DRAFT"].includes(
-          f.verification_status,
-        ),
-      ).length;
+      const pending = b.facts.filter(f => !f.research && !allowed(f) && !f.internal_only && !["INTERNAL_ONLY", "SUPERSEDED"].includes(f.verification_status)).length;
       main.innerHTML =
-        '<section class="gf"><header class="gf-head"><div><div class="gf-eyebrow">Opportunity Assist / Funding operations</div><h1>Grant Factory</h1><p class="gf-sub">From the application to an evidence-backed draft, with your judgment at every commitment.</p></div><div>' +
+        '<section class="gf"><header class="gf-head"><div><div class="gf-eyebrow">Opportunity Assist / Funding operations</div><h1>Grant Factory</h1><p class="gf-sub">Add your documents. Review the facts. Build your grant application.</p></div><div>' +
         '<label>Organization<select id="gf-workspace" aria-label="Grant Factory organization">' +
         options(
           d.workspaces.map((w) => [w.org_id, w.name]),
@@ -290,9 +289,9 @@
         ) +
         "</select></label>" +
         pill(d.role) +
-        (d.role === "OWNER" ? btn("seed", "Import Institute seed data") : "") +
         '</div></header><nav class="gf-tabs" aria-label="Grant Factory">' +
         [
+          ["start", "Start here"],
           ["applications", "Applications"],
           ["brain", "Organization Brain"],
           ["truth", "Truth Review · " + pending],
@@ -343,7 +342,7 @@
           s.researchBackground = null;
           s.researchPacket = "";
           s.researchQuery = "";
-          s.tab = "applications";
+          s.tab = "start";
           render();
         } catch (e) {
           target.value = s.orgId;
@@ -354,7 +353,8 @@
         }
       };
       const content = main.querySelector("#gf-content");
-      if (s.app && s.tab === "applications") renderApplication(content);
+      if (s.tab === "start") renderStart(content);
+      else if (s.app && s.tab === "applications") renderApplication(content);
       else if (s.tab === "applications") renderApplications(content);
       else if (["brain", "truth"].includes(s.tab)) renderBrain(content);
       else if (s.tab === "programs") renderPrograms(content);
@@ -364,8 +364,10 @@
       main.querySelectorAll("[data-tab]").forEach(
         (b) =>
           (b.onclick = () => {
+            if (s.busy) return;
             s.tab = b.dataset.tab;
             s.app = null;
+            s.reviewDocument = null;
             render();
           }),
       );
@@ -404,6 +406,21 @@
           }),
       );
     }
+    function renderStart(el) {
+      const brain = s.data.brain;
+      const uploaded = brain.documents.filter(d => d.storage_path);
+      const failed = uploaded.filter(d => d.extraction_status === "FAILED");
+      const ready = brain.facts.filter(f => !f.research && allowed(f));
+      const pending = brain.facts.filter(f => !f.research && !allowed(f) && !f.internal_only && !["INTERNAL_ONLY", "SUPERSEDED"].includes(f.verification_status));
+      const card = (number, title, text, action, button, detail) => '<article class="gf-card gf-start-card"><span class="gf-step-number">' + number + '</span><h3>' + title + '</h3><p>' + text + '</p><p class="gf-meta">' + detail + '</p>' + btn(action, button, "", true) + '</article>';
+      el.innerHTML = '<section class="gf-welcome"><div class="gf-eyebrow">Your next steps</div><h2>Start with what you already have.</h2><p>Upload a business plan, impact report, or other source document. Grant Factory reads it in sections and suggests facts. You check those suggestions before they can appear in a grant.</p><p><strong>You do not need to enter every fact by hand or finish the whole library before starting an application.</strong></p></section>' +
+        (failed.length ? '<div class="gf-callout"><h3>' + failed.length + ' saved document' + (failed.length === 1 ? ' needs' : 's need') + ' another reading attempt</h3><p>Your original files are safe. Long documents are now supported up to 1,000,000 characters; there is no need to split a supported document yourself.</p>' + failed.map(d => '<p>' + esc(d.title) + ' ' + btn('prepare-document', 'Read saved document', d.id) + '</p>').join('') + '</div>' : '') +
+        '<div class="gf-grid">' +
+        card('1', 'Add your documents', 'Keep the originals in Document Vault. Choose Read & suggest facts to process a document. You can pause and resume without losing completed sections.', 'go-vault', 'Open Document Vault', uploaded.length + ' originals saved') +
+        card('2', 'Review suggested facts', 'Compare each fact with its source. Approve accurate information for grants, keep it private, or leave it for later. Plans must stay labeled as plans.', 'go-truth', 'Review facts', ready.length + ' facts usable for drafting · ' + pending.length + ' need attention') +
+        card('3', 'Start a grant application', 'Upload or paste the funder’s actual questions. The application will guide you through choosing a program, drafting answers, checking claims, and exporting.', 'new', 'Start an application', s.data.applications.length + ' saved application' + (s.data.applications.length === 1 ? '' : 's')) + '</div>' +
+        '<section class="gf-card"><h3>What does each step mean?</h3><p><strong>Saved:</strong> the original file is in your private vault. <strong>Read:</strong> its text is available. <strong>Suggested:</strong> facts have been pulled out for you to check. <strong>Ready for drafting:</strong> both the fact and its source meet the grant-use rules.</p><p>Research Library contains community statistics and research. Organization Brain contains facts about your organization. Grant Factory can use relevant approved information from both.</p><p>It prepares drafts and downloads. You make the final decisions and submit through the funder’s process.</p><details><summary>Existing setup and advanced tools</summary><p>Your saved documents, facts, programs and writing voice remain in place. The seed import is only for an initial setup or missing seed records.</p>' + (s.data.role === 'OWNER' ? btn('seed', 'Import Institute seed data') + btn('voice', 'Writing voice') : '') + '</details></section>';
+    }
     function renderApplications(el) {
       const apps = s.data.applications;
       el.innerHTML =
@@ -435,11 +452,13 @@
     }
     function renderBrain(el) {
       let facts = s.data.brain.facts.filter(f => !f.research);
+      if (s.reviewDocument) facts = facts.filter(f => f.source_document_id === s.reviewDocument);
       const groups =
         s.tab === "truth"
           ? [
+              ["Needs your attention", f => !allowed(f) && !f.internal_only && !["INTERNAL_ONLY", "SUPERSEDED"].includes(f.verification_status)],
               [
-                "Ready for External Use",
+                "Ready for drafting",
                 (f) => allowed(f) && f.verification_status !== "PROJECTED",
               ],
               ["Projected", (f) => f.verification_status === "PROJECTED"],
@@ -473,21 +492,22 @@
               ],
             ]
           : [["Institutional facts", () => true]];
+      const visibleGroups = groups.filter(([title]) => !["Needs Verification", "Conflicted", "Missing High-Priority Information"].includes(title));
       el.innerHTML =
         '<div class="gf-row"><div><h2>' +
         (s.tab === "truth" ? "Truth Review" : "Organization Brain") +
-        '</h2><p class="gf-note">Approved facts retain sources, use permissions and a history of changes. Planned programs remain future-facing.</p></div>' +
+        '</h2><p class="gf-note">Check a fact against its source, then choose whether it can be used in grants. You can leave unrelated gaps for later. Planned programs remain plans.</p></div>' +
         btn("fact", "Add fact", "", true) +
         (s.data.role === "OWNER" ? btn("voice", "Writing voice") : "") +
-        '</div><input id="gf-search" class="gf-search" aria-label="Search organization facts" placeholder="Search enrollment, John Doe, theater, board…" value="' +
+        '</div>' + (s.reviewDocument ? '<p>Showing facts from one document. ' + btn('go-truth', 'Show all facts') + '</p>' : '') + '<input id="gf-search" class="gf-search" aria-label="Search organization facts" placeholder="Search enrollment, John Doe, theater, board…" value="' +
         esc(s.query) +
         '">' +
-        groups
+        visibleGroups
           .map(
             ([title, test]) =>
-              '<section class="gf-card"><h3>' +
+              '<details class="gf-card" ' + (title === "Needs your attention" || s.tab === "brain" ? 'open' : '') + '><summary><strong>' +
               title +
-              "</h3>" +
+              ' · ' + facts.filter(test).length + "</strong></summary>" +
               facts
                 .filter(test)
                 .map(
@@ -500,6 +520,7 @@
                     esc(f.display_name) +
                     "</button>" +
                     pill(f.verification_status) +
+                    (allowed(f) ? '<span class="gf-meta">Ready for drafting</span>' : '<span class="gf-meta">Not available to drafts yet</span>') +
                     "</div><p>" +
                     esc(f.value || "Information needed") +
                     '</p><div class="gf-meta">' +
@@ -507,13 +528,13 @@
                     " · " +
                     esc(f.source_locator || "No locator") +
                     (f.application_id ? " · Application-specific" : "") +
-                    "</div></div>",
+                    '</div>' + (!allowed(f) ? '<p class="gf-note">' + esc((f.draft_blockers || []).join(' ')) + '</p>' : '') + btn('review-fact', 'Review this fact', f.id) + '</div>',
                 )
                 .join("") +
               (facts.filter(test).length
                 ? ""
                 : '<p class="gf-note">No items in this group.</p>') +
-              "</section>",
+              "</details>",
           )
           .join("");
     }
@@ -585,29 +606,30 @@
         "</div>";
     }
     function renderVault(el) {
+      const documents = s.data.brain.documents;
+      const uploaded = documents.filter(d => d.storage_path);
+      const checklist = documents.filter(d => !d.storage_path);
       el.innerHTML =
-        '<div class="gf-row"><div><h2>Document Vault</h2><p class="gf-note">Private originals, source locators and extraction status. Expected documents remain unavailable until uploaded.</p></div>' +
+        '<div class="gf-row"><div><h2>Document Vault</h2><p class="gf-note">1. Upload a file. 2. Read & suggest facts. 3. Review those facts. Your original stays private.</p></div>' +
         btn("upload", "Upload document", "", true) +
-        '</div><div class="gf-card gf-scroll"><table><thead><tr><th>Document</th><th>Type</th><th>Availability</th><th>Extraction</th><th></th></tr></thead><tbody>' +
-        s.data.brain.documents
+        '</div><p class="gf-note">PDF, Word (DOCX), or text · up to 3 MB per file · long documents up to 1,000,000 characters and 500 PDF pages. Large documents are read in small sections with saved progress.</p><input id="gf-search" class="gf-search" aria-label="Search documents" placeholder="Find a saved document…" value="' + esc(s.query) + '"><div class="gf-card gf-scroll"><table><thead><tr><th>Your saved documents</th><th>Reading progress</th><th>Suggested facts</th><th>Next step</th></tr></thead><tbody>' +
+        uploaded
           .map(
             (d) =>
-              "<tr><td>" +
+              '<tr data-search="' + esc((d.title + ' ' + d.filename).toLowerCase()) + '"><td>' +
               esc(d.title) +
               '<div class="gf-meta">' +
               esc(d.filename || "User can provide") +
               "</div></td><td>" +
-              esc(label(d.document_type)) +
+              (d.extraction_status !== 'COMPLETE' ? '<strong>Needs another reading attempt</strong>' : d.document_type === 'GRANT_APPLICATION' ? 'Ready as an application source' : d.fact_extraction?.status === 'COMPLETE' ? 'All sections processed' : d.fact_extraction ? d.fact_extraction.next_batch + ' of ' + d.fact_extraction.total_batches + ' sections processed' : 'Text ready · no section progress recorded') +
+              "</td><td>" + s.data.brain.facts.filter(f => f.source_document_id === d.id).length +
               "</td><td>" +
-              pill(d.status) +
-              "</td><td>" +
-              pill(d.extraction_status) +
-              "</td><td>" +
-              btn("document", "Inspect", d.id) +
+              (d.document_type !== 'GRANT_APPLICATION' && d.sensitivity_level !== 'RESTRICTED' && d.fact_extraction?.status !== 'COMPLETE' ? btn('prepare-document', d.fact_extraction ? 'Resume reading' : 'Read & suggest facts', d.id, true) : '') +
+              btn('review-document', 'Review facts', d.id) + btn("document", "Details & original", d.id) +
               "</td></tr>",
           )
           .join("") +
-        "</tbody></table></div>";
+        '</tbody></table></div><details class="gf-card"><summary>Suggested document checklist</summary><p class="gf-note">These are reminders, not additional uploads or errors. You can start a grant with the documents relevant to that application.</p>' + checklist.map(d => '<p><strong>' + esc(d.title) + '</strong> · ' + (uploaded.some(u => u.document_type === d.document_type) ? 'A document of this type is saved; check its details and date.' : 'Add when needed for an application.') + '</p>').join('') + '</details>';
     }
     function renderInputs(el) {
       const apps = s.data.applications.filter((a) =>
@@ -671,7 +693,7 @@
         btn("export-docx", "Export DOCX") +
         btn("export-zip", "Export package") +
         btn("export-json", "Evidence JSON") +
-        '</div></div><div class="gf-tabs">' +
+        '</div></div>' + (!locked ? '<div class="gf-callout"><strong>Next step: </strong>' + (!a.parser_reviewed ? 'Check the questions and limits against the original, then confirm extraction review. This check is needed again after questions change.' : !a.strategy?.approved ? 'Open Strategy & eligibility. Choose your program, write or generate a strategy, and confirm that you reviewed it.' : 'Draft one answer, save edits, then audit its claims. Resolve missing information before approving and exporting.') + '<p class="gf-note">Drafts use the latest approved facts each time. You do not need to recreate an application when you update your facts.</p></div>' : '') + '<div class="gf-tabs">' +
         [
           ["questions", "Questions & drafts"],
           ["strategy", "Strategy & eligibility"],
@@ -757,13 +779,13 @@
                 ) +
                 '</p><div class="gf-toolbar">' +
                 (!locked
-                  ? btn("draft", "Draft from evidence", q.id) +
+                  ? (q.question_type === 'NARRATIVE' && a.parser_reviewed && a.strategy?.approved ? btn("draft", "Draft from evidence", q.id) : '<span class="gf-note">' + (q.question_type !== 'NARRATIVE' ? 'Enter this response yourself.' : 'Complete the next step above to enable drafting.') + '</span>') +
                     btn("save-answer", "Save & select evidence", q.id, true) +
                     btn("audit", "Audit claims", q.id) +
                     btn("approve-answer", "Approve answer", q.id)
                   : "") +
                 pill(ans?.status || "NOT_STARTED") +
-                "</div><details><summary>Why did OA say this?</summary>" +
+                '</div>' + (ans?.status === 'NEEDS_INPUT' ? '<div class="gf-callout"><strong>This answer needs more information.</strong>' + (a.inputs || []).filter(i => i.question_id === q.id && i.status !== 'RESOLVED').map(i => '<p>' + esc(i.prompt) + '</p>').join('') + '<button data-apptab="input" class="btn btn-ghost btn-sm">Answer these questions</button></div>' : '') + '<details><summary>Why did OA say this?</summary>' +
                 (ans?.evidence_ids || [])
                   .map((id) => {
                     const f = s.data.brain.facts.find((f) => f.id === id);
@@ -973,6 +995,46 @@
           "</div>";
       }
     }
+    async function prepareDocument(id) {
+      let doc = await api('document', { id });
+      let paused = false;
+      const modal = dialog('Read document & suggest facts', '<h3>' + esc(doc.title) + '</h3><p>Each completed section is saved. Keep this window open while reading. Closing it pauses after the current section; you can resume from Document Vault.</p><p><strong>Suggestions still need your review before grant writing can use them.</strong></p><progress id="gf-reading-progress" max="1" value="0"></progress><p id="gf-reading-status" role="status">Preparing your document…</p><div id="gf-reading-result"></div><button type="button" class="btn btn-ghost" id="gf-pause-reading">Pause after this section</button>', null);
+      const status = modal.querySelector('#gf-reading-status');
+      const meter = modal.querySelector('#gf-reading-progress');
+      modal.querySelector('#gf-pause-reading').onclick = () => { paused = true; status.textContent = 'Finishing this section, then pausing. Completed work is saved.'; };
+      modal.addEventListener('close', () => { paused = true; });
+      try {
+        if (doc.extraction_status !== 'COMPLETE') {
+          status.textContent = 'Reading text from your saved original…';
+          const read = await api('retry_extraction', { id, revision: doc.revision });
+          if (read.extraction_status !== 'COMPLETE') throw Error(read.extraction_error || 'Text could not be read. The original is still saved.');
+          doc = await api('document', { id });
+        }
+        let progress = doc.fact_extraction;
+        let cursor;
+        while (!paused && modal.isConnected && progress?.status !== 'COMPLETE') {
+          status.textContent = progress ? 'Reading section ' + (progress.next_batch + 1) + ' of ' + progress.total_batches + '. ' + progress.proposals + ' suggestions saved so far.' : 'Reading the first section and suggesting facts…';
+          const out = await api('propose_facts', { id, ...(cursor != null ? {batch_index:cursor} : {}) });
+          progress = out.progress;
+          cursor = progress.next_batch;
+          meter.max = progress.total_batches || 1; meter.value = progress.next_batch;
+        }
+        if (modal.isConnected) {
+          status.textContent = progress?.status === 'COMPLETE' ? 'All ' + progress.total_batches + ' sections processed. ' + progress.proposals + ' fact suggestions saved for review.' : 'Paused. Completed sections are saved. Choose Resume reading in Document Vault to continue.';
+          modal.querySelector('#gf-reading-result').innerHTML = (progress?.warnings || []).map(w => '<p class="gf-note">' + esc(w) + '</p>').join('') + btn('review-document', 'Review these facts', id, true);
+          modal.querySelector('[data-action="review-document"]').onclick = () => { modal.close(); s.reviewDocument = id; s.tab = 'truth'; s.app = null; render(); };
+        }
+      } catch (error) {
+        if (modal.isConnected) {
+          status.textContent = 'Reading paused. Your original and completed sections are saved.';
+          const alert = modal.querySelector('[role=alert]'); alert.hidden = false;
+          alert.textContent = error.message + ' Close this window and restart reading from Document Vault.';
+        }
+      } finally {
+        if (modal.isConnected) modal.querySelector('#gf-pause-reading').hidden = true;
+        await refresh();
+      }
+    }
     async function perform(action, id, button) {
       if (s.busy) return;
       s.busy = true;
@@ -1001,7 +1063,26 @@
           )
         )
           throw Error("Save your changed answers before continuing.");
-        if (action === "research-page") {
+        if (action === 'prepare-document') {
+          await prepareDocument(id);
+        } else if (action === 'go-vault' || action === 'go-truth' || action === 'review-document') {
+          s.tab = action === 'go-vault' ? 'vault' : 'truth'; s.app = null;
+          s.reviewDocument = action === 'review-document' ? id : null; s.query = ''; render();
+        } else if (action === 'review-fact') {
+          const fact = s.data.brain.facts.find(f => f.id === id);
+          const source = s.data.brain.documents.find(d => d.id === fact.source_document_id);
+          const modal = dialog('Review a fact for grant writing', '<h3>' + esc(fact.display_name) + '</h3><p class="gf-note">Check the meaning, dates and source. Only approve what you can stand behind. A planned program is not an achieved outcome.</p>' + area('value', 'Fact to use', fact.value) + '<div class="gf-source"><strong>' + esc(fact.source_reference || 'Source not provided') + ' · ' + esc(fact.source_locator || '') + '</strong><p>' + esc(fact.source_quote || 'No document quote is attached. Use the full fact editor if this needs a document source.') + '</p></div>' + (fact.draft_blockers || []).map(r => '<p class="gf-note">' + esc(r) + '</p>').join('') + select('decision', 'What should happen to this fact?', [['later', 'Leave for later'], ['approve', 'Approve for grant writing'], ['planned', 'Approve as a plan / projection'], ['private', 'Keep internal only']], 'later') + (source && !source.external_use_allowed && source.sensitivity_level !== 'RESTRICTED' ? check('approve_source', 'I reviewed this source and approve it for grant use and attachments. The vault file stays private.') : '') + (fact.conflict_ids?.length ? check('resolve_conflict', 'I checked the conflicting facts and explained the resolution below.', fact.conflict_resolution?.resolved) : '') + area('notes', 'Review notes (optional unless resolving a conflict)', fact.notes) + check('reviewed', 'I checked this fact and its source.') + '<p>' + btn('advanced-fact', 'Open full fact editor', id) + '</p>', async values => {
+            const decision = values.get('decision');
+            if (decision === 'later') return;
+            if (s.data.role !== 'OWNER') throw Error('An organization owner must approve facts for grant use. You can propose changes in the full fact editor.');
+            if (!values.has('reviewed')) throw Error('Confirm that you checked this fact and its source.');
+            const {draft_ready, draft_blockers, ...saved} = fact;
+            const permit = decision === 'approve' || decision === 'planned';
+            await mutate('save_fact', { id, revision: fact.revision, brain_revision:s.data.brain.revision, approve_source: values.has('approve_source'), fact: {...saved, value:values.get('value'), verification_status:decision === 'private' ? 'INTERNAL_ONLY' : decision === 'planned' ? 'PROJECTED' : fact.source_document_id && fact.source_quote ? 'VERIFIED' : 'APPROVED', external_use_allowed:permit, grant_use_allowed:permit, internal_only:!permit, review_required:false, notes:values.get('notes'), resolve_conflict:values.has('resolve_conflict') } });
+            message('Your review is saved. The readiness label shows whether anything still needs attention.');
+          });
+          modal.querySelector('[data-action="advanced-fact"]').onclick = () => { modal.close(); perform('fact', id); };
+        } else if (action === "research-page") {
           s.researchBackground = await api("research_search", { query: s.researchQuery, offset: Number(id) });
           render();
         } else if (action === "research-document") {
@@ -1085,6 +1166,7 @@
                 text: f.get("text"),
                 opportunity_id: f.get("opportunity") || null,
               });
+              s.tab = 'applications';
               s.appTab = "questions";
               await refresh();
             },
@@ -1294,10 +1376,11 @@
                 document_type: f.get("type"),
                 base64: btoa(binary),
               });
+              s.tab = 'vault'; s.app = null; s.query = ''; render();
               message(
                 r.extraction_status === "FAILED"
                   ? "Original saved. Extraction failed: " + r.extraction_error
-                  : "Document saved and text extracted.",
+                  : "Original saved and text ready. Next, choose Read & suggest facts beside this document.",
                 r.extraction_status === "FAILED",
               );
             },
@@ -1309,7 +1392,7 @@
             '<div class="gf-toolbar">' +
               (d.storage_path
                 ? btn("download-document", "Download original", id) +
-                  btn("propose-facts", "Extract fact proposals", id) +
+                  btn("propose-facts", "Read & suggest facts", id) +
                   btn("retry-extraction", "Retry text extraction", id)
                 : "") +
               "</div>" +
@@ -1391,17 +1474,20 @@
                   b.disabled = true;
                   if (b.dataset.action === "download-document")
                     download(await api("download_document", { id }));
+                  else if (b.dataset.action === 'propose-facts') {
+                    modal.close();
+                    await perform('prepare-document', id);
+                  }
                   else {
-                    await api(
-                      b.dataset.action === "propose-facts"
-                        ? "propose_facts"
-                        : "retry_extraction",
+                    const result = await api(
+                      "retry_extraction",
                       { id, revision: d.revision },
                     );
                     modal.close();
                     await refresh();
                     message(
-                      "Document operation completed. Review fact proposals in Truth Review.",
+                      result.extraction_status === 'COMPLETE' ? 'Text is ready. Next, choose Read & suggest facts.' : 'The original is saved, but text could not be read: ' + result.extraction_error,
+                      result.extraction_status !== 'COMPLETE',
                     );
                   }
                 } catch (e) {

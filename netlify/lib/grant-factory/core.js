@@ -110,6 +110,29 @@ function authorizedFacts(brain, applicationId) {
 function visible(f, role) {
   return f.sensitivity_level !== "RESTRICTED" || role === "OWNER";
 }
+function factBlockers(f, brain, applicationId) {
+  const reasons = [];
+  if (!["APPROVED", "VERIFIED", "PROJECTED", "DERIVED"].includes(f.verification_status)) reasons.push("Review and approve this fact.");
+  if (!f.value?.trim()) reasons.push("Enter the missing information.");
+  if (!f.external_use_allowed || !f.grant_use_allowed) reasons.push("Allow this fact to be used in grants.");
+  if (f.internal_only || f.sensitivity_level === "RESTRICTED") reasons.push("This fact is private and excluded from drafting.");
+  if (f.review_required) reasons.push("Application-specific review is still required.");
+  if (!f.source_locator || !(f.source_document_id || f.source_reference)) reasons.push("Add a source and its location.");
+  if (f.conflict_ids?.length && !f.conflict_resolution?.resolved) reasons.push("Resolve the conflicting information.");
+  if (f.application_id && f.application_id !== applicationId) reasons.push("Available only in its linked application.");
+  if ((f.expiration_date && new Date(f.expiration_date + "T23:59:59Z") < new Date()) || (f.review_date && new Date(f.review_date + "T23:59:59Z") < new Date())) reasons.push("This fact is due for a fresh review.");
+  if (f.effective_date && new Date(f.effective_date) > new Date()) reasons.push("This fact is not effective yet.");
+  if (f.source_document_id) {
+    const doc = brain.documents.find(d => d.id === f.source_document_id);
+    if (!doc || doc.status !== "AVAILABLE" || doc.extraction_status !== "COMPLETE") reasons.push("The source document must be available and readable.");
+    else {
+      if (!doc.external_use_allowed) reasons.push("The source document has not been approved for grant use. Approve it below after reviewing it.");
+      if (doc.sensitivity_level === "RESTRICTED") reasons.push("The source document is restricted.");
+      if (doc.expiration_date && new Date(doc.expiration_date + "T23:59:59Z") < new Date()) reasons.push("The source document has expired.");
+    }
+  }
+  return reasons;
+}
 function validateFact(raw, ctx, previous) {
   const f = { ...raw };
   f.fact_key = str(f.fact_key, 150);
@@ -605,6 +628,7 @@ module.exports = {
   limits,
   factAllowed,
   authorizedFacts,
+  factBlockers,
   visible,
   validateFact,
   retrieve,

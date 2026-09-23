@@ -3,7 +3,7 @@ const { XMLParser } = require("fast-xml-parser");
 const { unzipSync, strFromU8 } = require("fflate");
 const { fail, hash } = require("./core");
 const MAX_BYTES = 3 * 1024 * 1024,
-  MAX_TEXT = 100000;
+  MAX_TEXT = 1000000;
 function validateFile(filename, bytes) {
   if (!bytes.length || bytes.length > MAX_BYTES)
     fail("Upload a nonempty file no larger than 3 MB.");
@@ -107,7 +107,7 @@ async function extract(filename, bytes) {
     });
     const doc = await task.promise;
     try {
-      if (doc.numPages > 100) fail("PDFs are limited to 100 pages.");
+      if (doc.numPages > 500) fail("PDFs are limited to 500 pages.");
       for (let p = 1; p <= doc.numPages; p++) {
         const page = await doc.getPage(p);
         const content = await page.getTextContent();
@@ -128,7 +128,7 @@ async function extract(filename, bytes) {
   const length = blocks.reduce((n, b) => n + b.text.length, 0);
   if (length > MAX_TEXT)
     fail(
-      "Extracted text exceeds 100,000 characters. Split the document and upload the relevant sections.",
+      "This document exceeds 1,000,000 extracted characters. Upload it as separate volumes. Your original remains saved.",
     );
   if (length < 10)
     fail(

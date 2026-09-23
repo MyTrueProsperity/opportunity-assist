@@ -1,6 +1,6 @@
 "use strict";
 const { createDb } = require("../source-intelligence/db");
-const { Fault, fail, id, visible } = require("./core");
+const { Fault, fail, id, visible, authorizedFacts, factBlockers } = require("./core");
 const { researchFacts } = require("./research");
 const flatten = (r) => ({
   ...r.content,
@@ -207,10 +207,14 @@ function repository(env = process.env, fetcher = fetch) {
         throw e;
       }
     },
-    publicBrain(brain, ctx) {
+    publicBrain(brain, ctx, applicationId) {
+      const ready = new Set(authorizedFacts(brain, applicationId).map(f => f.id));
       return {
         ...brain,
-        facts: brain.facts.filter((f) => visible(f, ctx.role)),
+        facts: brain.facts.filter((f) => visible(f, ctx.role)).map(f => {
+          const blockers = ready.has(f.id) ? [] : factBlockers(f, brain, applicationId);
+          return { ...f, draft_ready: ready.has(f.id), draft_blockers: ready.has(f.id) ? [] : blockers.length ? blockers : ["The underlying evidence needs review before this fact can be used."] };
+        }),
         documents: brain.documents
           .filter((d) => visible(d, ctx.role))
           .map(({ blocks, ...d }) => d),

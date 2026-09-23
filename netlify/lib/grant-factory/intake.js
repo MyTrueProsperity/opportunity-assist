@@ -1,0 +1,75 @@
+"use strict";
+const C = require("./core");
+const P = require("./parser");
+
+// One bounded model call per request. Original locators remain unchanged even
+// when a long paragraph/page is split; quotations are checked against originals.
+const BATCH_CHARS = 5000;
+function batches(blocks) {
+  const result = [];
+  let current = [], size = 0;
+  for (const block of blocks || []) {
+    for (let offset = 0; offset < block.text.length; offset += BATCH_CHARS) {
+      const piece = { ...block, text: block.text.slice(offset, offset + BATCH_CHARS) };
+      if (size && (size + piece.text.length > BATCH_CHARS || current.length >= 60)) {
+        result.push(current); current = []; size = 0;
+      }
+      current.push(piece); size += piece.text.length;
+    }
+  }
+  if (current.length) result.push(current);
+  return result;
+}
+function intakeState(doc, parts) {
+  const source = C.hash({ version: 1, blocks: doc.blocks });
+  const old = doc.fact_extraction;
+  return old?.source === source ? old : {
+    source, total_batches: parts.length, next_batch: 0,
+    proposals: 0, warnings: [], status: "NOT_STARTED",
+  };
+}
+async function proposeBatch(repo, call, ctx, brain, doc, body) {
+  const parts = batches(doc.blocks);
+  const state = intakeState(doc, parts);
+  const result = (proposals = 0) => ({ proposals, progress: state, warnings: state.warnings });
+  // Explicit cursor makes retries after a lost response safe.
+  if (body.batch_index != null) {
+    if (!Number.isInteger(body.batch_index) || body.batch_index < 0 || body.batch_index > state.next_batch)
+      C.fail("Document progress changed. Reopen the document to continue.", 409);
+    if (body.batch_index < state.next_batch) return result();
+  }
+  if (state.next_batch >= parts.length) return result();
+  const proposed = await call(ctx, "extract_facts", {
+    document_type: doc.document_type, document_date: doc.document_date,
+    blocks: parts[state.next_batch], part: state.next_batch + 1, total_parts: parts.length,
+  });
+  const changes = [];
+  const key = f => C.hash([f.source_document_id, f.source_locator, f.source_quote, f.value]);
+  const existing = new Set(brain.facts.map(key));
+  for (const f of proposed.facts) {
+    if (!P.sourceGrounded(f, parts[state.next_batch]))
+      C.fail("A suggested fact could not be matched to this section. Earlier sections are saved. Resume to retry this section; no untraceable fact was added.", 502);
+    const content = {
+      ...f, source_document_id: doc.id, source_reference: doc.title,
+      verification_status: "NEEDS_VERIFICATION", external_use_allowed: false,
+      grant_use_allowed: false, internal_only: false, sensitivity_level: "INTERNAL",
+      category: "Document proposals", created_by: ctx.user_id,
+      conflict_ids: brain.facts.filter(x => x.fact_key === f.fact_key && x.value !== f.value).map(x => x.id),
+    };
+    if (existing.has(key(content))) continue;
+    existing.add(key(content));
+    changes.push({ table: "gf_facts", id: C.randomUUID(), content });
+  }
+  state.next_batch++;
+  state.proposals += changes.length;
+  state.status = state.next_batch === parts.length ? "COMPLETE" : "IN_PROGRESS";
+  state.updated_at = C.now();
+  state.warnings = [...new Set([...state.warnings, ...(proposed.warnings || [])])].slice(-30);
+  const { id, revision, updated_at, ...content } = doc;
+  content.fact_extraction = state;
+  changes.push({ table: "gf_documents", id, content });
+  // Suggestions and the cursor commit together under the workspace revision lock.
+  await repo.writeBrain(ctx, brain, changes);
+  return result(changes.length - 1);
+}
+module.exports = { batches, intakeState, proposeBatch, BATCH_CHARS };

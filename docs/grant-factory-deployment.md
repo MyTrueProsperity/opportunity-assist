@@ -71,7 +71,7 @@ Do not put service credentials in `app.html`, source control or public assets. T
 
 ## Phase 1 limits and deployment checks
 
-- Supported files: text-based PDF (up to 100 pages), DOCX and UTF-8 text; 3 MB per file and 100,000 extracted characters. No OCR, spreadsheets, image extraction, portal login or autofill.
+- Supported reference files: text-based PDF (up to 500 pages), DOCX and UTF-8 text; 3 MB per file and 1,000,000 extracted characters. No OCR, spreadsheets, image extraction, portal login or autofill. Pasted application text remains bounded to 100,000 characters.
 - Word counts use whitespace-delimited tokens; character counts use NFC-normalized Unicode code points. The funder's own counter is authoritative when its convention differs. Page limits and ambiguous character rules require a manual layout check.
 - Evidence retrieval uses bounded keyword relevance, not embeddings. Program recommendations are explainable keyword matches requiring a human choice.
 - Eligibility comparison is conservative: explicit exact-match facts may pass/fail; missing facts and legal/financial requirements remain uncertain or require review. There is no automatic external legal or eligibility research.
@@ -83,5 +83,15 @@ Do not put service credentials in `app.html`, source control or public assets. T
 - Some original ChatGPT specification messages were clipped by the retrieval service. Later explicit user decisions and recovered overlapping specifications were used; inaccessible text was not invented.
 
 ## Phase 2 recommendations
+
+### September 23 guided intake update
+
+Grant Factory now opens on **Start here** with three actions: add documents, review suggested facts, and start an application. The vault separates uploaded originals from the optional document checklist. Fact readiness comes from the same server authorization used by drafting; an approved fact whose source has not been approved is explicitly marked unavailable, with the reason shown.
+
+**Read & suggest facts** processes at most 5,000 source characters per request. Each successful request atomically saves pending fact proposals and `gf_documents.content.fact_extraction` progress. The browser continues sequentially while the reading dialog is open. Closing or pausing stops after the current section. A later session resumes from the saved cursor. A failed section never erases completed sections. Cursor replays return saved progress without repeating AI calls, and exact repeated source/value proposals are deduplicated. Concurrent writes remain guarded by the existing workspace revision lock. There is no new queue or cron task, and the existing 120-call daily AI limit remains.
+
+Reading does not approve facts or source documents. The simplified fact-review dialog requires an explicit owner choice and source acknowledgment. Source approval and fact approval commit together. Restricted sources remain excluded, and history and private storage remain unchanged. Completing document processing means all text sections were processed, not that every possible fact was extracted or verified. Extraction warnings remain visible.
+
+Repeated drafting replaces unanswered automatic input requests for that question, while preserving responses and resolved history. The application explains review prerequisites and hides drafting until the question list and strategy are reviewed. Every draft reloads the current organization facts; re-parsing an application is not necessary to use newly approved evidence.
 
 After several real grants have completed human review, evaluate live-model extraction/claim-audit precision, add OCR and resilient background jobs, then consider semantic retrieval and cross-application input deduplication. Advanced request-size intelligence should use actual giving history and current budgets. Add awards/declines, reporting and Board reports only in a later scoped release. Portal automation, harvesting and auto-pursuit require separate approval and implementation; none is introduced here.
