@@ -143,21 +143,24 @@
       const auth = await sb.auth.getSession();
       const token = auth.data.session?.access_token;
       if (!token) throw Error("Sign in again to continue.");
-      const r = await fetch("/.netlify/functions/grant-factory", {
+      let r;
+      try { r = await fetch("/.netlify/functions/grant-factory", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
           Authorization: "Bearer " + token,
         },
         body: JSON.stringify({ action, org_id: s.orgId, ...payload }),
-      });
+      }); } catch {
+        throw Object.assign(Error("The connection was interrupted. Check saved progress before trying again."), { responseLost: true });
+      }
       let data;
       try {
         data = await r.json();
       } catch {
-        throw Error(
+        throw Object.assign(Error(
           "The server returned an unreadable response. Check the deployment and try again.",
-        );
+        ), { responseLost: true });
       }
       if (!r.ok) throw Error(data.error || "Request failed");
       return data;
@@ -1011,10 +1014,15 @@
           doc = await api('document', { id });
         }
         let progress = doc.fact_extraction;
-        let cursor;
+        let cursor = progress?.next_batch || 0;
+        if (progress) { meter.max = progress.total_batches || 1; meter.value = cursor; }
         while (!paused && modal.isConnected && progress?.status !== 'COMPLETE') {
           status.textContent = progress ? 'Reading section ' + (progress.next_batch + 1) + ' of ' + progress.total_batches + '. ' + progress.proposals + ' suggestions saved so far.' : 'Reading the first section and suggesting facts…';
-          const out = await api('propose_facts', { id, ...(cursor != null ? {batch_index:cursor} : {}) });
+          const out = await window.OAGrantReading.nextSection({
+            request: batch_index => api('propose_facts', { id, batch_index }),
+            read: () => api('document', { id }), cursor, source: progress?.source,
+            onRecovery: () => { if (modal.isConnected) status.textContent = 'Checking saved progress after a slow connection. Please keep this window open…'; },
+          });
           progress = out.progress;
           cursor = progress.next_batch;
           meter.max = progress.total_batches || 1; meter.value = progress.next_batch;
