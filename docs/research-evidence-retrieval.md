@@ -35,7 +35,21 @@ Execute every `check_*.sql` query after loading. Each result's `expected` must e
 
 Activation is a separate transaction after verifying 43 evidence records, 20 statistics, 9 packets, 34 rules, 4 aliases, 32 review entries, 541 sections and 273 sources. Insert the intended organization into `package_workspaces`, then set this package to `active` with `activated_at`. Do not give other organizations implicit access. Keep the source metadata as provenance; record live import details separately in `metadata.runtime_import`.
 
-## Validation and operation
+## Additional complete research packages
+
+`scripts/prepare-research-package.cjs` loads complete private packages into the same tables, including canonical evidence, statistic groups, rules, packets, source reviews, aliases, background sections, sources, and master document parts. It validates manifest hashes, canonical-file/payload agreement, foreign references, and drafting eligibility before emitting staging-only SQL batches. Use it as follows, then execute every generated check and verify the master checksum before assigning a workspace and activating the package:
+
+```sh
+node scripts/prepare-research-package.cjs /path/to/private/bundle work/package-import
+```
+
+Community and Belonging IDs are supported by migration `20260923184152_research_evidence_community_belonging_ids.sql`. Migration `20260923210805_research_evidence_cte_ids.sql` additionally accepts the original CTE IDs while preserving every existing namespace in the live constraint. These are additive import-compatibility changes; they do not change retrieval permissions or introduce new tables.
+
+The CTE package retains original record fields, source-quality tiers, causality labels, geography hierarchy, funding tags, retrieval bundles, claim cautions and cross-volume links in the existing JSON payloads. Composite statistics retain named components rather than being forced into a misleading scalar. Repeated studies across volumes are linked as the same study, not independent corroboration. Background sections stay background-only. The unresolved FloridaCommerce 2026–27 LWDB 12 row extraction is package gap metadata and a claim rule, never fabricated occupation rows.
+
+Private package manifests and live validation receipts belong with the private ingestion artifacts, not the public application repository. No application deployment is necessary to retrieve a newly activated package through the existing RPCs.
+
+## Repository checks
 
 ```sh
 pnpm test
