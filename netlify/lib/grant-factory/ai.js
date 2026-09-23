@@ -33,7 +33,7 @@ function validate(value, schema, path = "result") {
         validate(v, schema.properties[k], path + "." + k);
   }
   if (type === "array") {
-    if (value.length > (schema.maxItems || 200)) fail("AI returned too many items", 502);
+    if (value.length > (schema.maxItems || 200)) fail("AI returned too many items in " + path, 502);
     value.forEach((v, i) => validate(v, schema.items, path + "[" + i + "]"));
   }
   if (type === "string" && value.length > 30000)
@@ -52,7 +52,9 @@ function provider(env = process.env, fetcher = fetch) {
       const model = env.GRANT_FACTORY_MODEL || "claude-haiku-4-5-20251001";
       const taskSchema = structuredClone(schemas[task]);
       if (task === "extract_facts") {
-        taskSchema.properties.facts.maxItems = 20;
+        // Ask for 20, but tolerate a small overshoot. Every proposal still
+        // passes type validation, exact source tracing and human approval.
+        taskSchema.properties.facts.maxItems = 40;
         taskSchema.properties.facts.items.properties.source_locator.enum = [...new Set(data.blocks.map(b => b.locator))];
       }
       if (task === "audit") {
