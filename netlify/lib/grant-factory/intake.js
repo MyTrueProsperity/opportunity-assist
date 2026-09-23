@@ -4,14 +4,15 @@ const P = require("./parser");
 
 // One bounded model call per request. Original locators remain unchanged even
 // when a long paragraph/page is split; quotations are checked against originals.
-const BATCH_CHARS = 5000;
+const BATCH_CHARS = 10000;
+const BATCH_BLOCKS = 120;
 function batches(blocks) {
   const result = [];
   let current = [], size = 0;
   for (const block of blocks || []) {
     for (let offset = 0; offset < block.text.length; offset += BATCH_CHARS) {
       const piece = { ...block, text: block.text.slice(offset, offset + BATCH_CHARS) };
-      if (size && (size + piece.text.length > BATCH_CHARS || current.length >= 60)) {
+      if (size && (size + piece.text.length > BATCH_CHARS || current.length >= BATCH_BLOCKS)) {
         result.push(current); current = []; size = 0;
       }
       current.push(piece); size += piece.text.length;
@@ -21,7 +22,7 @@ function batches(blocks) {
   return result;
 }
 function intakeState(doc, parts) {
-  const source = C.hash({ version: 1, blocks: doc.blocks });
+  const source = C.hash({ version: 2, blocks: doc.blocks });
   const old = doc.fact_extraction;
   return old?.source === source ? old : {
     source, total_batches: parts.length, next_batch: 0,

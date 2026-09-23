@@ -15,6 +15,10 @@ test('long documents retain all text and original locators in bounded sections',
   assert.ok(parts.length > 20);
   assert.ok(parts.every(p => p.reduce((n,b)=>n+b.text.length,0) <= BATCH_CHARS));
   assert.ok(parts.flat().every(b => b.locator === 'Line 1'));
+  const shortBlocks = Array.from({length: 300}, (_,i) => ({id:String(i),locator:'Paragraph '+(i+1),text:'A fact.'}));
+  const shortParts = batches(shortBlocks);
+  assert.ok(shortParts.every(p => p.length <= 120));
+  assert.deepEqual(shortParts.flat(), shortBlocks);
   await assert.rejects(extract('too-long.txt', Buffer.from('a'.repeat(MAX_TEXT+1))), /1,000,000/);
 });
 
