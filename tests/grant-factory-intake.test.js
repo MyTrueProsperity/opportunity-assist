@@ -6,6 +6,17 @@ const { batches, BATCH_CHARS } = require('../netlify/lib/grant-factory/intake');
 const { service } = require('../netlify/lib/grant-factory/service');
 const { createTestRepo } = require('./helpers/grant-db');
 const { testPack } = require('./helpers/grant-seed');
+const { provider } = require('../netlify/lib/grant-factory/ai');
+
+test('fact extraction accepts a small valid suggestion overshoot but retains a hard bound', async () => {
+  const fact = {fact_key:'mission',display_name:'Mission',value:'Education and work.',source_quote:'Education and work.',source_locator:'Line 1',confidence:'HIGH',temporal_context:'CURRENT'};
+  let count=21;
+  const ai = provider({ANTHROPIC_API_KEY:'test'},async()=>({ok:true,json:async()=>({content:[{type:'tool_use',name:'result',input:{facts:Array.from({length:count},()=>({...fact})),warnings:[]}}]})}));
+  const input={blocks:[{locator:'Line 1',text:'Education and work.'}]};
+  assert.equal((await ai.call('extract_facts',input)).data.facts.length,21);
+  count=41;
+  await assert.rejects(ai.call('extract_facts',input),/too many items in result.facts/);
+});
 
 test('long documents retain all text and original locators in bounded sections', async () => {
   const source = 'A long institutional record. '.repeat(10000);
