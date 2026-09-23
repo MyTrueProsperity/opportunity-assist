@@ -3,6 +3,7 @@ const C = require("./core");
 const { extract, validateFile, MAX_BYTES } = require("./documents");
 const P = require("./parser");
 const { seed } = require("./seed");
+const { researchRules } = require("./research");
 const { exportPackage } = require("./export");
 const DOCUMENT_TYPES = [
   "IRS_DETERMINATION",
@@ -169,6 +170,7 @@ function service(repo, ai) {
       question: q,
       answer: a.draft_text,
       evidence,
+      claim_rules: researchRules(brain, evidence),
       commitment_review: a.commitment_review || null,
     });
     for (const claim of result.claims) {
@@ -202,6 +204,16 @@ function service(repo, ai) {
   return {
     async handle(ctx, body) {
       const action = body.action || "bootstrap";
+      if (action === "research_search") {
+        const offset = body.offset ?? 0;
+        if (!Number.isInteger(offset) || offset < 0 || offset > 10000) C.fail("Invalid search page");
+        return repo.researchSearch(ctx, C.str(body.query || "", 300), offset);
+      }
+      if (action === "research_document") {
+        const document = await repo.researchDocument(ctx, C.str(body.package_version, 150));
+        if (!document) C.fail("Research document not found", 404);
+        return { download: true, filename: document.filename, mime: "text/markdown;charset=utf-8", base64: Buffer.from(document.content, "utf8").toString("base64") };
+      }
       let brain = await repo.brain(ctx);
       if (action === "bootstrap")
         return {
@@ -230,6 +242,7 @@ function service(repo, ai) {
         if (body.brain_revision !== brain.revision)
           C.fail("Truth changed. Refresh before saving.", 409);
         const previous = brain.facts.find((f) => f.id === body.id);
+        if (previous?.read_only || body.fact?.research || body.fact?.fact_key?.startsWith("research:")) C.fail("Research records are read-only. Update the versioned research package instead.", 403);
         if (body.id && !previous) C.fail("Fact not found", 404);
         if (previous) checkRevision(body, previous);
         const fact = C.validateFact(
@@ -684,6 +697,7 @@ function service(repo, ai) {
               (p) => p.id === app.content.primary_program_id,
             ),
             facts,
+            claim_rules: researchRules(brain, facts),
           })),
           approved: false,
         };
@@ -725,6 +739,7 @@ function service(repo, ai) {
           result = await call(ctx, "write", {
             question: q,
             evidence,
+            claim_rules: researchRules(brain, evidence),
             strategy: app.content.strategy,
             voice: brain.voice,
           });

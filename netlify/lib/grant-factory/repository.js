@@ -1,6 +1,7 @@
 "use strict";
 const { createDb } = require("../source-intelligence/db");
 const { Fault, fail, id, visible } = require("./core");
+const { researchFacts } = require("./research");
 const flatten = (r) => ({
   ...r.content,
   id: r.id,
@@ -71,20 +72,31 @@ function repository(env = process.env, fetcher = fetch) {
       };
     },
     async brain(ctx) {
-      const [[workspace], facts, programs, documents] = await Promise.all([
+      const [[workspace], facts, programs, documents, research] = await Promise.all([
         db.select("gf_workspaces", { org_id: "eq." + ctx.org_id }),
         db.all("gf_facts", { org_id: "eq." + ctx.org_id }),
         db.all("gf_programs", { org_id: "eq." + ctx.org_id }),
         db.all("gf_documents", { org_id: "eq." + ctx.org_id }),
+        this.research(ctx),
       ]);
       if (!workspace) fail("Grant Factory workspace is unavailable.", 503);
       return {
         revision: workspace.brain_revision,
         voice: workspace.voice,
-        facts: facts.map(flatten),
+        facts: [...facts.map(flatten), ...researchFacts(research)],
+        research,
         programs: programs.map(flatten),
         documents: documents.map(flatten),
       };
+    },
+    async research(ctx) {
+      return db.rpc("gf_research_bundle", { p_org: ctx.org_id, p_actor: ctx.user_id });
+    },
+    async researchSearch(ctx, query, offset = 0) {
+      return db.rpc("gf_research_search", { p_org: ctx.org_id, p_actor: ctx.user_id, p_query: query, p_offset: offset });
+    },
+    async researchDocument(ctx, version) {
+      return db.rpc("gf_research_document", { p_org: ctx.org_id, p_actor: ctx.user_id, p_package: version });
     },
     async app(ctx, appId) {
       id(appId);

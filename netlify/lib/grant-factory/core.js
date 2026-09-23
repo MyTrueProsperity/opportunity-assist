@@ -291,6 +291,13 @@ function deterministicAudit(text, evidence, question) {
       "Resolve the missing information.",
     );
   for (const sentence of sentences) {
+    const research = evidence.filter(e => e.research).map(e => e.research);
+    if (research.some(r => r.record_id === "CFSC-002") && /40\s*%/.test(sentence) && /(?:official(?:ly)?\s+(?:poor|poverty)|(?:in|below|under)\s+(?:the\s+)?(?:federal\s+)?poverty)/i.test(sentence))
+      push(sentence, "OVERSTATED", "The 40% ALICE Threshold combines ALICE and poverty households; it is not the official poverty rate.");
+    if (research.some(r => r.record_id === "CFSC-008") && /Seminole/i.test(sentence) && /wage|salary|earnings/i.test(sentence) && !/Orlando|MSA|metropolitan/i.test(sentence))
+      push(sentence, "OVERSTATED", "These occupational wages describe the Orlando MSA, not Seminole County alone.");
+    if (research.some(r => r.record_id === "CFSC-008") && /entry.level|starting\s+(?:wage|salary)/i.test(sentence))
+      push(sentence, "OVERSTATED", "Occupational mean wages do not establish entry-level or starting pay.");
     if (
       /(?:\d+(?:\.\d+)?\s*%|\b(?:most|all|every)\s+(?:alumni|participants|graduates))/.test(
         sentence,

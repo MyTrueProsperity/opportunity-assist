@@ -7,3 +7,4 @@ work/
 test-results/
 data/grant-factory/
 *.private-seed.json
+supabase/.temp/
