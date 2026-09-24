@@ -16,6 +16,29 @@ function requireDocumentText(changes) {
     if (c.table === "gf_documents" && !Array.isArray(c.content?.blocks))
       fail("This document's text was not loaded before saving. Nothing was changed. Reopen the document and try again.", 500);
 }
+// Browser copies only. The server keeps full research records for drafting,
+// auditing and claim rules; nothing stored is changed.
+// A research fact points to its record in brain.research.records instead of
+// repeating it, and drops the fixed research note the browser never shows.
+function browserFact(f) {
+  if (!f.research) return f;
+  const { notes, research, ...rest } = f;
+  return { ...rest, research: { package_version: research.package_version, record_id: research.record_id } };
+}
+// Original-source provenance fields are not displayed or searched in the
+// browser. They remain in the database and in the downloadable master volume.
+const PROVENANCE_ONLY = ["source_fields_original", "original_record"];
+function browserResearch(research) {
+  if (!research) return research;
+  return {
+    ...research,
+    records: (research.records || []).map(r => {
+      const copy = { ...r };
+      for (const k of PROVENANCE_ONLY) delete copy[k];
+      return copy;
+    }),
+  };
+}
 function repository(env = process.env, fetcher = fetch) {
   const db = createDb(env, fetcher);
   const base = env.SUPABASE_URL.replace(/\/$/, "");
@@ -240,8 +263,9 @@ function repository(env = process.env, fetcher = fetch) {
         ...brain,
         facts: brain.facts.filter((f) => visible(f, ctx.role)).map(f => {
           const blockers = ready.has(f.id) ? [] : factBlockers(f, brain, applicationId);
-          return { ...f, draft_ready: ready.has(f.id), draft_blockers: ready.has(f.id) ? [] : blockers.length ? blockers : ["The underlying evidence needs review before this fact can be used."] };
+          return { ...browserFact(f), draft_ready: ready.has(f.id), draft_blockers: ready.has(f.id) ? [] : blockers.length ? blockers : ["The underlying evidence needs review before this fact can be used."] };
         }),
+        research: browserResearch(brain.research),
         documents: brain.documents
           .filter((d) => visible(d, ctx.role))
           .map(({ blocks, ...d }) => d),
@@ -249,4 +273,4 @@ function repository(env = process.env, fetcher = fetch) {
     },
   };
 }
-module.exports = { requireDocumentText, repository, flatten };
+module.exports = { requireDocumentText, browserFact, browserResearch, repository, flatten };
