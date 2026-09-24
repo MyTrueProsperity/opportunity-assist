@@ -41,6 +41,12 @@ async function createTestRepo() {
   );
   await pg.exec(hardening);
   await pg.exec(hardening);
+  const summaries = fs.readFileSync(
+    path.join(__dirname, "../../supabase/grant-factory/20260924000001_document_summaries.sql"),
+    "utf8",
+  );
+  await pg.exec(summaries);
+  await pg.exec(summaries);
   await pg.exec(
     `insert into gf_workspaces(org_id) values('${ORG}'),('${OTHER}');insert into gf_members values('${ORG}','${OWNER}','OWNER'),('${ORG}','${MANAGER}','GRANT_MANAGER'),('${OTHER}','${OUTSIDER}','OWNER');`,
   );
@@ -98,22 +104,24 @@ async function createTestRepo() {
       ).rows;
     },
     async rpc(name, args) {
+      // Set-returning functions come back as rows, like PostgREST.
+      const rowsResult = name === "gf_document_summaries";
       const r = await pg.query(
-        "select " +
+        (rowsResult ? "select * from " : "select ") +
           safe(name) +
           "(" +
           Object.keys(args)
             .map((k, i) => safe(k) + "=> $" + (i + 1))
             .join(",") +
-          ") result",
+          ")" + (rowsResult ? "" : " result"),
         Object.values(args).map((v) =>
           v && typeof v === "object" ? JSON.stringify(v) : v,
         ),
       );
-      return r.rows[0].result;
+      return rowsResult ? r.rows : r.rows[0].result;
     },
   };
-  const { repository } = require("../../netlify/lib/grant-factory/repository");
+  const { repository, requireDocumentText } = require("../../netlify/lib/grant-factory/repository");
   const storage = new Map();
   const repo = repository(
     {
@@ -146,18 +154,17 @@ async function createTestRepo() {
       programs: (
         await db.all("gf_programs", { org_id: "eq." + ctx.org_id })
       ).map(flatten),
-      documents: (
-        await db.all("gf_documents", { org_id: "eq." + ctx.org_id })
-      ).map(flatten),
+      // Mirror production: brain documents are summaries without text.
+      documents: (await repo.documentSummaries(ctx)).map(flatten),
     };
   };
-  repo.writeBrain = (ctx, b, changes) =>
+  repo.writeBrain = async (ctx, b, changes) => (requireDocumentText(changes),
     db.rpc("gf_write_brain", {
       p_org: ctx.org_id,
       p_actor: ctx.user_id,
       p_expected: b.revision,
       p_changes: changes,
-    });
+    }));
   repo.app = async (ctx, id) => {
     const [row] = await db.select("gf_applications", {
       org_id: "eq." + ctx.org_id,
