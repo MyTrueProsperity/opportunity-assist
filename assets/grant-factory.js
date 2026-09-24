@@ -551,6 +551,19 @@
         (r.qa_flags?.length ? list('Source cautions',r.qa_flags.map(label)) : '') +
         '<p class="gf-note">Verification: ' + esc(label(r.verification_status)) + ' · ' + esc(r.last_verified || 'Not independently verified') + '. ' + esc(r.verification_scope || '') + '</p>';
     }
+    // Methodology applies to every strategy, draft and audit. The organization
+    // framework and quarantine list are planning and review material, never evidence.
+    function methodologyCards() {
+      const m = s.data.methodology;
+      const fw = s.data.brain.framework;
+      const bullets = values => '<ul>' + (values || []).map(v => '<li>' + esc(v) + '</li>').join('') + '</ul>';
+      return (m ? '<details class="gf-card"><summary>Grant methodology · ' + m.rules.length + ' rules applied to every strategy, draft and audit</summary><p class="gf-note">These rules shape reasoning and wording. They are not evidence and cannot make a claim supportable.</p>' + m.rules.map(r => '<p><strong>' + esc(r.id + ' · ' + r.title) + '</strong><br>' + esc(r.rule) + '</p>').join('') + '<p class="gf-meta">' + esc(m.version) + '</p></details>' : '') +
+        (fw ? '<details class="gf-card"><summary>Program funding alignment & logic model · planning framework</summary><p class="gf-note">Internal program design used to frame strategy. It is not evidence of need, effectiveness or results, and projected outcomes are not achieved outcomes.</p>' +
+          (fw.program_alignment || []).map(p => '<div class="gf-list-row"><strong>' + esc(p.name) + '</strong>' + (p.program_name && p.program_name !== p.name ? ' <span class="gf-meta">· recorded under ' + esc(p.program_name) + '</span>' : '') + '<p><strong>Funding alignment:</strong> ' + esc((p.funding_alignment || []).join(', ')) + '</p><p><strong>Relevant evidence approaches:</strong> ' + esc((p.evidence_approaches || []).join(', ')) + '</p>' + (p.notes ? '<p class="gf-note">' + esc(p.notes) + '</p>' : '') + '</div>').join('') +
+          (fw.logic_model ? '<h3>Logic model framework</h3>' + ['inputs', 'activities', 'outputs', 'short_term_outcomes', 'intermediate_outcomes', 'long_term_impact'].map(k => fw.logic_model[k] ? '<p><strong>' + esc(label(k)) + '</strong></p>' + bullets(fw.logic_model[k]) : '').join('') + (fw.logic_model.caution ? '<p class="gf-note">' + esc(fw.logic_model.caution) + '</p>' : '') : '') +
+          '<p class="gf-meta">' + esc(fw.source || '') + '</p></details>' : '') +
+        (fw?.quarantine?.length ? '<details class="gf-card"><summary>Quarantined claims · ' + fw.quarantine.length + ' not available for drafting</summary><p class="gf-note">Unverified statistics and research claims held for verification. Grant Factory never uses these as evidence. Use the verified records listed instead.</p>' + fw.quarantine.map(q => '<div class="gf-list-row"><strong>' + esc(q.id + ' · ' + q.topic) + '</strong> ' + pill(q.status) + '<p>' + esc(q.claim) + '</p><p class="gf-meta">Claimed source: ' + esc(q.claimed_source || 'Not specified') + '</p><p><strong>Finding:</strong> ' + esc(q.review_finding) + '</p>' + (q.use_instead?.length ? '<p><strong>Use instead:</strong> ' + esc(q.use_instead.join(', ')) + '</p>' : '') + '</div>').join('') + '</details>' : '');
+    }
     function renderResearch(el) {
       const library = s.data.brain.research || { packages: [], records: [], packets: [], statistics: [], rules: [], aliases: [] };
       const packet = library.packets.find(p => p.package_version + '/' + p.packet_id === s.researchPacket);
@@ -567,6 +580,7 @@
         '<p>' + library.records.length + ' evidence records · ' + library.records.filter(r => r.external_use_status === 'VERIFIED').length + ' verified · ' + library.packets.length + ' funder packets</p>' +
         library.packages.map(p => btn('research-document','Download master volume',p.package_version)).join('') +
         '<form id="gf-research-form" class="gf-card"><div class="two">' + field('query','Search evidence or background',s.researchQuery) + select('packet','Funder packet',[['','All packets'],...library.packets.map(p=>[p.package_version + '/' + p.packet_id,p.name])],s.researchPacket) + '</div><button class="btn btn-primary" type="submit">Search</button></form>' +
+        methodologyCards() +
         (packet ? '<section class="gf-card"><h3>' + esc(packet.name) + '</h3><p>' + esc(packet.approved_narrative) + '</p><p><strong>Limits:</strong> ' + esc(packet.prohibited_claims) + '</p><p class="gf-note">Packet language guides planning; only eligible evidence records support draft claims.</p></section>' : '') +
         '<h3>Evidence · ' + records.length + '</h3>' + records.map(r=>'<details class="gf-card"><summary>' + esc(r.record_id + ' · ' + r.topic) + ' ' + pill(r.external_use_status) + ' · ' + esc(r.geography_scope.join(', ') + ' / ' + r.evidence_domain) + '</summary>' + researchDetail(r) + '</details>').join('') +
         '<details class="gf-card"><summary>Strongest statistics</summary>' + library.statistics.filter(t=>!packet || (t.package_version === packet.package_version && packet.strongest_statistic_ids.includes(t.stat_id))).map(t=>'<div class="gf-list-row"><strong>' + esc(t.stat_id + ' · ' + t.finding) + '</strong> ' + pill(t.external_use_status) + '<p class="gf-meta">' + esc(t.geography + ' · ' + t.year + ' · ' + t.population) + '</p><p>' + esc(t.best_use) + '</p><ul>' + (t.cautions || []).map(c=>'<li>' + esc(c) + '</li>').join('') + '</ul><p>Source: ' + esc(t.source_org) + ' · Evidence ' + esc(t.record_id) + '</p></div>').join('') + '</details>' +
@@ -1613,6 +1627,8 @@
                 "themes_to_deemphasize",
                 "likely_funding_use",
                 "evidence_gaps",
+                "evidence_chain",
+                "budget_consistency",
               ]
                 .map((k) => area(k, label(k), a.strategy?.[k]))
                 .join("") +
@@ -1631,6 +1647,8 @@
                 "themes_to_deemphasize",
                 "likely_funding_use",
                 "evidence_gaps",
+                "evidence_chain",
+                "budget_consistency",
               ])
                 strategy[k] = f.get(k);
               await mutate("save_application", {
