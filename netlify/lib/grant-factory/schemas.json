@@ -217,6 +217,12 @@
       },
       "evidence_gaps": {
         "type": "string"
+      },
+      "evidence_chain": {
+        "type": "string"
+      },
+      "budget_consistency": {
+        "type": "string"
       }
     },
     "required": [
@@ -226,7 +232,9 @@
       "themes_to_emphasize",
       "themes_to_deemphasize",
       "likely_funding_use",
-      "evidence_gaps"
+      "evidence_gaps",
+      "evidence_chain",
+      "budget_consistency"
     ]
   },
   "write": {

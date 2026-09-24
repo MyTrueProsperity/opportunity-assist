@@ -28,6 +28,9 @@ Apply these additive files to the existing Supabase project in order:
 3. `supabase/grant-factory/202609170003_voice.sql`
 4. `supabase/grant-factory/20260917194455_grant_factory_security_hardening.sql`
 5. `supabase/grant-factory/20260924000001_document_summaries.sql`
+6. `supabase/grant-factory/20260924000002_workspace_framework.sql`
+
+The sixth migration adds a nullable `framework` column to `gf_workspaces` for each workspace's private planning framework: program funding alignment, a logic model framework and a quarantine list of unverified claims. It is maintained by trusted administration, shown read-only in the Research Library, and passed to strategy generation as planning material only. It is never evidence and quarantined claims are never draft-eligible. Organization-neutral grant methodology rules live in `netlify/lib/grant-factory/methodology.js` and apply to every strategy, draft and audit call.
 
 The fifth migration adds a server-only function that lists documents without their extracted text. Everyday requests use it so the workspace does not reload every document's full text on each click; full text is loaded only for the one document being read, parsed or saved. Apply it before deploying the matching function code, because that code calls it on every Grant Factory request. It is additive and safe to apply ahead of the release.
 

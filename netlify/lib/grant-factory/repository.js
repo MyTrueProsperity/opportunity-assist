@@ -114,6 +114,7 @@ function repository(env = process.env, fetcher = fetch) {
       return {
         revision: workspace.brain_revision,
         voice: workspace.voice,
+        framework: workspace.framework || null,
         facts: [...facts.map(flatten), ...researchFacts(research)],
         research,
         programs: programs.map(flatten),
