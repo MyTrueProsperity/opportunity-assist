@@ -999,7 +999,8 @@
       }
     }
     async function prepareDocument(id) {
-      let doc = await api('document', { id });
+      // Progress checks use the lightweight status, never the full extracted text.
+      let doc = await api('document_progress', { id });
       let paused = false;
       const modal = dialog('Read document & suggest facts', '<h3>' + esc(doc.title) + '</h3><p>Each completed section is saved. Keep this window open while reading. Closing it pauses after the current section; you can resume from Document Vault.</p><p><strong>Suggestions still need your review before grant writing can use them.</strong></p><progress id="gf-reading-progress" max="1" value="0"></progress><p id="gf-reading-status" role="status">Preparing your document…</p><div id="gf-reading-result"></div><button type="button" class="btn btn-ghost" id="gf-pause-reading">Pause after this section</button>', null);
       const status = modal.querySelector('#gf-reading-status');
@@ -1011,7 +1012,7 @@
           status.textContent = 'Reading text from your saved original…';
           const read = await api('retry_extraction', { id, revision: doc.revision });
           if (read.extraction_status !== 'COMPLETE') throw Error(read.extraction_error || 'Text could not be read. The original is still saved.');
-          doc = await api('document', { id });
+          doc = await api('document_progress', { id });
         }
         let progress = doc.fact_extraction;
         let cursor = progress?.next_batch || 0;
@@ -1020,7 +1021,7 @@
           status.textContent = progress ? 'Reading section ' + (progress.next_batch + 1) + ' of ' + progress.total_batches + '. ' + progress.proposals + ' suggestions saved so far.' : 'Reading the first section and suggesting facts…';
           const out = await window.OAGrantReading.nextSection({
             request: batch_index => api('propose_facts', { id, batch_index }),
-            read: () => api('document', { id }), cursor, source: progress?.source,
+            read: () => api('document_progress', { id }), cursor, source: progress?.source,
             onRecovery: () => { if (modal.isConnected) status.textContent = 'Checking saved progress after a slow connection. Please keep this window open…'; },
           });
           progress = out.progress;
