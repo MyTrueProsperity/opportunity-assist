@@ -27,6 +27,9 @@ Apply these additive files to the existing Supabase project in order:
 2. `supabase/grant-factory/202609170002_private_storage.sql`
 3. `supabase/grant-factory/202609170003_voice.sql`
 4. `supabase/grant-factory/20260917194455_grant_factory_security_hardening.sql`
+5. `supabase/grant-factory/20260924000001_document_summaries.sql`
+
+The fifth migration adds a server-only function that lists documents without their extracted text. Everyday requests use it so the workspace does not reload every document's full text on each click; full text is loaded only for the one document being read, parsed or saved. Apply it before deploying the matching function code, because that code calls it on every Grant Factory request. It is additive and safe to apply ahead of the release.
 
 The fourth migration revokes explicit hosted anonymous function grants and pins the immutable-history trigger's search path. The authenticated role lookup remains intentionally callable for RLS and returns only the signed-in user's protected membership for the requested organization.
 
