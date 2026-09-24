@@ -47,6 +47,12 @@ async function createTestRepo() {
   );
   await pg.exec(summaries);
   await pg.exec(summaries);
+  const framework = fs.readFileSync(
+    path.join(__dirname, "../../supabase/grant-factory/20260924000002_workspace_framework.sql"),
+    "utf8",
+  );
+  await pg.exec(framework);
+  await pg.exec(framework);
   await pg.exec(
     `insert into gf_workspaces(org_id) values('${ORG}'),('${OTHER}');insert into gf_members values('${ORG}','${OWNER}','OWNER'),('${ORG}','${MANAGER}','GRANT_MANAGER'),('${OTHER}','${OUTSIDER}','OWNER');`,
   );
@@ -148,6 +154,7 @@ async function createTestRepo() {
     return {
       revision: w.brain_revision,
       voice: w.voice,
+      framework: w.framework || null,
       facts: (await db.all("gf_facts", { org_id: "eq." + ctx.org_id })).map(
         flatten,
       ),
