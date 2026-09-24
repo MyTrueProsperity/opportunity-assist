@@ -6,6 +6,7 @@ const { seed } = require("./seed");
 const { researchRules } = require("./research");
 const { exportPackage } = require("./export");
 const { proposeBatch } = require("./intake");
+const { METHODOLOGY, strategyFramework } = require("./methodology");
 const DOCUMENT_TYPES = [
   "IRS_DETERMINATION",
   "W9",
@@ -172,6 +173,7 @@ function service(repo, ai) {
       answer: a.draft_text,
       evidence,
       claim_rules: researchRules(brain, evidence),
+      methodology_rules: METHODOLOGY.rules,
       commitment_review: a.commitment_review || null,
     });
     for (const claim of result.claims) {
@@ -224,6 +226,7 @@ function service(repo, ai) {
             { org_id: ctx.org_id, role: ctx.role, name: "Grant workspace" },
           ],
           brain: repo.publicBrain(brain, ctx),
+          methodology: METHODOLOGY,
           applications: await repo.listApps(ctx),
           ai_enabled: ai.enabled,
           document_types: DOCUMENT_TYPES,
@@ -677,6 +680,8 @@ function service(repo, ai) {
             ),
             facts,
             claim_rules: researchRules(brain, facts),
+            methodology_rules: METHODOLOGY.rules,
+            organization_framework: strategyFramework(brain.framework, [app.content.primary_program_id, ...(app.content.secondary_program_ids || [])]),
           })),
           approved: false,
         };
@@ -719,6 +724,7 @@ function service(repo, ai) {
             question: q,
             evidence,
             claim_rules: researchRules(brain, evidence),
+            methodology_rules: METHODOLOGY.rules,
             strategy: app.content.strategy,
             voice: brain.voice,
           });
