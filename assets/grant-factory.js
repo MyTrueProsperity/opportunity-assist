@@ -1197,7 +1197,9 @@
             sensitivity_level: "INTERNAL",
           };
           if (f.research) {
-            dialog("Research evidence · read only", researchDetail(f.research), async () => {});
+            // Research facts carry a reference; the full record is in the Research Library data.
+            const record = (s.data.brain.research?.records || []).find(r => r.package_version === f.research.package_version && r.record_id === f.research.record_id);
+            dialog("Research evidence · read only", record ? researchDetail(record) : '<p>This research record is not in the current library. Refresh and try again.</p>', async () => {});
             return;
           }
           dialog(
