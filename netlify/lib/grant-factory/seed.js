@@ -60,6 +60,8 @@ async function seed(repo, ctx, brain, pack) {
       });
     }
   let report = brain.documents.find((d) => d.seed_key === "impact-report");
+  // Brain documents are summaries; seeded facts are checked against full text.
+  if (report) report = await repo.document(ctx, report.id);
   if (!report) {
     const reportId = randomUUID();
     const filename = str(pack.report.filename, 200).replace(
