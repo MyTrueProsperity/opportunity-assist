@@ -8,6 +8,14 @@ const flatten = (r) => ({
   revision: r.revision,
   updated_at: r.updated_at,
 });
+// Documents in the everyday brain are summaries without extracted text.
+// Saving one would erase its text, so every document write must carry blocks
+// loaded through repo.document(). This check fails closed before any write.
+function requireDocumentText(changes) {
+  for (const c of changes || [])
+    if (c.table === "gf_documents" && !Array.isArray(c.content?.blocks))
+      fail("This document's text was not loaded before saving. Nothing was changed. Reopen the document and try again.", 500);
+}
 function repository(env = process.env, fetcher = fetch) {
   const db = createDb(env, fetcher);
   const base = env.SUPABASE_URL.replace(/\/$/, "");
@@ -76,7 +84,7 @@ function repository(env = process.env, fetcher = fetch) {
         db.select("gf_workspaces", { org_id: "eq." + ctx.org_id }),
         db.all("gf_facts", { org_id: "eq." + ctx.org_id }),
         db.all("gf_programs", { org_id: "eq." + ctx.org_id }),
-        db.all("gf_documents", { org_id: "eq." + ctx.org_id }),
+        this.documentSummaries(ctx),
         this.research(ctx),
       ]);
       if (!workspace) fail("Grant Factory workspace is unavailable.", 503);
@@ -88,6 +96,24 @@ function repository(env = process.env, fetcher = fetch) {
         programs: programs.map(flatten),
         documents: documents.map(flatten),
       };
+    },
+    // Metadata for every document, without extracted text (blocks).
+    async documentSummaries(ctx) {
+      const rows = [];
+      for (let after = null; ; ) {
+        const page = await this.db.rpc("gf_document_summaries", { p_org: ctx.org_id, p_after: after, p_limit: 500 });
+        rows.push(...page);
+        if (page.length < 500) return rows;
+        if (page.at(-1).id === after) fail("Document listing did not advance.", 502);
+        after = page.at(-1).id;
+      }
+    },
+    // One complete document, including extracted text.
+    async document(ctx, documentId) {
+      id(documentId);
+      const [row] = await this.db.select("gf_documents", { org_id: "eq." + ctx.org_id, id: "eq." + documentId });
+      if (!row) fail("Document not found", 404);
+      return flatten(row);
     },
     async research(ctx) {
       return db.rpc("gf_research_bundle", { p_org: ctx.org_id, p_actor: ctx.user_id });
@@ -140,6 +166,7 @@ function repository(env = process.env, fetcher = fetch) {
       return app;
     },
     async writeBrain(ctx, brain, changes) {
+      requireDocumentText(changes);
       return db.rpc("gf_write_brain", {
         p_org: ctx.org_id,
         p_actor: ctx.user_id,
@@ -222,4 +249,4 @@ function repository(env = process.env, fetcher = fetch) {
     },
   };
 }
-module.exports = { repository, flatten };
+module.exports = { requireDocumentText, repository, flatten };
