@@ -282,8 +282,7 @@ function service(repo, ai) {
               source_locator: fact.source_locator,
               source_quote: fact.source_quote,
             },
-            brain.documents.find((d) => d.id === fact.source_document_id)
-              .blocks || [],
+            (await repo.document(ctx, fact.source_document_id)).blocks || [],
           )
         )
           C.fail(
@@ -297,7 +296,7 @@ function service(repo, ai) {
         const changes = [{ table: "gf_facts", id: body.id || C.randomUUID(), content: fact }];
         if (body.approve_source === true) {
           owner(ctx);
-          const source = brain.documents.find(d => d.id === fact.source_document_id);
+          const source = brain.documents.some(d => d.id === fact.source_document_id) ? await repo.document(ctx, fact.source_document_id) : null;
           if (!source || source.sensitivity_level === "RESTRICTED" || source.extraction_status !== "COMPLETE" || source.status !== "AVAILABLE")
             C.fail("This source cannot be approved for grant use. Review the document first.");
           const { id, revision, updated_at, ...content } = source;
@@ -355,12 +354,19 @@ function service(repo, ai) {
           "retry_extraction",
           "propose_facts",
           "save_document",
+          "document_progress",
         ].includes(action)
       ) {
-        const d = brain.documents.find(
+        const summary = brain.documents.find(
           (d) => d.id === body.id && C.visible(d, ctx.role),
         );
-        if (!d) C.fail("Document not found", 404);
+        if (!summary) C.fail("Document not found", 404);
+        // Lightweight status for reading progress and recovery checks.
+        if (action === "document_progress") {
+          const { id, revision, title, status, extraction_status, extraction_error, fact_extraction } = summary;
+          return { id, revision, title, status, extraction_status, extraction_error, fact_extraction: fact_extraction || null };
+        }
+        const d = await repo.document(ctx, summary.id);
         if (action === "document") return d;
         if (action === "download_document") {
           if (!d.storage_path) C.fail("This document has not been uploaded");
@@ -451,6 +457,7 @@ function service(repo, ai) {
         }
         if (!source || source.extraction_status !== "COMPLETE")
           C.fail("Upload a text-based application or paste its text first.");
+        if (!Array.isArray(source.blocks)) source = await repo.document(ctx, source.id);
         if (source.sensitivity_level === "RESTRICTED")
           C.fail("Restricted documents cannot be used as application sources.");
         const app = {
@@ -558,11 +565,12 @@ function service(repo, ai) {
       checkRevision(body, app);
       invalidate(app);
       if (action === "parse") {
-        const source = brain.documents.find(
+        const summary = brain.documents.find(
           (d) => d.id === app.content.source_document_id,
         );
-        if (!source || source.extraction_status !== "COMPLETE")
+        if (!summary || summary.extraction_status !== "COMPLETE")
           C.fail("The source needs text extraction.");
+        const source = await repo.document(ctx, summary.id);
         if (
           app.answers.some((a) => a.draft_text?.trim()) &&
           !body.replace_confirmed
