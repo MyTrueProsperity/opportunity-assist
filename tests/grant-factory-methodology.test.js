@@ -10,11 +10,15 @@ test("methodology rules are complete, organization-neutral and versioned", () =>
   assert.ok(METHODOLOGY.version.startsWith("GRANT_METHODOLOGY_V1"));
   assert.equal(new Set(METHODOLOGY.rules.map(r => r.id)).size, METHODOLOGY.rules.length);
   const text = JSON.stringify(METHODOLOGY.rules);
-  for (const phrase of ["Evidence chain", "Causality alignment", "Localization rule", "Organizational language safeguard", "Statistical translation", "Budget and narrative consistency", "Geographic evidence tiers", "Source confidence"])
+  for (const phrase of ["Evidence chain", "Causality alignment", "Localization rule", "Organizational language safeguard", "Statistical translation", "Budget and narrative consistency", "Geographic evidence tiers", "Source confidence", "Status claims need their own proof", "Measure definitions"])
     assert.ok(text.includes(phrase), phrase);
   // The repository is public: no institution names in the shared rules.
   assert.doesNotMatch(text, /Bright Minds|Junction|John Doe|Seminole/i);
   assert.doesNotMatch(text, /\u2014/, "no em dashes");
+  // Status claims: adoption, ratings, commitments and awards each need their own proof.
+  const gm17 = METHODOLOGY.rules.find(r => r.id === "GM-17").rule;
+  for (const phrase of ["not adopting", "not a rating", "not a commitment", "not an award", "not the applicant's probability of award"])
+    assert.ok(gm17.includes(phrase), phrase);
 });
 
 test("strategy framework includes only the selected programs and is marked as not evidence", () => {
