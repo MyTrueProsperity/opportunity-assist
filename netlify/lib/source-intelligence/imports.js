@@ -1,5 +1,7 @@
 'use strict';
-const { normalized, identityKey }=require('./identity');
+const { normalized, identityKey, normalizeUrl }=require('./identity');
+const { validateExtraction, contentHash }=require('./quality');
+const { hasGroundedQuote }=require('./quote-grounding');
 function parsePipe(text) {
   if(typeof text!=='string' || text.length>1000000) throw new Error('Import must be text, at most 1 MB');
   return text.replace(/^\uFEFF/,'').split(/\r?\n/).map((raw,i)=>({raw,line:i+1})).filter(r=>r.raw.trim()).filter(r=>!/^SOURCE NAME\|URL\|SOURCE_TYPE\|GEOGRAPHY\|KEYWORDS$/i.test(r.raw.trim())).map(row=>{
@@ -29,6 +31,98 @@ function parseJson(sources) {
     } catch (e) { return { ...row, error: e.message }; }
   });
 }
+// The system's own fetch caps page text at 40,000 characters
+// (fetch-page.js); a trusted submitter's supplied page_text is held to the
+// same evidentiary window for parity, not given a larger one.
+const MAX_PAGE_TEXT_LENGTH = 40000;
+// Matches provider.js's own extract(): at most 6 real mechanisms per page.
+const MAX_PROGRAMS_PER_SOURCE = 6;
+// A bare date or a full date-time, optionally with fractional seconds and a
+// Z/offset. Deliberately stricter than the free-text date parsing
+// quality.js's own deadline handling does (that has to cope with prose on a
+// real page); this is a structured API field, so we ask for real ISO 8601.
+const ISO_8601_RE = /^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}(:\d{2}(\.\d{1,9})?)?(Z|[+-]\d{2}:\d{2}|[+-]\d{4})?)?$/;
+
+// Resolves when the submitter says it observed the page: its own
+// retrieved_at/observed_at, when that is a real, parseable, non-future ISO
+// date, or null. Recorded as provenance only; it never becomes
+// last_verified_at, because a submitter cannot verify its own evidence.
+function resolvedObservationTime(item) {
+  const raw = item.retrieved_at ?? item.observed_at;
+  if (typeof raw !== 'string' || !ISO_8601_RE.test(raw.trim())) return null;
+  const parsed = new Date(raw);
+  if (!Number.isFinite(parsed.getTime()) || parsed.getTime() > Date.now()) return null;
+  return parsed.toISOString();
+}
+
+// Parses a Trusted External Ingestion submission where the caller supplies
+// its own extracted evidence -- page_text plus per-field {value,quote}
+// claims in each programs[] entry, the exact shape the system's own AI
+// extraction already produces (provider.js's extract(), validated by
+// quality.js's validateExtraction) -- instead of a bare URL for this system
+// to independently fetch and extract itself.
+//
+// Each program is run through the identical validateExtraction used for a
+// system-fetched page, with one difference: quote-grounding checks a claim
+// against the page_text this submitter supplied (quote-grounding.js's
+// hasGroundedQuote), not a page this system fetched itself. Everything
+// after that -- duplicate detection, quality scoring, automatic-approval
+// eligibility -- is the same submitCandidate/quality.js pipeline every
+// other import already goes through; this function only builds the
+// candidate that pipeline expects to see.
+//
+// One source item may propose several programs from the same page, so
+// output is flattened to one row per program -- matching
+// parseJson/parsePipe's {raw,line,candidate,identity_key,error} shape, so
+// every downstream consumer (submitCandidate, source_import_rows, batch
+// counting) handles a trusted submission exactly like any other import.
+function parseTrusted(sources, targetState) {
+  if (!Array.isArray(sources)) throw new Error('sources must be an array');
+  const rows = [];
+  let line = 0;
+  for (const item of sources) {
+    if (!item || typeof item !== 'object') { rows.push({ raw: item, line: ++line, error: 'Each source must be an object' }); continue; }
+    const sourceUrl = item.source_url || item.url;
+    if (!sourceUrl) { rows.push({ raw: item, line: ++line, error: 'source_url is required' }); continue; }
+    if (typeof item.page_text !== 'string' || !item.page_text.trim()) { rows.push({ raw: item, line: ++line, error: 'page_text is required for a trusted submission; a bare URL with no evidence should use QUEUE mode instead' }); continue; }
+    // Once a source's programs[] is flattened to one row each (below), the
+    // row's own raw payload -- which is what gets re-serialized into an
+    // API_IMPORT job and re-parsed here a second time inside
+    // importExternalBatch, exactly like parseJson/parsePipe's raw output is
+    // -- carries a single `program`, not `programs`. Accept either shape so
+    // that re-parse is faithful instead of silently seeing zero programs.
+    const programs = Array.isArray(item.programs) ? item.programs : (item.program && typeof item.program === 'object' ? [item.program] : null);
+    if (!programs || !programs.length) { rows.push({ raw: item, line: ++line, error: 'At least one program is required' }); continue; }
+    let page;
+    try { normalizeUrl(sourceUrl); page = { url: sourceUrl, text: item.page_text.slice(0, MAX_PAGE_TEXT_LENGTH), hash: contentHash(item.page_text), links: Array.isArray(item.links) ? item.links.filter(l => l && typeof l.url === 'string') : [] }; }
+    catch (e) { rows.push({ raw: item, line: ++line, error: e.message }); continue; }
+    const raw = { source_url: sourceUrl, page_text: item.page_text, page_title: item.page_title, retrieved_at: item.retrieved_at, observed_at: item.observed_at, submitter_type: item.submitter_type, links: item.links };
+    programs.forEach((program, i) => {
+      line++;
+      if (i >= MAX_PROGRAMS_PER_SOURCE) { rows.push({ raw: { ...raw, program }, line, error: 'Only ' + MAX_PROGRAMS_PER_SOURCE + ' programs are accepted per source_url' }); return; }
+      if (!program || typeof program !== 'object') { rows.push({ raw: { ...raw, program }, line, error: 'Each program must be an object' }); return; }
+      try {
+        const candidate = normalized(validateExtraction(program, page, targetState, hasGroundedQuote));
+        // The submitter's retrieved_at/observed_at is kept only as provenance
+        // (when it is a real, parseable, non-future ISO date). It is never
+        // used as a verification time.
+        const observedAt = resolvedObservationTime(item);
+        // Trusted submissions are hints, never verification. Quote grounding
+        // only proves the quote appears in text the submitter supplied, and
+        // that text could say anything. So the candidate carries no
+        // fetched_at (submitCandidate therefore records no last_verified_at),
+        // every evidence entry is marked as submitted, and automatic approval
+        // waits until this system fetches the page itself (VALIDATE), which
+        // replaces this proposal with independently extracted evidence.
+        delete candidate.fetched_at;
+        for (const key of Object.keys(candidate.evidence || {})) candidate.evidence[key] = { ...candidate.evidence[key], provenance: 'SUBMITTED' };
+        candidate.submitted_evidence = { provenance: 'SUBMITTER_SUPPLIED', independently_verified: false, observed_at: observedAt, page_hash: page.hash };
+        rows.push({ raw: { ...raw, program }, line, candidate, identity_key: identityKey(candidate) });
+      } catch (e) { rows.push({ raw: { ...raw, program }, line, error: e.message }); }
+    });
+  }
+  return rows;
+}
 function cell(value){return String(value??'').replace(/\r?\n/g,' ').replace(/\|/g,' / ');}
 function exportRegistry(rows,format) {
   const values=rows.map(r=>[r.canonical_program_name||r.source_name,r.source_url,r.source_type,r.geography,Array.isArray(r.keywords)?r.keywords.join(', '):r.keywords]);
@@ -38,4 +132,4 @@ function exportRegistry(rows,format) {
   const csv=v=>'"'+String(v??'').replace(/^[=+@-]/,"'$&").replace(/"/g,'""')+'"';
   return '\uFEFF'+[head,...values].map(r=>r.map(csv).join(',')).join('\r\n');
 }
-module.exports={parsePipe,parseJson,exportRegistry};
+module.exports={parsePipe,parseJson,parseTrusted,exportRegistry};

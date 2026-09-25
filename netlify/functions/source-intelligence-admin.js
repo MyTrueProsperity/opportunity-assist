@@ -5,6 +5,13 @@ const {parsePipe,parseJson,exportRegistry}=require('../lib/source-intelligence/i
 const {uuid,registry,enqueue,reviewPayload,publish}=require('../lib/source-intelligence/service');
 const {normalizeUrl,compareCandidate}=require('../lib/source-intelligence/identity');
 const json=(statusCode,data)=>({statusCode,headers:{'Content-Type':'application/json','Cache-Control':'no-store'},body:JSON.stringify(data)});
+// The Trusted External Ingestion API's TRUSTED_AUTOMATION mode (see
+// netlify/functions/source-intelligence-import.js) requires a credential to
+// carry this permission in addition to the default SOURCE_INTELLIGENCE_IMPORT
+// -- granted here, not by the credential's owner, since a submitter in this
+// mode supplies its own evidence. That evidence is a hint only: the record is
+// still independently fetched and verified before any automatic approval.
+const TRUSTED_AUTOMATION_PERMISSION='SOURCE_INTELLIGENCE_TRUSTED_AUTOMATION';
 // import_batches is the same status/count row the Trusted External Ingestion API
 // uses (netlify/functions/source-intelligence-import.js); a CSV upload here is
 // just another source_system for that same table, so a human admin's file and
@@ -25,7 +32,7 @@ async function handle(event,db=createDb()) {
     // Admin-facing credential management (self-service issuance/revocation of
     // Trusted External Ingestion API tokens). Never selects token_hash; the
     // plaintext token itself is returned exactly once, from create_credential below.
-    if(q.view==='credentials'){const rows=await db.select('api_credentials',{select:'id,name,source_system,status,token_prefix,max_batch_size,daily_source_limit,rate_limit_per_minute,created_at,last_used_at,last_successful_submission_at,revoked_at',order:'created_at.desc'});return json(200,{rows});}
+    if(q.view==='credentials'){const rows=await db.select('api_credentials',{select:'id,name,source_system,status,token_prefix,max_batch_size,daily_source_limit,rate_limit_per_minute,permissions,created_at,last_used_at,last_successful_submission_at,revoked_at',order:'created_at.desc'});return json(200,{rows});}
     if(q.view==='export'){const rows=await registry(db);const data=exportRegistry(rows,q.format||'csv');return {statusCode:200,headers:{'Content-Type':q.format==='pipe'?'text/plain; charset=utf-8':'text/csv; charset=utf-8','Content-Disposition':'attachment; filename="opportunity-assist-sources.'+(q.format==='pipe'?'txt':'csv')+'"','Cache-Control':'no-store'},body:data};}
     if(q.view==='coverage_matrix'){checkState(q.state);return json(200,{rows:await db.all('source_coverage',{state_code:'eq.'+q.state,select:'*,source_geographies(name,kind)'})});}
     if(q.view==='detail'){
@@ -110,10 +117,12 @@ async function handle(event,db=createDb()) {
     if(!Number.isFinite(maxBatch)||maxBatch<1||maxBatch>5000)throw new HttpError(400,'Max sources per batch must be between 1 and 5000.');
     if(!Number.isFinite(dailyLimit)||dailyLimit<1)throw new HttpError(400,'Max sources per day must be a positive number.');
     if(!Number.isFinite(rateLimit)||rateLimit<1)throw new HttpError(400,'Requests per minute must be a positive number.');
+    if(b.trusted_automation!==undefined&&typeof b.trusted_automation!=='boolean')throw new HttpError(400,'trusted_automation must be true or false.');
     const {generateToken}=require('../lib/source-intelligence/credentials');
     const {token,tokenHash,tokenPrefix}=generateToken();
-    const [row]=await db.insert('api_credentials',{name:b.name.trim().slice(0,200),source_system:b.source_system,token_hash:tokenHash,token_prefix:tokenPrefix,max_batch_size:maxBatch,daily_source_limit:dailyLimit,rate_limit_per_minute:rateLimit,created_by:actor});
-    await db.insert('source_review_decisions',{actor_id:actor,action:'CREDENTIAL_CREATED',notes:row.name+' ('+row.source_system+')'});
+    const permissions=['SOURCE_INTELLIGENCE_IMPORT',...(b.trusted_automation?[TRUSTED_AUTOMATION_PERMISSION]:[])];
+    const [row]=await db.insert('api_credentials',{name:b.name.trim().slice(0,200),source_system:b.source_system,token_hash:tokenHash,token_prefix:tokenPrefix,max_batch_size:maxBatch,daily_source_limit:dailyLimit,rate_limit_per_minute:rateLimit,permissions,created_by:actor});
+    await db.insert('source_review_decisions',{actor_id:actor,action:'CREDENTIAL_CREATED',notes:row.name+' ('+row.source_system+')'+(b.trusted_automation?' [trusted automation]':'')});
     // The only response that will ever carry the plaintext token; only its hash is stored.
     return json(201,{credential:{id:row.id,name:row.name,source_system:row.source_system,token_prefix:row.token_prefix},token});
   }
@@ -123,6 +132,21 @@ async function handle(event,db=createDb()) {
     if(!row)throw new HttpError(404,'Credential not found or already revoked.');
     await db.insert('source_review_decisions',{actor_id:actor,action:'CREDENTIAL_REVOKED',notes:row.name});
     return json(200,{ok:true});
+  }
+  // Grants or revokes TRUSTED_AUTOMATION eligibility on an EXISTING
+  // credential, so an already-issued token (already in a submitter's
+  // hands) can be upgraded without revoking and reissuing it. Read-modify-
+  // write on the permissions array rather than a raw SQL expression --
+  // this is an infrequent admin action, not a hot path.
+  if(b.action==='set_trusted_automation'){
+    if(!uuid(b.credential_id))throw new HttpError(400,'Invalid credential.');
+    if(typeof b.enabled!=='boolean')throw new HttpError(400,'enabled must be true or false.');
+    const [existing]=await db.select('api_credentials',{id:'eq.'+b.credential_id,limit:1});
+    if(!existing)throw new HttpError(404,'Credential not found.');
+    const permissions=b.enabled?[...new Set([...(existing.permissions||[]),TRUSTED_AUTOMATION_PERMISSION])]:(existing.permissions||[]).filter(p=>p!==TRUSTED_AUTOMATION_PERMISSION);
+    const [row]=await db.patch('api_credentials',{id:'eq.'+b.credential_id},{permissions});
+    await db.insert('source_review_decisions',{actor_id:actor,action:b.enabled?'CREDENTIAL_TRUSTED_AUTOMATION_GRANTED':'CREDENTIAL_TRUSTED_AUTOMATION_REVOKED',notes:row.name});
+    return json(200,{ok:true,permissions:row.permissions});
   }
   if(b.action==='discover'){
     checkState(b.state);const [s]=await db.select('source_state_settings',{state_code:'eq.'+b.state});const [e]=await db.select('source_engine_settings',{id:'eq.true'});

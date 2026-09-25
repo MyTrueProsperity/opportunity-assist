@@ -2,7 +2,7 @@
 const {STATES,CATEGORIES}=require('./config');
 const {hash,normalized,identityKey,normalizeUrl,normalizeProgram,organizationSignature,compareCandidate}=require('./identity');
 const {quality,healthTransition}=require('./quality');
-const {parsePipe,parseJson}=require('./imports');
+const {parsePipe,parseJson,parseTrusted}=require('./imports');
 const snapshot=require('../../../data/legacy-watchlist.json');
 
 const uuid=value=>typeof value==='string'&&/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
@@ -78,7 +78,8 @@ async function submitCandidate(db,candidate,{runId,method,observationKey,provena
   const c=normalized(candidate);
   const duplicate=compareCandidate(c,records||await registry(db),aliases||await db.all('source_aliases'));
   const q=quality(c,duplicate);
-  const verified=!!c.fetched_at;
+  // Submitter-supplied evidence is never verification, even if a caller set fetched_at.
+  const verified=!!c.fetched_at&&!c.submitted_evidence;
   const row=await db.rpc('source_ingest_candidate',{p_candidate:{identity_key:identityKey(c),source_name:c.source_name||c.program_name||c.source_url,source_url:c.source_url,normalized_url:c.normalized_url,state_code:c.target_state||null,proposed:c,scores:q.scores,duplicate_matches:duplicate.matches,duplicate_outcome:q.outcome,matched_program_id:duplicate.matched_program_id,quality_ready:q.quality_ready,reason:duplicate.reason,reason_code:q.reason_code,discovery_method:method,first_run_id:runId||null,...(verified?{last_verified_at:c.fetched_at}:{})},p_sighting:{run_id:runId||null,observation_key:observationKey,provenance}});
   return {row,duplicate,quality:q};
 }
@@ -101,9 +102,14 @@ async function importBatch(db,job) {
 // import_batches row and the batch is complete once no API_IMPORT job for
 // its run remains queued/running/paused.
 async function importExternalBatch(db,job) {
-  const parsed=job.payload.sources?parseJson(job.payload.sources):parsePipe(job.payload.text);
   const [batch]=await db.select('import_batches',{id:'eq.'+job.payload.batch_id});
   if(!batch)return {skipped:'batch not found'};
+  // TRUSTED_AUTOMATION rows arrive with the submitter's own extracted
+  // evidence and page_text already validated (parseTrusted, reusing
+  // validateExtraction with local quote-grounding -- see
+  // quote-grounding.js/imports.js); every other mode is still a bare
+  // lead this system extracts itself later, exactly as before.
+  const parsed=batch.mode==='TRUSTED_AUTOMATION'?parseTrusted(job.payload.sources,batch.state_code):job.payload.sources?parseJson(job.payload.sources):parsePipe(job.payload.text);
   const records=await registry(db),aliases=await db.all('source_aliases');
   const counts={new_candidate:0,exact_duplicate:0,possible_duplicate:0,invalid:0,verification_queued:0};
   const errors=[];
@@ -118,6 +124,9 @@ async function importExternalBatch(db,job) {
     if(duplicate.outcome==='EXISTING')counts.exact_duplicate++;
     else if(['POSSIBLE_DUPLICATE_REVIEW','MATERIAL_DISTINCT_TRACK'].includes(duplicate.outcome))counts.possible_duplicate++;
     else counts.new_candidate++;
+    // Every import, trusted or not, still gets this system's own independent
+    // VALIDATE fetch. A TRUSTED_AUTOMATION submission is a hint: its grounded
+    // quotes help locate evidence but prove nothing on their own.
     if(!['APPROVED','REJECTED','MERGED','UPDATED'].includes(row.status)){
       counts.verification_queued++;
       await enqueue(db,{kind:'VALIDATE',state:batch.state_code,key:'validate:'+row.id,runId:job.run_id,payload:{candidate_id:row.id,url:row.source_url,name:row.source_name}});
@@ -160,6 +169,8 @@ async function publish(db,program,state) {
 }
 async function automaticallyApprove(db,candidate) {
   if(['APPROVED','UPDATED','MERGED','REJECTED'].includes(candidate.status))return {outcome:'ALREADY_DECIDED',program_id:candidate.matched_program_id};
+  // Submitter-supplied evidence never auto-approves. Independent VALIDATE replaces it.
+  if(candidate.proposed?.submitted_evidence)return {outcome:'AWAITING_INDEPENDENT_VERIFICATION'};
   if(!candidate.quality_ready||!candidate.last_verified_at||!candidate.proposed?.program_name)return {outcome:'AWAITING_EVIDENCE'};
   // Older semantic reviews discarded derived identity fields, and normalization
   // rules can change between releases. Rebuild only derived metadata from the

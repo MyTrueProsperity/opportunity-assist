@@ -29,36 +29,42 @@ function resolveGeographicEvidence(candidate,page,targetState,geographies=[]) {
   return c;
 }
 function hasQuote(quote,text) { return typeof quote==='string' && collapse(quote).length>=4 && collapse(text).includes(collapse(quote)); }
-function evidenceClaim(claim, text) {
-  return claim && typeof claim==='object' && hasQuote(claim.quote,text) ? claim : null;
+function evidenceClaim(claim, text, isQuoted=hasQuote) {
+  return claim && typeof claim==='object' && isQuoted(claim.quote,text) ? claim : null;
 }
-function validateExtraction(raw,page,targetState) {
+// isQuoted governs what counts as a genuine excerpt of `page.text` and
+// defaults to hasQuote above -- the system's own fetched-and-extracted
+// path, unchanged. A caller validating a trusted submitter's own evidence
+// against page text that submitter (not this system) supplied passes a
+// different matcher (see quote-grounding.js's hasGroundedQuote), without
+// this function or its default behavior changing for anyone else.
+function validateExtraction(raw,page,targetState,isQuoted=hasQuote) {
   const result={ source_url:page.url, resolved_url:page.url, source_name:null, organization_name:null, program_name:null, summary:null,
     source_type:null, geography:null, applicable_states:[], keywords:[], applicant_types:[], current_status:'UNKNOWN',
     current_deadline:null, award_min:null, award_max:null, current_cycle_open:null, recurring_status:null, evidence:{}, page_hash:page.hash, fetched_at:new Date().toISOString() };
   for (const key of ['organization_name','program_name','summary','geography','purpose','eligibility','funding_mechanism','funding_pool','administering_unit','recurring_status','application_status','deadline_mentioned','amount_mentioned']) {
-    let e=evidenceClaim(raw[key],page.text);
+    let e=evidenceClaim(raw[key],page.text,isQuoted);
     // A literal name present in the supplied page is itself an exact excerpt,
     // even when the model's surrounding excerpt has a transcription error.
-    if(['organization_name','program_name'].includes(key)&&(!e||!collapse(e.quote).toLowerCase().includes(collapse(e.value).toLowerCase()))&&hasQuote(raw[key]?.value,page.text))e={value:raw[key].value,quote:raw[key].value};
+    if(['organization_name','program_name'].includes(key)&&(!e||!collapse(e.quote).toLowerCase().includes(collapse(e.value).toLowerCase()))&&isQuoted(raw[key]?.value,page.text))e={value:raw[key].value,quote:raw[key].value};
     if (e && typeof e.value==='string' && e.value.length<4000 && (!['organization_name','program_name'].includes(key) || collapse(e.quote).toLowerCase().includes(collapse(e.value).toLowerCase()))) { result[key]=['deadline_mentioned','amount_mentioned'].includes(key)?e.quote:e.value; result.evidence[key]={quote:e.quote,url:page.url}; }
   }
   result.source_name=result.program_name || result.organization_name;
   if (SOURCE_TYPES.includes(raw.source_type) && result.funding_mechanism) result.source_type=raw.source_type;
-  const application=evidenceClaim(raw.application_url,page.text);
+  const application=evidenceClaim(raw.application_url,page.text,isQuoted);
   if (application && typeof application.value==='string') {
     try { const u=new URL(application.value,page.url); if (['http:','https:'].includes(u.protocol) && page.links.some(l=>l.url===u.href)) { result.application_url=u.href; result.evidence.application_url={quote:application.quote,url:page.url}; } } catch {}
   }
-  for(const key of ['applicant_types','keywords']) if(Array.isArray(raw[key])) result[key]=raw[key].filter(s=>typeof s==='string' && hasQuote(s,page.text)).slice(0,20);
+  for(const key of ['applicant_types','keywords']) if(Array.isArray(raw[key])) result[key]=raw[key].filter(s=>typeof s==='string' && isQuoted(s,page.text)).slice(0,20);
   // Geographic applicability needs its own quote. Corporate presence is never eligibility evidence.
-  const scope=evidenceClaim(raw.applicable_states,page.text);
+  const scope=evidenceClaim(raw.applicable_states,page.text,isQuoted);
   if(scope && Array.isArray(scope.value) && /eligib|applican|applications?|grants?|funding|nonprofits? in|organizations? in|available to|open to/i.test(scope.quote)) {
     result.applicable_states=scope.value.filter(s=>STATES[s] && (new RegExp('\\b'+STATES[s]+'\\b','i').test(scope.quote) || /all (?:50|fifty) states|nationwide|throughout the united states|across the united states/i.test(scope.quote)));
     result.evidence.applicable_states={quote:scope.quote,url:page.url};
   }
-  const status=evidenceClaim(raw.current_status,page.text);
+  const status=evidenceClaim(raw.current_status,page.text,isQuoted);
   if(status && STATUSES.includes(status.value)) { result.current_status=status.value; result.evidence.current_status={quote:status.quote,url:page.url}; }
-  let open=evidenceClaim(raw.current_cycle_open,page.text);
+  let open=evidenceClaim(raw.current_cycle_open,page.text,isQuoted);
   if(!open&&result.evidence.application_status){
     const quote=result.evidence.application_status.quote;
     if(/\b(?:open|rolling)\b/i.test(result.application_status))open={value:true,quote};
@@ -70,7 +76,7 @@ function validateExtraction(raw,page,targetState) {
     if((open.value && accepts&&!closed)||(!open.value&&closed)) { result.current_cycle_open=open.value; result.evidence.current_cycle_open={quote:open.quote,url:page.url}; }
   }
   // A date must include the year in the original quote. Never infer a year from today's date.
-  const deadline=evidenceClaim(raw.current_deadline,page.text);
+  const deadline=evidenceClaim(raw.current_deadline,page.text,isQuoted);
   if(deadline && typeof deadline.value==='string' && /^\d{4}-\d{2}-\d{2}$/.test(deadline.value) && deadline.quote.includes(deadline.value.slice(0,4))) {
     const parsed=new Date(deadline.quote); const iso=Number.isFinite(parsed.getTime())?parsed.toISOString().slice(0,10):null;
     if(iso===deadline.value || deadline.quote.includes(deadline.value)) { result.current_deadline=deadline.value; result.evidence.current_deadline={quote:deadline.quote,url:page.url}; }
@@ -81,7 +87,7 @@ function validateExtraction(raw,page,targetState) {
     if(new Set(dates).size===1){const parsed=new Date(dates[0].replace(/(\d)(st|nd|rd|th)\b/gi,'$1'));if(Number.isFinite(parsed.getTime())){result.current_deadline=parsed.toISOString().slice(0,10);result.evidence.current_deadline={quote:dates[0],url:page.url};}}
   }
   for(const key of ['award_min','award_max']) {
-    const e=evidenceClaim(raw[key],page.text);
+    const e=evidenceClaim(raw[key],page.text,isQuoted);
     if(e && typeof e.value==='number' && Number.isFinite(e.value) && e.value>=0) {
       const numbers=[...e.quote.matchAll(/\$\s*([\d,]+(?:\.\d{1,2})?)/g)].map(m=>Number(m[1].replace(/,/g,'')));
       if(numbers.includes(e.value)) { result[key]=e.value; result.evidence[key]={quote:e.quote,url:page.url}; }

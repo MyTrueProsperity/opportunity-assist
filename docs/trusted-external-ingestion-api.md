@@ -6,8 +6,11 @@ Source Intelligence, without a human pasting rows into the admin screen.
 
 Every record goes through the exact same pipeline as a manual paste import:
 the same normalization, duplicate detection, quality scoring, and
-verification queueing. This API adds no new business logic of its own -- it
-is a second front door onto the pipeline that already exists.
+verification queueing. This API adds no new business logic of its own for
+`DRY_RUN`/`QUEUE` -- it is a second front door onto the pipeline that
+already exists. `TRUSTED_AUTOMATION` (below) adds exactly one new piece of
+logic -- checking a submitter's own quoted evidence against the page text
+that submitter supplied -- and reuses everything else unchanged.
 
 ## Getting a credential
 
@@ -17,6 +20,15 @@ Opportunity Assist discovery agent, or Other), and three limits (max sources
 per batch, max sources per day, requests per minute). The token is shown
 once, at creation, and is never retrievable again -- only its hash is
 stored. If a token is lost, revoke it and issue a new one.
+
+A credential can optionally also be granted the
+`SOURCE_INTELLIGENCE_TRUSTED_AUTOMATION` permission, either at creation or
+later from the credentials list, without reissuing its token. This is
+required for `TRUSTED_AUTOMATION` mode (below) and is a separate,
+deliberate grant. Even so, a `TRUSTED_AUTOMATION` submission is a hint,
+not verification: it never skips this system's own independent
+verification fetch and can never be approved automatically on the
+submitter's evidence alone.
 
 Every request must include it:
 
@@ -42,11 +54,11 @@ Submits one batch of sources.
 ```jsonc
 {
   "source_system": "CHATGPT",        // required
-  "mode": "QUEUE",                    // "DRY_RUN" or "QUEUE" (default "QUEUE")
+  "mode": "QUEUE",                    // "DRY_RUN", "QUEUE", or "TRUSTED_AUTOMATION" (default "QUEUE")
   "state": "FL",                      // required, two-letter state code
-  "batch_name": "Weekly sweep",       // optional, QUEUE mode only
-  "submitted_by": "researcher@...",   // optional, QUEUE mode only
-  "idempotency_key": "run-2026-09-17",// optional, QUEUE mode only
+  "batch_name": "Weekly sweep",       // optional, QUEUE/TRUSTED_AUTOMATION only
+  "submitted_by": "researcher@...",   // optional, QUEUE/TRUSTED_AUTOMATION only
+  "idempotency_key": "run-2026-09-17",// optional, QUEUE/TRUSTED_AUTOMATION only
   "sources": [
     {
       "source_name": "Example Community Foundation Grant",
@@ -71,6 +83,10 @@ Only `source_name` and `url` are required per source. `source_type`,
 `keywords` accept either a plain string or an array; arrays are joined).
 `source_type` is not validated against the enum at ingestion time --
 unrecognized values pass through and can be corrected during review.
+
+This `sources` shape is the standard one, usable with `DRY_RUN` or `QUEUE`.
+`TRUSTED_AUTOMATION` uses a different, richer shape described in its own
+section below -- which `DRY_RUN` also accepts, for previewing it.
 
 ### mode: DRY_RUN
 
@@ -108,6 +124,51 @@ A row with `"status": "invalid"` carries an `error` string instead of the
 other fields (for example `"url is required"`) and does not stop the rest
 of the batch from being analyzed.
 
+**Previewing a `TRUSTED_AUTOMATION` submission.** `DRY_RUN` also accepts
+`TRUSTED_AUTOMATION`'s richer `sources` shape (`page_text` plus per-field
+claims in `programs[]` -- see that mode's section below) for exactly the
+same reason `DRY_RUN` exists at all: check what a submission would produce
+before committing to it. This still requires the credential to carry
+`SOURCE_INTELLIGENCE_TRUSTED_AUTOMATION`, since it runs the identical
+grounding logic; only actually persisting anything is unique to
+`TRUSTED_AUTOMATION` mode itself. Nothing about which shape you send is a
+separate field -- it's detected from `sources` itself (a `page_text` on any
+item is unambiguous, since the standard shape has no such field), and the
+response says which one was used:
+
+```jsonc
+// 200 OK
+{
+  "mode": "DRY_RUN",
+  "submission_shape": "TRUSTED_AUTOMATION",  // or "STANDARD" for the shape above
+  "submitted_count": 1,
+  "new_candidate_count": 1,
+  "exact_duplicate_count": 0,
+  "possible_duplicate_count": 0,
+  "invalid_count": 0,
+  "results": [
+    {
+      "line": 1,
+      "source_name": "Community Impact Grant",
+      "status": "new_candidate",
+      "match_reason": "No materially equivalent record found in complete registry",
+      "quality_ready": true,
+      "fields_grounded": ["program_name", "funding_mechanism", "applicable_states"],
+      "fields_not_grounded": ["award_max"]
+    }
+  ]
+}
+```
+
+`fields_grounded`/`fields_not_grounded` list which of the claims you
+submitted (only ones shaped as `{value, quote}`; `keywords`,
+`applicant_types`, `source_type` and `authority` aren't quote-grounded
+claims and aren't included) actually matched their `page_text` and which
+didn't -- exactly what would happen to each field if you submitted this
+same payload for real. `submitted_count` counts flattened programs, not
+`sources` items, the same as it does for a real `TRUSTED_AUTOMATION`
+submission -- one page proposing 3 programs counts as 3.
+
 ### mode: QUEUE
 
 Saves and deduplicates the batch, then chunks it into background jobs (500
@@ -139,13 +200,111 @@ to retry a request after a network failure without double-importing.
 
 ### mode: TRUSTED_AUTOMATION
 
-Reserved for a future, administrator-controlled mode with a different trust
-model. Not implemented; the endpoint rejects it with `400`.
+Requires the credential to carry the `SOURCE_INTELLIGENCE_TRUSTED_AUTOMATION`
+permission (see *Getting a credential* above); otherwise this returns `403`.
+
+For a submitter that already read the page itself -- an AI research agent
+browsing live, a human researcher -- and can supply its own extracted
+evidence, instead of handing over a bare URL for this system to fetch and
+extract on its own. `sources` takes a different shape from `DRY_RUN`/`QUEUE`:
+
+```jsonc
+{
+  "sources": [
+    {
+      "source_url": "https://example.org/grants",
+      "page_text": "Community Impact Grant. This is a competitive grant from the Example Foundation. Eligible Florida nonprofits can apply. Applications are now open. Awards up to $25,000.",
+      "page_title": "Community Impact Grant | Example Foundation",   // optional
+      "retrieved_at": "2026-09-18T12:00:00.000Z",                     // optional but meaningful -- see below; "observed_at" also accepted
+      "submitter_type": "CLAUDE",                                     // optional, free text
+      "links": [{ "url": "https://example.org/apply", "text": "Apply" }], // optional; needed only if a program's application_url should validate
+      "programs": [
+        {
+          "organization_name": { "value": "Example Foundation", "quote": "Example Foundation" },
+          "program_name": { "value": "Community Impact Grant", "quote": "Community Impact Grant" },
+          "funding_mechanism": { "value": "competitive grant", "quote": "This is a competitive grant" },
+          "applicable_states": { "value": ["FL"], "quote": "Eligible Florida nonprofits can apply" },
+          "current_cycle_open": { "value": true, "quote": "Applications are now open" },
+          "award_max": { "value": 25000, "quote": "Awards up to $25,000" }
+        }
+      ]
+    }
+  ]
+}
+```
+
+`source_url` and `page_text` are required per source (a submission with no
+`page_text` is rejected as invalid -- use `QUEUE` instead for a bare lead
+with no evidence). `page_text` is the rendered, readable text the submitter
+actually reviewed, not raw HTML, and is capped at 40,000 characters, the
+same evidentiary window this system's own fetcher works with. `programs` is
+required and non-empty; up to 6 programs per `source_url` are accepted
+(matching this system's own AI extraction limit) -- a 7th onward is
+reported as its own invalid row rather than silently dropped.
+
+Every field inside a `programs[]` entry is either omitted or
+`{ "value": ..., "quote": "..." }` -- the exact shape this system's own AI
+extraction already produces internally. The full set of recognized fields
+is the same one that extraction can populate: `organization_name`,
+`program_name`, `summary`, `purpose`, `eligibility`, `funding_mechanism`,
+`funding_pool`, `administering_unit`, `geography`, `recurring_status`,
+`application_status`, `application_url`, `current_status`,
+`current_cycle_open`, `current_deadline`, `deadline_mentioned`,
+`amount_mentioned`, `award_min`, `award_max`, `applicable_states`, plus the
+unwrapped `source_type`, `authority`, `rejection_reason`, `keywords`, and
+`applicant_types`.
+
+Each claim's `quote` is checked locally against that source's `page_text`:
+decoded of HTML entities, Unicode-normalized, non-breaking/typographic
+spaces and repeated whitespace collapsed, case-insensitive -- but never
+stemmed, paraphrased, or matched semantically. This proves the quote the
+submitter claims to have read is genuinely present in the text they
+supplied; it does not, and is not meant to, independently confirm the live
+page still says the same thing. A claim whose quote doesn't ground is
+simply dropped -- exactly like an unverifiable claim from this system's own
+AI extraction -- rather than failing the whole row.
+
+From there, every record goes through the identical duplicate detection
+and quality scoring as any other import, with one firm rule: **submitted
+evidence is a hint, never verification.** Grounding only proves a quote
+appears in text the submitter supplied, and that text could say anything.
+So a `TRUSTED_AUTOMATION` record:
+
+- is stored with no `last_verified_at`, and each evidence entry carries
+  `provenance: "SUBMITTED"` plus a `submitted_evidence` block
+  (`provenance: "SUBMITTER_SUPPLIED"`, `independently_verified: false`,
+  `observed_at`, `page_hash`);
+- is always queued for this system's own independent `VALIDATE` fetch,
+  exactly like a `QUEUE` submission;
+- is refused by automatic approval (`AWAITING_INDEPENDENT_VERIFICATION`)
+  for as long as its proposal is the submitter's. When this system fetches
+  and extracts the page itself, that independently extracted evidence
+  replaces the submitted proposal, and only then do the normal
+  automatic-approval rules apply;
+- can never overwrite evidence this system has already verified for the
+  same program.
+
+`retrieved_at` or `observed_at` (a real, parseable, non-future ISO date)
+is kept as `submitted_evidence.observed_at` for provenance only. It is
+never used as a verification time.
+
+The response shape is identical to `QUEUE`'s `202 Accepted` batch summary
+below; poll it the same way. See *mode: DRY_RUN* above for previewing this
+shape before submitting it for real.
+
+One known gap: `applicable_states` only grounds from an explicit state
+name in a quote (as shown above). The county-based eligibility inference
+this system's own extraction applies afterward (e.g. crediting Florida
+eligibility from "Duval, Clay and Baker counties" without the word
+"Florida" appearing) is not yet wired into this path, so a submission
+relying only on county names for eligibility won't reach
+`quality_ready` -- name the state explicitly in the eligibility quote for
+now.
 
 ## GET /source-intelligence-batch-status
 
-Polls a batch created by `QUEUE` mode. A credential can only read batches it
-submitted itself.
+Polls a batch created by `QUEUE` or `TRUSTED_AUTOMATION` mode. A credential
+can only read batches it submitted itself.
 
 ```
 GET /source-intelligence-batch-status?batch_id=<uuid>
@@ -238,6 +397,27 @@ curl -X POST https://opportunity-assist-mtp.netlify.app/.netlify/functions/sourc
 # Poll it
 curl "https://opportunity-assist-mtp.netlify.app/.netlify/functions/source-intelligence-batch-status?batch_id=<uuid>" \
   -H "Authorization: Bearer oa_live_..."
+
+# TRUSTED_AUTOMATION: supply evidence already extracted from a page you read,
+# instead of a bare URL for this system to fetch and extract itself. Requires
+# the credential to carry SOURCE_INTELLIGENCE_TRUSTED_AUTOMATION.
+curl -X POST https://opportunity-assist-mtp.netlify.app/.netlify/functions/source-intelligence-import \
+  -H "Authorization: Bearer oa_live_..." \
+  -H "Content-Type: application/json" \
+  -d '{
+    "mode": "TRUSTED_AUTOMATION",
+    "state": "FL",
+    "source_system": "CLAUDE",
+    "sources": [{
+      "source_url": "https://example.org/grants",
+      "page_text": "Community Impact Grant. This is a competitive grant from the Example Foundation. Eligible Florida nonprofits can apply. Applications are now open. Awards up to $25,000.",
+      "programs": [{
+        "program_name": {"value": "Community Impact Grant", "quote": "Community Impact Grant"},
+        "funding_mechanism": {"value": "competitive grant", "quote": "This is a competitive grant"},
+        "applicable_states": {"value": ["FL"], "quote": "Eligible Florida nonprofits can apply"}
+      }]
+    }]
+  }'
 ```
 
 ## What this API does not do
