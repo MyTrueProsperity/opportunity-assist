@@ -34,7 +34,7 @@ test('generated private package loads resumably, preserves payloads, and require
   assert.equal((await f.pg.query('select payload from research_evidence.evidence_records')).rows[0].payload.finding,p.tables.evidence_records[0].finding);
   const get=async()=>(await f.pg.query('select gf_research_bundle($1,$2) b',[ORG,OWNER])).rows[0].b;
   assert.equal((await get()).records.length,0);
-  await f.pg.query('insert into research_evidence.package_workspaces values($1,$2)',[p.package_version,ORG]);await f.pg.exec("update research_evidence.packages set status='active'");
+  await f.pg.query('insert into research_evidence.package_workspaces values($1,$2)',[p.package_version,ORG]);await f.pg.exec("update research_evidence.packages set status='active',activated_at=now()");
   assert.equal((await get()).records[0].record_id,'GW-001');
   const doc=(await f.pg.query('select gf_research_document($1,$2,$3) d',[ORG,OWNER,p.package_version])).rows[0].d;assert.equal(doc.content,p.master);
   await assert.rejects(f.pg.exec(fs.readFileSync(path.join(out,report.batches[0]),'utf8')),/Expected staging package/);

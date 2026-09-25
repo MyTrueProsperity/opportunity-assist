@@ -36,6 +36,8 @@ Execute every `check_*.sql` query after loading. Each result's `expected` must e
 
 Activation is a separate transaction after verifying 43 evidence records, 20 statistics, 9 packets, 34 rules, 4 aliases, 32 review entries, 541 sections and 273 sources. Insert the intended organization into `package_workspaces`, then set this package to `active` with `activated_at`. Do not give other organizations implicit access. Keep the source metadata as provenance; record live import details separately in `metadata.runtime_import`.
 
+An active package must record when it was activated. `20260925152433_research_evidence_active_requires_activated_at.sql` adds the check constraint `packages_active_requires_activated_at` (`status <> 'active' or activated_at is not null`), so setting a package active without `activated_at`, or clearing it while active, fails. Staging and retired packages may keep a null value. Retrieval still gates on `status = 'active'` plus a workspace assignment; the constraint only keeps the activation record complete. When a past activation time cannot be established exactly, record the documented basis for the value used in `metadata.runtime_import` rather than inventing one.
+
 ## Grant-writing volume (GRANT_WRITING_APPROVAL_RESEARCH_V1_2026-09-24)
 
 The "How to Write Grants That Get Approved" volume (Parts 1 to 6, E-01 to E-116) is a separate package assigned only to the Institute workspace. It holds funder rules, reviewer records, grant-process research and guidance. None of it is an organizational fact: it does not establish Bright Minds eligibility, adoption of any framework, partner commitments, evidence tiers or outcomes.
