@@ -15,7 +15,7 @@ const arrays=new Set(['geography_scope','funding_tags','qa_flags','source_urls']
 const casts={value:'numeric',last_verified:'date',review_before_external_use:'boolean',part_number:'integer'};
 // Record ID namespaces accepted by research_evidence.evidence_records_record_id_check.
 // Each volume's prefix is added by its own narrow migration; keep this list in step.
-const RECORD_ID=/^(?:(?:CFSC|CB|AM|EP|EM|NC|GW)-[0-9]{3}|CTE_(?:LOCAL|RESEARCH|EMPLOYER|FL|ACCESS|REGIONAL|FUTURE|POLICY)_[0-9]{3})$/;
+const RECORD_ID=/^(?:(?:CFSC|CB|AM|EP|EM|NC|GW|CNE|YW)-[0-9]{3}|CTE_(?:LOCAL|RESEARCH|EMPLOYER|FL|ACCESS|REGIONAL|FUTURE|POLICY)_[0-9]{3})$/;
 const quote=s=>"'"+String(s).replaceAll("'","''")+"'";
 const hash=s=>crypto.createHash('sha256').update(s).digest('hex');
 function readBundle(bundle){
