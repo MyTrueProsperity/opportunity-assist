@@ -22,7 +22,7 @@ Following the existing isolated Grant Factory migration layout, research migrati
 
 - `20260923000108_research_evidence_namespace.sql`: exact supplied migration already recorded in the live database by the staging import.
 - `20260923003402_research_evidence_retrieval.sql`: protected retrieval, workspace assignments and master-document parts. Its filename matches the live migration history.
-- Record-ID namespace migrations, one per research volume, recovered byte-for-byte from `supabase_migrations.schema_migrations` (never re-run them against production): `20260923184152` CB, `20260923190159` AM, `20260923190246` EP, `20260923192707` EM, `20260923193828` NC, `20260923210805` CTE_*, `20260925132115` GW, `20260925132215` CNE, `20260925133347` YW. Applied in order they reproduce the production `evidence_records_record_id_check` exactly; `tests/research-namespace-alignment.test.js` enforces that, and that `RECORD_ID` in `scripts/prepare-research-package.cjs` accepts the same namespaces. A new volume prefix needs a new narrow migration, the matching `RECORD_ID` change and an update to that test.
+- Record-ID namespace migrations, one per research volume, recovered byte-for-byte from `supabase_migrations.schema_migrations` (never re-run them against production): `20260923184152` CB, `20260923190159` AM, `20260923190246` EP, `20260923192707` EM, `20260923193828` NC, `20260923210805` CTE_*, `20260925132115` GW, `20260925132215` CNE, `20260925133347` YW, `20260925154408` BM-ENT-V1. Applied in order they reproduce the production `evidence_records_record_id_check` exactly; `tests/research-namespace-alignment.test.js` enforces that, and that `RECORD_ID` in `scripts/prepare-research-package.cjs` accepts the same namespaces. A new volume prefix needs a new narrow migration, the matching `RECORD_ID` change and an update to that test.
 
 To prepare missing background data from a private bundle:
 
@@ -51,6 +51,19 @@ The "How to Write Grants That Get Approved" volume (Parts 1 to 6, E-01 to E-116)
 - Six package records had source lists that absorbed the rest of their Part (E-25, E-45, E-65, E-77, E-97, E-116). Attribution was resolved from each record's own source line; the supplied lists remain in `source_fields_original`, which is server-side only.
 
 `scripts/prepare-research-package.cjs` validates a private bundle and emits resumable SQL batches with value checks for any package in this format. The live load of this volume used equivalent compact batches (master text sent once; section bodies and record Markdown cut from it server-side) and was verified by md5 of the canonical jsonb text for every row. Never commit the private bundle or generated SQL.
+
+## Entrepreneurship Volume 1, recovered (BRIGHT_MINDS_ENTREPRENEURSHIP_V1_RECOVERED_2026-09-25)
+
+A partial, normalized recovery of the Institute's Entrepreneurship research, assigned only to the Institute workspace. It is research, not organizational fact, and not a grant-opportunity feed.
+
+- **Completeness boundary.** Register entries 33 to 301 plus 85 supplementary findings, associated with Sections 149 to 1021. Sections 1 to 148 and register entries 1 to 32 are missing, and the master is a normalized reading edition, not a verbatim transcript. The package metadata records this (`archival_completeness`, `completeness_boundary`, `missing_material`). Volume 2 is separate and was not imported, restarted or renumbered.
+- **Record IDs** keep the package's own canonical IDs (`BM-ENT-V1-Ennnn`, `BM-ENT-V1-Snnn`); `20260925154408_research_evidence_entrepreneurship_v1_ids.sql` adds that namespace. Observation IDs (`BM-ENT-V1-Lnnnn`) are aliases.
+- **341 package canonical records:** 269 evidence rows; 3 exact cross-volume duplicates merged into AM-042, AM-040 and CTE_FUTURE_002 (alias `MERGED_CROSS_PACKAGE`, a `cross_volume_enrichments` entry on the existing record, nothing else changed); 69 records with no recovered source URL kept only as background register text (alias `QUARANTINED_SOURCE_NOT_RECOVERED`). Overlapping but distinct records (for example E0081 with CFSC-007/046, S075 with CFSC-001/NC-001) stay separate and list `related_existing_record_ids`.
+- **20 draft-eligible records**, each a bounded record-specific check re-fetched during import on 2026-09-25 (QuickFacts, FinCEN BOI, SBA combined 7(a)/504, IRS 1099-K, WWC review, BFS release, Seminole State incubation/ELLE/SABC criteria). E0114 (SOP 50 10 8.1, future-effective October 1, 2026) and E0286 (undated SABC pause) are `PARTIALLY_VERIFIED` and restricted. The other 247 are `CONVERSATION_ONLY`, in the review queue, and their `approved_language` begins `RESTRICTED:`. Both 2025 Seminole business-application values (S001) stay quarantined.
+- **35 package claim rules** (`BM-ENT-V1-R01` to `R35`): drafting constraints are `block`/`semantic_review`; import-process rules are `info`/`import_process`.
+- **Background:** 681 sections sliced from the master; interpretation candidates, program packets, gaps and the source registry are background only. Priority statistics are a flag (`priority_reference`), not extra rows.
+- **Programs:** links point only to existing program records and are relevance, not facts. Unresolved labels with no program record: Business / Finance / Entrepreneurship, Marketing / Media / Communications, Skilled Professions / Operations, Leadership / Public Service, and Paid work, internships and dual enrollment.
+- **Browser payload.** After this volume the Grant Factory brain response measured about 5.2 MB uncompressed (about 0.67 MB gzip). That is close to the 6 MB synchronous function response limit, so check the payload size before activating another large volume.
 
 ## Validation and operation
 
