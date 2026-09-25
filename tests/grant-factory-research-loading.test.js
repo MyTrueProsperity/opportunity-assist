@@ -24,33 +24,30 @@ function fixture() {
 const repo = repository({ SUPABASE_URL: "https://test.invalid", SUPABASE_SERVICE_ROLE_KEY: "test", SUPABASE_PUBLISHABLE_KEY: "public" }, async () => { throw Error("Unexpected network"); });
 const owner = { role: "OWNER", org_id: "o", user_id: "u" };
 
-test("browser research facts reference their record instead of repeating it", () => {
-  const brain = fixture();
-  const out = repo.publicBrain(brain, owner);
-  const rf = out.facts.filter(f => f.research);
-  assert.equal(rf.length, 2);
-  for (const f of rf) {
-    assert.deepEqual(Object.keys(f.research).sort(), ["package_version", "record_id"]);
-    assert.ok(out.research.records.some(r => r.package_version === f.research.package_version && r.record_id === f.research.record_id), "every reference resolves");
-    assert.equal("notes" in f, false);
-    // Fields the evidence picker and drafting status use are kept.
-    for (const k of ["id", "display_name", "value", "source_locator", "verification_status", "draft_ready"]) assert.ok(k in f, k);
-  }
-  assert.equal(rf.find(f => f.research.record_id === "R1").draft_ready, true);
-  assert.equal(rf.find(f => f.research.record_id === "R2").draft_ready, false);
-  // Organization facts are untouched.
+test("the browser brain carries a research summary, not records or research facts", () => {
+  const out = repo.publicBrain(fixture(), owner);
+  assert.equal(out.facts.some(f => f.research), false, "research facts are not shipped at startup");
   assert.equal(out.facts.find(f => f.fact_key === "mission").notes, "Org note stays.");
+  assert.equal("records" in out.research, false);
+  assert.deepEqual(out.research.counts, { records: 2, verified: 1, packets: 0, statistics: 0, rules: 1 });
+  assert.deepEqual(out.research.packages.map(p => p.package_version), ["PKG_V1"]);
+  assert.deepEqual(out.research_refs, []);
 });
 
-test("browser research records omit provenance-only fields and keep everything displayed", () => {
-  const out = repo.publicBrain(fixture(), owner);
-  for (const r of out.research.records) {
-    assert.equal("source_fields_original" in r, false);
-    assert.equal("original_record" in r, false);
-    for (const k of ["record_id", "topic", "finding", "approved_language", "geography", "geography_scope", "evidence_domain", "funding_tags", "year", "population", "source_org", "source_url", "methodology", "supports", "does_not_support", "prohibited_language", "qa_flags", "external_use_status", "verification_status", "last_verified"]) assert.ok(k in r, k);
-  }
-  assert.equal(out.research.rules.length, 1);
-  assert.equal(out.research.packages.length, 1);
+test("an application receives references for the research facts it cites, with the same readiness", () => {
+  const brain = fixture();
+  const [ready, blocked] = ["R1", "R2"].map(id => brain.facts.find(f => f.research?.record_id === id));
+  const app = { id: "a", answers: [{ evidence_ids: [ready.id] }], content: { eligibility: [{ review: { evidence_ids: [blocked.id] } }] } };
+  const out = repo.publicBrain(brain, owner, "a", app);
+  assert.equal(out.research_refs.length, 2);
+  const r1 = out.research_refs.find(r => r.id === ready.id), r2 = out.research_refs.find(r => r.id === blocked.id);
+  assert.deepEqual(r1.research, { package_version: "PKG_V1", record_id: "R1" });
+  assert.equal(r1.draft_ready, true);
+  assert.equal(r2.draft_ready, false);
+  assert.ok(r2.draft_blockers.length);
+  for (const k of ["id", "display_name", "value", "source_locator", "verification_status"]) assert.ok(k in r1, k);
+  assert.equal("notes" in r1, false);
+  assert.equal(typeof r1.research.approved_language, "undefined", "a reference never embeds the record");
 });
 
 test("slimming the browser copy never changes the server's full research data", () => {
@@ -62,4 +59,5 @@ test("slimming the browser copy never changes the server's full research data", 
   assert.equal(JSON.stringify(brain), before);
   assert.ok(brain.research.records[0].source_fields_original);
   assert.ok(brain.facts.find(f => f.research).research.approved_language);
+  for (const r of browserResearch(brain.research).records) { assert.equal('source_fields_original' in r, false); assert.equal('original_record' in r, false); }
 });
