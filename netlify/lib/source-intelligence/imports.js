@@ -43,17 +43,10 @@ const MAX_PROGRAMS_PER_SOURCE = 6;
 // real page); this is a structured API field, so we ask for real ISO 8601.
 const ISO_8601_RE = /^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}(:\d{2}(\.\d{1,9})?)?(Z|[+-]\d{2}:\d{2}|[+-]\d{4})?)?$/;
 
-// Resolves the timestamp a trusted submission's evidence should be treated
-// as verified as of -- the submitter's own retrieved_at/observed_at, when
-// it is a real, parseable, non-future ISO date -- or null when there is
-// none to trust. Ingestion (ie. when we happened to process the request)
-// and observation (when the submitter actually read the page) are
-// deliberately kept distinct: this function only ever answers the second
-// question. A future-dated claim is rejected outright, not merely
-// distrusted, because if it were used as last_verified_at it would let a
-// submission look freshly verified indefinitely -- the 7-day
-// re-verification window in source_automatically_approve compares against
-// last_verified_at directly, so a future timestamp would never age out.
+// Resolves when the submitter says it observed the page: its own
+// retrieved_at/observed_at, when that is a real, parseable, non-future ISO
+// date, or null. Recorded as provenance only; it never becomes
+// last_verified_at, because a submitter cannot verify its own evidence.
 function resolvedObservationTime(item) {
   const raw = item.retrieved_at ?? item.observed_at;
   if (typeof raw !== 'string' || !ISO_8601_RE.test(raw.trim())) return null;
@@ -110,16 +103,20 @@ function parseTrusted(sources, targetState) {
       if (!program || typeof program !== 'object') { rows.push({ raw: { ...raw, program }, line, error: 'Each program must be an object' }); return; }
       try {
         const candidate = normalized(validateExtraction(program, page, targetState, hasGroundedQuote));
-        // validateExtraction stamps fetched_at with the moment we happened
-        // to process this request (ingestion time). For a trusted
-        // submission, the evidence itself may be older than that --
-        // correct it to when the submitter says it actually observed the
-        // page, when that claim is real, parseable, and not in the
-        // future. Left alone (no valid claim supplied), fetched_at keeps
-        // validateExtraction's own ingestion-time value, exactly as every
-        // other import already gets.
+        // The submitter's retrieved_at/observed_at is kept only as provenance
+        // (when it is a real, parseable, non-future ISO date). It is never
+        // used as a verification time.
         const observedAt = resolvedObservationTime(item);
-        if (observedAt) candidate.fetched_at = observedAt;
+        // Trusted submissions are hints, never verification. Quote grounding
+        // only proves the quote appears in text the submitter supplied, and
+        // that text could say anything. So the candidate carries no
+        // fetched_at (submitCandidate therefore records no last_verified_at),
+        // every evidence entry is marked as submitted, and automatic approval
+        // waits until this system fetches the page itself (VALIDATE), which
+        // replaces this proposal with independently extracted evidence.
+        delete candidate.fetched_at;
+        for (const key of Object.keys(candidate.evidence || {})) candidate.evidence[key] = { ...candidate.evidence[key], provenance: 'SUBMITTED' };
+        candidate.submitted_evidence = { provenance: 'SUBMITTER_SUPPLIED', independently_verified: false, observed_at: observedAt, page_hash: page.hash };
         rows.push({ raw: { ...raw, program }, line, candidate, identity_key: identityKey(candidate) });
       } catch (e) { rows.push({ raw: { ...raw, program }, line, error: e.message }); }
     });
