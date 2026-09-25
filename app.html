@@ -150,6 +150,7 @@ label{display:block;font-weight:600;font-size:.85rem;margin:0 0 .3rem;color:var(
   <script src="/assets/grant-factory-limits.js?v=20260917"></script>
   <script src="/assets/grant-factory-reading.js?v=20260923"></script>
   <script src="/assets/grant-factory.js?v=20260923c"></script>
+  <script src="/assets/matching.js?v=20260925"></script>
   <script>
 // Opportunity Assist — Supabase client config
 // These are PUBLIC client keys (safe to expose). All data access is protected
@@ -173,6 +174,7 @@ window.OA_CONFIG = {
     user: null,
     profile: null,
     org: null,
+    orgs: [],       // organizations this user is authorized for (org_memberships), for the switcher
     subscription: null, // { status, plan } from the subscriptions table -- read-only to the client
     isAdmin: false,
     view: "dashboard",
@@ -243,8 +245,9 @@ window.OA_CONFIG = {
 
     var headline = Math.round(orgFit * 0.35 + geoScore * 0.25 + cap * 0.18 + budget * 0.12 + risk * 0.10);
     var rec = headline >= 75 ? "Strongly pursue" : headline >= 55 ? "Worth reviewing" : "Probably pass";
+    // A local keyword estimate is never shown as a real score or counted as a strong match.
     return {
-      headline: headline, rec: rec, factors: [
+      estimate: true, headline: headline, rec: rec, factors: [
         { label: "Organizational fit", val: orgFit },
         { label: "Geographic eligibility", val: geoScore },
         { label: "Capacity", val: cap },
@@ -318,13 +321,30 @@ window.OA_CONFIG = {
   }
   // Fast, synchronous, local-only estimate -- safe to call before the shell
   // has rendered, since it touches no DOM and makes no network calls.
+  // Opportunities with a KNOWN barrier (passed deadline, inactive source, named
+  // geography outside the organization's states) are marked not eligible here
+  // and never sent for paid AI scoring. Unknown information is not a barrier.
   function applyLocalFitEstimates() {
-    var missingIds = state.opps.filter(function (o) { return !state.fit[o.id]; }).map(function (o) { return o.id; });
-    missingIds.forEach(function (id) {
-      var o = state.opps.filter(function (x) { return x.id === id; })[0];
-      state.fit[id] = computeFit(state.org, o);
+    var missingIds = [];
+    state.opps.forEach(function (o) {
+      if (state.fit[o.id]) return;
+      var screen = window.OAMatching.eligibility(state.org, o);
+      if (screen.status === "INELIGIBLE") {
+        state.fit[o.id] = { ineligible: true, headline: null, rec: "Not eligible", reasons: screen.reasons, factors: [] };
+        return;
+      }
+      state.fit[o.id] = computeFit(state.org, o);
+      missingIds.push(o.id);
     });
     return missingIds;
+  }
+  function fitFromScore(row) {
+    var ineligible = row.eligibility_status === "INELIGIBLE";
+    return {
+      headline: row.headline_score, rec: row.recommendation, factors: row.factors || [], confidence: row.confidence,
+      rubric_version: row.rubric_version, ineligible: ineligible,
+      reasons: (row.eligibility_reasons || []).filter(function (r) { return ineligible || /^Unknown:/.test(r); })
+    };
   }
 
   // Kicks off the real, paid AI scoring for whatever's still missing a real
@@ -378,7 +398,7 @@ window.OA_CONFIG = {
     }).then(function (data) {
       if (!data) return;
       (data.results || []).forEach(function (res) {
-        state.fit[res.opportunity_id] = { headline: res.headline_score, rec: res.recommendation, factors: res.factors || [] };
+        state.fit[res.opportunity_id] = fitFromScore(res);
         if (res.ai_summary) {
           var o = state.opps.filter(function (x) { return x.id === res.opportunity_id; })[0];
           if (o) o.ai_summary = res.ai_summary;
@@ -393,8 +413,10 @@ window.OA_CONFIG = {
   function loadFitScores() {
     return sb.from("fit_scores").select("*").then(function (r) {
       (r.data || []).forEach(function (row) {
-        if (row.source_stale) { delete state.fit[row.opportunity_id]; return; }
-        state.fit[row.opportunity_id] = { headline: row.headline_score, rec: row.recommendation, factors: row.factors || [] };
+        // Stale scores (profile or opportunity changed) and scores from an older
+        // rubric are not shown as current; they are re-scored.
+        if (row.source_stale || row.rubric_version !== window.OAMatching.RUBRIC_VERSION) { delete state.fit[row.opportunity_id]; return; }
+        state.fit[row.opportunity_id] = fitFromScore(row);
       });
     });
   }
@@ -546,6 +568,28 @@ window.OA_CONFIG = {
   }
 
   /* ---------- app shell ---------- */
+  // Switching only changes the ACTIVE organization (profiles.org_id) through the
+  // set_active_org RPC. The database refuses organizations the user is not a
+  // member of, and every org-scoped table follows the active organization.
+  function loadMyOrganizations() {
+    return sb.rpc("my_organizations").then(function (r) { state.orgs = r.error ? [] : (r.data || []); }).catch(function () { state.orgs = []; });
+  }
+  function switchOrganization(orgId, control) {
+    if (!orgId || (state.org && orgId === state.org.id)) return;
+    if (control) control.disabled = true;
+    sb.rpc("set_active_org", { p_org: orgId }).then(function (r) {
+      if (r.error) {
+        if (control) { control.disabled = false; control.value = state.org ? state.org.id : ""; }
+        alert("Could not switch organization: " + r.error.message);
+        return;
+      }
+      // Drop everything loaded for the previous organization before reloading.
+      state.org = null; state.fit = {}; state.opps = []; state.pipeline = []; state.contracts = []; state.alertRules = [];
+      state.requirements = []; state.pursueDecisions = {}; state.currentOpp = null; state.currentPipelineItem = null;
+      state.chat = []; state.subscription = null; state.view = "dashboard";
+      boot();
+    });
+  }
   function renderShell() {
     root.innerHTML = "";
     var nav = [
@@ -567,6 +611,11 @@ window.OA_CONFIG = {
       '<div class="layout">' +
       '<aside class="sidebar">' +
       '<div class="side-brand"><span class="brand-mark sm">OA</span><div><strong>Opportunity Assist</strong><small>' + esc(state.org ? state.org.name : 'Administration') + '</small></div></div>' +
+      (state.orgs.length > 1
+        ? '<div class="field" style="margin:0 0 12px"><label for="orgSwitch">Active organization</label><select id="orgSwitch" aria-label="Active organization">' +
+          state.orgs.map(function (o) { return '<option value="' + esc(o.id) + '"' + (state.org && o.id === state.org.id ? " selected" : "") + ">" + esc(o.name) + "</option>"; }).join("") +
+          "</select></div>"
+        : "") +
       '<nav id="nav"></nav>' +
       '<div class="side-foot">' + esc(state.user.email) + '<br/><button class="btn btn-ghost btn-sm" id="logout">Log out</button></div>' +
       '</aside>' +
@@ -580,6 +629,8 @@ window.OA_CONFIG = {
       b.addEventListener("click", function () { state.view = n[0]; state.currentOpp = null; state.currentPipelineItem = null; paint(); });
       navEl.appendChild(b);
     });
+    var orgSwitch = shell.querySelector("#orgSwitch");
+    if (orgSwitch) orgSwitch.addEventListener("change", function () { switchOrganization(orgSwitch.value, orgSwitch); });
     shell.querySelector("#logout").addEventListener("click", function () {
       sb.auth.signOut().then(function () { state.profile = null; state.org = null; state.fit = {}; boot(); });
     });
@@ -614,7 +665,7 @@ window.OA_CONFIG = {
   function needsDecisionList() {
     return state.opps.filter(function (o) {
       var f = state.fit[o.id];
-      if (!f || f.pending || f.headline < 60) return false;
+      if (!f || f.pending || f.estimate || f.ineligible || f.headline == null || f.headline < 60) return false;
       if (state.pipeline.some(function (p) { return p.opportunity_id === o.id; })) return false;
       if (state.pursueDecisions[o.id]) return false;
       return true;
@@ -628,7 +679,8 @@ window.OA_CONFIG = {
       return s + (p.opportunities && p.opportunities.funding_amount ? Number(p.opportunities.funding_amount) : 0);
     }, 0);
     var awarded = byStage["Awarded"] || 0;
-    var strong = state.opps.filter(function (o) { return state.fit[o.id] && state.fit[o.id].headline >= 75; }).length;
+    var strong = state.opps.filter(function (o) { return window.OAMatching.isStrong(state.fit[o.id]); }).length;
+    var eligibleCount = state.opps.filter(function (o) { return !(state.fit[o.id] && state.fit[o.id].ineligible); }).length;
     var needsDecision = needsDecisionList();
     var closing = state.opps.filter(function (o) { var d = daysUntil(o.deadline); return d != null && d >= 0 && d <= 30; })
       .sort(function (a, b) { return new Date(a.deadline) - new Date(b.deadline); }).slice(0, 5);
@@ -638,7 +690,7 @@ window.OA_CONFIG = {
     main.innerHTML =
       '<div class="topbar"><div><h1>Dashboard</h1><p class="sub">What needs your attention</p></div></div>' +
       '<div class="grid tiles">' +
-      tile(state.opps.length, "Opportunities on radar") +
+      tile(eligibleCount, "Opportunities on radar (not ruled out)") +
       tile(strong, "Strong matches (75%+)") +
       tile(state.pipeline.length, "In capture pipeline") +
       tile(money(pipelineValue), "Pipeline value") +
@@ -731,6 +783,7 @@ window.OA_CONFIG = {
       '<input id="q" placeholder="Search opportunities…" />' +
       '<select id="cat"><option value="">All categories</option></select>' +
       '<select id="sort"><option value="fit">Sort: Best fit</option><option value="deadline">Sort: Deadline</option><option value="amount">Sort: Amount</option></select>' +
+      '<label class="hint" style="display:flex;align-items:center;gap:6px"><input type="checkbox" id="showIneligible" /> Show not eligible (' + state.opps.filter(function (o) { return state.fit[o.id] && state.fit[o.id].ineligible; }).length + ")</label>" +
       "</div>" +
       '<div class="opp-list" id="list"></div>';
 
@@ -743,14 +796,18 @@ window.OA_CONFIG = {
       var q = main.querySelector("#q").value.toLowerCase();
       var cat = catSel.value;
       var sort = main.querySelector("#sort").value;
+      var showIneligible = main.querySelector("#showIneligible").checked;
       var rows = state.opps.filter(function (o) {
+        if (!showIneligible && state.fit[o.id] && state.fit[o.id].ineligible) return false;
         var hay = (o.title + " " + (o.summary || "") + " " + (o.category || "") + " " + (o.geography || "")).toLowerCase();
         return (!q || hay.indexOf(q) !== -1) && (!cat || o.category === cat);
       });
       rows.sort(function (a, b) {
         if (sort === "deadline") return new Date(a.deadline || "2999") - new Date(b.deadline || "2999");
         if (sort === "amount") return (b.funding_amount || 0) - (a.funding_amount || 0);
-        return (state.fit[b.id] ? state.fit[b.id].headline : 0) - (state.fit[a.id] ? state.fit[a.id].headline : 0);
+        var fa = state.fit[a.id], fb = state.fit[b.id];
+        var va = fa && !fa.ineligible && fa.headline != null ? fa.headline : -1, vb = fb && !fb.ineligible && fb.headline != null ? fb.headline : -1;
+        return vb - va;
       });
       var list = main.querySelector("#list");
       list.innerHTML = "";
@@ -760,11 +817,20 @@ window.OA_CONFIG = {
     main.querySelector("#q").addEventListener("input", draw);
     catSel.addEventListener("change", draw);
     main.querySelector("#sort").addEventListener("change", draw);
+    main.querySelector("#showIneligible").addEventListener("change", draw);
     draw();
   }
 
+  function scoreLabel(f) {
+    if (f.pending) return "Scoring…";
+    if (f.ineligible) return "Not eligible";
+    if (f.paywalled) return "Estimate — upgrade for AI";
+    if (f.estimate) return "Estimate";
+    return f.rec;
+  }
+  function scoreNum(f) { return f.ineligible || f.headline == null ? "—" : f.headline + "%"; }
   function oppRow(o) {
-    var f = state.fit[o.id] || { headline: 0, rec: "—" };
+    var f = state.fit[o.id] || { headline: null, rec: "—" };
     var d = daysUntil(o.deadline);
     var row = el(
       '<div class="opp">' +
@@ -775,7 +841,7 @@ window.OA_CONFIG = {
       (d != null ? "<span>" + (d < 0 ? "Closed" : "Due in " + d + " days") + "</span>" : "") +
       "</div>" +
       '<p class="summary">' + esc(o.summary || "") + "</p></div>" +
-      '<div class="score-badge ' + scoreClass(f.headline) + '"><div class="score-num">' + f.headline + "%</div><div class=\"score-rec\">" + esc(f.pending ? "Scoring…" : f.paywalled ? "Estimate — upgrade for AI" : f.rec) + "</div></div>" +
+      '<div class="score-badge ' + (f.ineligible || f.headline == null ? "s-low" : scoreClass(f.headline)) + '"><div class="score-num">' + scoreNum(f) + "</div><div class=\"score-rec\">" + esc(scoreLabel(f)) + "</div></div>" +
       "</div>"
     );
     row.addEventListener("click", function () { state.currentOpp = o; paint(); });
@@ -803,14 +869,19 @@ window.OA_CONFIG = {
       (o.source_url ? '<div><a href="' + esc(o.source_url) + '" target="_blank" rel="noopener">View source ↗</a></div>' : "") +
       "</div></div>" +
       '<div class="card score-side"><h2>AI Fit Score</h2>' +
-      '<div class="score-badge ' + scoreClass(f.headline) + '" style="margin:6px 0 4px"><div class="score-num" style="font-size:2.4rem">' + f.headline + '%</div><div class="score-rec">' + esc(f.pending ? "Scoring…" : f.paywalled ? "Estimate only" : f.rec) + "</div></div>" +
+      '<div class="score-badge ' + (f.ineligible || f.headline == null ? "s-low" : scoreClass(f.headline)) + '" style="margin:6px 0 4px"><div class="score-num" style="font-size:2.4rem">' + scoreNum(f) + '</div><div class="score-rec">' + esc(f.paywalled ? "Estimate only" : scoreLabel(f)) + "</div></div>" +
+      (f.confidence != null && !f.ineligible ? '<p class="hint">Confidence ' + Math.round(f.confidence * 100) + "% — share of the rubric the available information could judge.</p>" : "") +
+      ((f.reasons || []).length ? '<ul class="hint" style="padding-left:18px">' + f.reasons.map(function (r) { return "<li>" + esc(r) + "</li>"; }).join("") + "</ul>" : "") +
       '<ul class="factors" style="padding:0">' +
-      (f.factors || []).map(function (fc) { return "<li>" + esc(fc.label) + " — " + fc.val + '%<i class="bar"><b style="width:' + fc.val + '%"></b></i></li>'; }).join("") +
+      (f.factors || []).map(function (fc) {
+        if (fc.val == null) return "<li>" + esc(fc.label) + " — Unknown" + (fc.required ? " (required)" : "") + (fc.reason ? '<br><span class="hint">' + esc(fc.reason) + "</span>" : "") + "</li>";
+        return "<li>" + esc(fc.label) + " — " + fc.val + "%" + (fc.state ? " · " + esc(fc.state.toLowerCase()) : "") + '<i class="bar"><b style="width:' + fc.val + '%"></b></i>' + (fc.reason ? '<span class="hint">' + esc(fc.reason) + "</span>" : "") + "</li>";
+      }).join("") +
       "</ul>" +
       '<button class="btn ' + (inPipeline ? "btn-ghost" : "btn-primary") + '" style="width:100%" id="addPipe"' + (inPipeline ? " disabled" : "") + ">" + (inPipeline ? "Already in pipeline" : "Add to Capture Pipeline") + "</button>" +
       (f.paywalled
         ? '<p class="hint" style="margin-top:.6rem">This is a free estimate. <a href="#" data-nav="profile">Upgrade your plan</a> for the full AI Fit Score and Opportunity Summary.</p>'
-        : '<p class="hint" style="margin-top:.6rem">Fit Score is generated by AI from your organization profile and updates automatically when you edit it.</p>') +
+        : '<p class="hint" style="margin-top:.6rem">The model rates each factor from your organization profile and this opportunity; the score is calculated from those ratings. Unknown factors are left out rather than scored as zero. Scores refresh when the profile or opportunity changes.</p>') +
       "</div></div>";
 
     main.querySelector("#back").addEventListener("click", function () { state.currentOpp = null; paint(); });
@@ -1337,7 +1408,7 @@ window.OA_CONFIG = {
       var session = s.data.session;
       if (!session) { renderAuth("login"); return; }
       state.user = session.user;
-      return loadAdminStatus().then(function () { return sb.from("profiles").select("*").eq("id", state.user.id).single(); }).then(function (pr) {
+      return Promise.all([loadAdminStatus(), loadMyOrganizations()]).then(function () { return sb.from("profiles").select("*").eq("id", state.user.id).single(); }).then(function (pr) {
         state.profile = pr.data || { id: state.user.id, org_id: null };
         if (!state.profile.org_id) {
           state.org = null;
