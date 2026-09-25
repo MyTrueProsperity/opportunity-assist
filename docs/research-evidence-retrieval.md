@@ -22,6 +22,7 @@ Following the existing isolated Grant Factory migration layout, research migrati
 
 - `20260923000108_research_evidence_namespace.sql`: exact supplied migration already recorded in the live database by the staging import.
 - `20260923003402_research_evidence_retrieval.sql`: protected retrieval, workspace assignments and master-document parts. Its filename matches the live migration history.
+- Record-ID namespace migrations, one per research volume, recovered byte-for-byte from `supabase_migrations.schema_migrations` (never re-run them against production): `20260923184152` CB, `20260923190159` AM, `20260923190246` EP, `20260923192707` EM, `20260923193828` NC, `20260923210805` CTE_*, `20260925132115` GW, `20260925132215` CNE, `20260925133347` YW. Applied in order they reproduce the production `evidence_records_record_id_check` exactly; `tests/research-namespace-alignment.test.js` enforces that, and that `RECORD_ID` in `scripts/prepare-research-package.cjs` accepts the same namespaces. A new volume prefix needs a new narrow migration, the matching `RECORD_ID` change and an update to that test.
 
 To prepare missing background data from a private bundle:
 
@@ -34,6 +35,22 @@ This verifies the entire `SHA256SUMS.txt` manifest, then writes resumable, SQL-e
 Execute every `check_*.sql` query after loading. Each result's `expected` must equal `matching`. These check JSON **value equivalence** with the source, not the original whitespace or key ordering, which PostgreSQL JSONB does not preserve. Separately verify the master file's UTF-8 checksum after concatenating parts in `part_number` order. The V1 SHA-256 is `b93ba7d465aec921a8f29a4107e40cd2563ac0db3443501034eeb6b0ccbc91e2`.
 
 Activation is a separate transaction after verifying 43 evidence records, 20 statistics, 9 packets, 34 rules, 4 aliases, 32 review entries, 541 sections and 273 sources. Insert the intended organization into `package_workspaces`, then set this package to `active` with `activated_at`. Do not give other organizations implicit access. Keep the source metadata as provenance; record live import details separately in `metadata.runtime_import`.
+
+An active package must record when it was activated. `20260925152433_research_evidence_active_requires_activated_at.sql` adds the check constraint `packages_active_requires_activated_at` (`status <> 'active' or activated_at is not null`), so setting a package active without `activated_at`, or clearing it while active, fails. Staging and retired packages may keep a null value. Retrieval still gates on `status = 'active'` plus a workspace assignment; the constraint only keeps the activation record complete. When a past activation time cannot be established exactly, record the documented basis for the value used in `metadata.runtime_import` rather than inventing one.
+
+## Grant-writing volume (GRANT_WRITING_APPROVAL_RESEARCH_V1_2026-09-24)
+
+The "How to Write Grants That Get Approved" volume (Parts 1 to 6, E-01 to E-116) is a separate package assigned only to the Institute workspace. It holds funder rules, reviewer records, grant-process research and guidance. None of it is an organizational fact: it does not establish Bright Minds eligibility, adoption of any framework, partner commitments, evidence tiers or outcomes.
+
+- Record IDs are `GW-nnn`, keeping the original sequence (E-07 is GW-007). All 116 original IDs are package-local aliases. `20260925132115_research_evidence_grant_writing_ids.sql` adds the GW namespace with the same narrow pattern as earlier volumes.
+- 113 records were created. E-105, E-109 and E-116 duplicated existing canonical records (CFSC-028, EM-002, NC-035: same source and finding), so no GW record was made; their aliases carry `MERGED_CROSS_PACKAGE` with a null canonical ID, and the existing records gained a `cross_volume_enrichments` entry plus the new limits appended to `does_not_support` and `prohibited_language`. Their findings, approved language, verification status and draft eligibility were not changed.
+- 109 records are draft-eligible. Four are `PARTIALLY_VERIFIED` and in the review queue: GW-030 and GW-031 (the funder's two pages state an application limit differently), GW-102 (brief checked, full report not audited) and GW-113 (two clearinghouse reviews disagree by outcome).
+- Ten package claim rules (`GW-CR-01` to `GW-CR-10`) carry the volume's prohibited transformations: geography transfer, external outcomes as Bright Minds outcomes, plans as results, interest as commitment, score as award, citation as adoption, clearinghouse evidence as a rating, templates as approved language, approval probabilities and cycle-specific funder rules.
+- The Part 6 crosswalk, claim library, measurement crosswalk and language check are background sections labeled as editorial methodology candidates. They are not evidence and not pre-approved language. Two organization-neutral rules drawn from them were added to `methodology.js` (GM-17 status claims, GM-18 measure definitions); the rest duplicated GM-05, GM-09, GM-10, GM-14 and GM-16. The workspace planning framework was not changed.
+- Program links name only existing program records and are relevance, not facts. Unresolved components with no program record: dual enrollment, paid student work and internships, a separately defined mentoring component, arts/media/performances and employer partnerships. Graduate Defense maps to the Academy as its signature component.
+- Six package records had source lists that absorbed the rest of their Part (E-25, E-45, E-65, E-77, E-97, E-116). Attribution was resolved from each record's own source line; the supplied lists remain in `source_fields_original`, which is server-side only.
+
+`scripts/prepare-research-package.cjs` validates a private bundle and emits resumable SQL batches with value checks for any package in this format. The live load of this volume used equivalent compact batches (master text sent once; section bodies and record Markdown cut from it server-side) and was verified by md5 of the canonical jsonb text for every row. Never commit the private bundle or generated SQL.
 
 ## Validation and operation
 
