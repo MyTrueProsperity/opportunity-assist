@@ -25,10 +25,10 @@ A credential can optionally also be granted the
 `SOURCE_INTELLIGENCE_TRUSTED_AUTOMATION` permission, either at creation or
 later from the credentials list, without reissuing its token. This is
 required for `TRUSTED_AUTOMATION` mode (below) and is a separate,
-deliberate grant -- an administrator should only extend it to a submitter
-trusted to ground its claims honestly, since a fully-evidenced
-`TRUSTED_AUTOMATION` submission skips the independent verification fetch
-every other mode still gets.
+deliberate grant. Even so, a `TRUSTED_AUTOMATION` submission is a hint,
+not verification: it never skips this system's own independent
+verification fetch and can never be approved automatically on the
+submitter's evidence alone.
 
 Every request must include it:
 
@@ -264,24 +264,29 @@ page still says the same thing. A claim whose quote doesn't ground is
 simply dropped -- exactly like an unverifiable claim from this system's own
 AI extraction -- rather than failing the whole row.
 
-From there, every record goes through the identical duplicate detection,
-quality scoring, and automatic-approval eligibility as any other import.
-The only thing this mode changes is how a record becomes eligible for
-automatic approval in the first place: a `TRUSTED_AUTOMATION` submission is
-marked verified as soon as its `page_text` is processed (whether or not
-every individual claim happened to ground), so a fully-evidenced submission
-is never re-queued for this system's own independent fetch the way a
-`QUEUE` submission still is.
+From there, every record goes through the identical duplicate detection
+and quality scoring as any other import, with one firm rule: **submitted
+evidence is a hint, never verification.** Grounding only proves a quote
+appears in text the submitter supplied, and that text could say anything.
+So a `TRUSTED_AUTOMATION` record:
 
-That verification timestamp -- what automatic approval's 7-day freshness
-window actually checks -- is `retrieved_at` or `observed_at` when either is
-a real, parseable, non-future ISO date, not the moment this system happened
-to process the request. Ingestion time and page-observation time are kept
-deliberately distinct: submitting a page a submitter read two weeks ago
-does not make it look freshly verified today, and a submitter cannot claim
-a future observation time to make a record look fresh indefinitely (a
-future-dated claim is ignored outright, falling back to ingestion time,
-same as no timestamp being supplied at all).
+- is stored with no `last_verified_at`, and each evidence entry carries
+  `provenance: "SUBMITTED"` plus a `submitted_evidence` block
+  (`provenance: "SUBMITTER_SUPPLIED"`, `independently_verified: false`,
+  `observed_at`, `page_hash`);
+- is always queued for this system's own independent `VALIDATE` fetch,
+  exactly like a `QUEUE` submission;
+- is refused by automatic approval (`AWAITING_INDEPENDENT_VERIFICATION`)
+  for as long as its proposal is the submitter's. When this system fetches
+  and extracts the page itself, that independently extracted evidence
+  replaces the submitted proposal, and only then do the normal
+  automatic-approval rules apply;
+- can never overwrite evidence this system has already verified for the
+  same program.
+
+`retrieved_at` or `observed_at` (a real, parseable, non-future ISO date)
+is kept as `submitted_evidence.observed_at` for provenance only. It is
+never used as a verification time.
 
 The response shape is identical to `QUEUE`'s `202 Accepted` batch summary
 below; poll it the same way. See *mode: DRY_RUN* above for previewing this
