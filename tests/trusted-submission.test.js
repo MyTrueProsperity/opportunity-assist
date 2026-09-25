@@ -20,7 +20,7 @@ const validSource={
   }],
 };
 
-test('a grounded submission produces a verified candidate with real evidence',()=>{
+test('a grounded submission produces a candidate whose evidence is marked as submitted, not verified',()=>{
   const rows=parseTrusted([validSource],'FL');
   assert.equal(rows.length,1);
   const row=rows[0];
@@ -31,7 +31,9 @@ test('a grounded submission produces a verified candidate with real evidence',()
   assert.deepEqual(row.candidate.applicable_states,['FL']);
   assert.equal(row.candidate.current_cycle_open,true);
   assert.equal(row.candidate.award_max,25000);
-  assert.ok(row.candidate.fetched_at);
+  assert.equal(row.candidate.fetched_at,undefined,'no fetched_at, so no last_verified_at is ever recorded from submitter text');
+  assert.equal(row.candidate.evidence.program_name.provenance,'SUBMITTED');
+  assert.deepEqual({...row.candidate.submitted_evidence,page_hash:undefined},{provenance:'SUBMITTER_SUPPLIED',independently_verified:false,observed_at:'2026-09-18T12:00:00.000Z',page_hash:undefined});
   assert.equal(row.candidate.evidence.program_name.quote,'Community Impact Grant');
   assert.equal(row.raw.page_text,pageText);
   assert.equal(row.raw.page_title,validSource.page_title);
@@ -110,59 +112,52 @@ test('an ungrounded quote never becomes eligibility, a deadline, or an amount --
   assert.deepEqual(rows[0].candidate.applicable_states,[]);
 });
 
-// --- verification freshness reflects observation time, not ingestion time ---
-// fetched_at (which submitCandidate then uses as last_verified_at) must
-// represent when the submitter actually read the page, not when we
-// happened to process the request -- otherwise old submitter-supplied
-// page text can look freshly verified at ingestion time, and a fabricated
-// future timestamp could make it look fresh forever (source_automatically_approve's
-// 7-day re-verification gate compares directly against last_verified_at).
+// --- the submitter's observation time is provenance only, never verification ---
+// Any retrieved_at/observed_at, valid or not, must never become fetched_at
+// (which submitCandidate would turn into last_verified_at). A valid one is
+// kept as submitted_evidence.observed_at; anything else is recorded as null.
+const observed=rows=>rows[0].candidate.submitted_evidence.observed_at;
 
-test('an older retrieved_at is reflected as the verification time, not ingestion time',()=>{
+test('a valid retrieved_at is recorded as provenance and never as a verification time',()=>{
   const rows=parseTrusted([{...validSource,retrieved_at:'2026-06-01T09:00:00.000Z'}],'FL');
-  assert.equal(rows[0].candidate.fetched_at,'2026-06-01T09:00:00.000Z');
+  assert.equal(observed(rows),'2026-06-01T09:00:00.000Z');
+  assert.equal(rows[0].candidate.fetched_at,undefined);
 });
 
 test('observed_at is accepted as the alternative to retrieved_at',()=>{
   const {retrieved_at,...withoutRetrievedAt}=validSource;
   const rows=parseTrusted([{...withoutRetrievedAt,observed_at:'2026-05-15T00:00:00.000Z'}],'FL');
-  assert.equal(rows[0].candidate.fetched_at,'2026-05-15T00:00:00.000Z');
+  assert.equal(observed(rows),'2026-05-15T00:00:00.000Z');
 });
 
 test('retrieved_at takes precedence when both retrieved_at and observed_at are supplied',()=>{
   const rows=parseTrusted([{...validSource,retrieved_at:'2026-06-01T00:00:00.000Z',observed_at:'2026-01-01T00:00:00.000Z'}],'FL');
-  assert.equal(rows[0].candidate.fetched_at,'2026-06-01T00:00:00.000Z');
+  assert.equal(observed(rows),'2026-06-01T00:00:00.000Z');
 });
 
-test('a future retrieved_at cannot establish fresh verification -- it falls back to ingestion time instead',()=>{
+test('a future retrieved_at is not recorded and never stamps a verification time',()=>{
   const future=new Date(Date.now()+365*864e5).toISOString();
-  const before=Date.now();
   const rows=parseTrusted([{...validSource,retrieved_at:future}],'FL');
-  const after=Date.now();
-  assert.notEqual(rows[0].candidate.fetched_at,future);
-  const stamped=new Date(rows[0].candidate.fetched_at).getTime();
-  assert.ok(stamped>=before&&stamped<=after,'fetched_at should be ingestion time, not the fabricated future claim');
+  assert.equal(observed(rows),null);
+  assert.equal(rows[0].candidate.fetched_at,undefined);
 });
 
-test('an unparseable or non-ISO retrieved_at falls back to ingestion time rather than being trusted',()=>{
+test('an unparseable or non-ISO retrieved_at is not recorded',()=>{
   for(const bad of ['not a date','August 1, 2026','2026-13-45','','   ',12345,null]){
-    const before=Date.now();
     const rows=parseTrusted([{...validSource,retrieved_at:bad}],'FL');
-    const stamped=new Date(rows[0].candidate.fetched_at).getTime();
-    assert.ok(stamped>=before,'bad retrieved_at '+JSON.stringify(bad)+' should not be trusted as the verification time');
+    assert.equal(observed(rows),null,'bad retrieved_at '+JSON.stringify(bad));
+    assert.equal(rows[0].candidate.fetched_at,undefined);
   }
 });
 
-test('a bare ISO date with no time component is still accepted',()=>{
+test('a bare ISO date with no time component is still accepted as provenance',()=>{
   const rows=parseTrusted([{...validSource,retrieved_at:'2026-06-01'}],'FL');
-  assert.equal(rows[0].candidate.fetched_at,new Date('2026-06-01').toISOString());
+  assert.equal(observed(rows),new Date('2026-06-01').toISOString());
 });
 
-test('with no retrieved_at or observed_at supplied, verification time is ingestion time, exactly as before this change',()=>{
+test('with no retrieved_at or observed_at supplied, observed_at is null and nothing is marked verified',()=>{
   const {retrieved_at,...withoutTimestamp}=validSource;
-  const before=Date.now();
   const rows=parseTrusted([withoutTimestamp],'FL');
-  const after=Date.now();
-  const stamped=new Date(rows[0].candidate.fetched_at).getTime();
-  assert.ok(stamped>=before&&stamped<=after);
+  assert.equal(observed(rows),null);
+  assert.equal(rows[0].candidate.fetched_at,undefined);
 });
