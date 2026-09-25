@@ -38,7 +38,7 @@ Following the existing isolated Grant Factory migration layout, research migrati
 
 - `20260923000108_research_evidence_namespace.sql`: exact supplied migration already recorded in the live database by the staging import.
 - `20260923003402_research_evidence_retrieval.sql`: protected retrieval, workspace assignments and master-document parts. Its filename matches the live migration history.
-- `20260926000001_research_evidence_summary.sql`: `gf_research_summary`, the startup summary (package identities and counts only), with the same authorization as the bundle. Renamed to its production version when applied.
+- `20260925220731_research_evidence_summary.sql`: `gf_research_summary`, the startup summary (package identities and counts only), with the same authorization as the bundle.
 - Record-ID namespace migrations, one per research volume, recovered byte-for-byte from `supabase_migrations.schema_migrations` (never re-run them against production): `20260923184152` CB, `20260923190159` AM, `20260923190246` EP, `20260923192707` EM, `20260923193828` NC, `20260923210805` CTE_*, `20260925132115` GW, `20260925132215` CNE, `20260925133347` YW, `20260925154408` BM-ENT-V1. Applied in order they reproduce the production `evidence_records_record_id_check` exactly; `tests/research-namespace-alignment.test.js` enforces that, and that `RECORD_ID` in `scripts/prepare-research-package.cjs` accepts the same namespaces. A new volume prefix needs a new narrow migration, the matching `RECORD_ID` change and an update to that test.
 
 To prepare missing background data from a private bundle:
