@@ -4,6 +4,8 @@ const { extract, validateFile, MAX_BYTES } = require("./documents");
 const P = require("./parser");
 const { seed } = require("./seed");
 const R = require("./research");
+const SE = require("./strategy-evidence");
+const AI = require("./ai");
 const { researchRules } = R;
 const { exportPackage } = require("./export");
 const { proposeBatch } = require("./intake");
@@ -706,19 +708,38 @@ function service(repo, ai) {
             "match_requirement",
           ].map((k) => [k, app.content[k]]),
         );
-        app.content.strategy = {
-          ...(await call(ctx, "strategy", {
-            application,
-            questions: app.questions,
-            program: brain.programs.find(
-              (p) => p.id === app.content.primary_program_id,
-            ),
-            facts,
-            claim_rules: researchRules(brain, facts),
-            methodology_rules: METHODOLOGY.rules,
-            organization_framework: strategyFramework(brain.framework, [app.content.primary_program_id, ...(app.content.secondary_program_ids || [])]),
-          })),
-          approved: false,
+        // Strategy gets the authorized organization facts plus a bounded,
+        // relevance-ranked selection of authorized research (see
+        // strategy-evidence.js), never the whole research library.
+        const built = SE.strategyRequest(brain, app, facts, {
+          application,
+          questions: app.questions,
+          program: brain.programs.find(
+            (p) => p.id === app.content.primary_program_id,
+          ),
+          methodology_rules: METHODOLOGY.rules,
+          organization_framework: strategyFramework(brain.framework, [app.content.primary_program_id, ...(app.content.secondary_program_ids || [])]),
+        }, SE.strategyRules, { overhead: AI.requestChars("strategy", null) });
+        if (built.overBudget)
+          C.fail("The organization facts for this program are too large for one strategy request. No strategy was generated.", 413);
+        const result = await call(ctx, "strategy", built.request);
+        const unsupplied = SE.unsuppliedReferences(result, built.request, brain.research?.records);
+        if (unsupplied.length)
+          C.fail("The strategy named research that was not supplied to it (" + unsupplied.slice(0, 5).join(", ") + "). No strategy was saved. Try again.", 422);
+        app.content.strategy = { ...result, approved: false };
+        // Which research strategy saw, and why. Kept beside the strategy so the
+        // writer and approval flow are unchanged.
+        app.content.strategy_evidence = {
+          generated_at: C.now(),
+          research_eligible: built.eligible,
+          research_ranked: built.ranked,
+          research_selected: built.selected.length,
+          skipped_for_size: built.skipped_for_size,
+          max_records: SE.STRATEGY_RESEARCH_MAX,
+          request_chars: built.chars,
+          estimated_tokens: SE.estimateTokens(built.chars + AI.requestChars("strategy", null)),
+          token_budget: SE.STRATEGY_TOKEN_BUDGET,
+          records: built.selected.map((f) => ({ fact_id: f.id, ...f.selection })),
         };
         invalidateAnswers(app);
       } else if (action === "draft") {
