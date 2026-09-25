@@ -21,7 +21,7 @@ async function fixture(){
 test('private research is service-only, workspace-bound, and active-only',async()=>{
  const f=await fixture();try{
  assert.equal((await f.bundle()).records.length,0);
- await f.pg.exec("update research_evidence.packages set status='active'");
+ await f.pg.exec("update research_evidence.packages set status='active',activated_at=now()");
  assert.equal((await f.bundle()).records.length,1);
  assert.equal((await f.bundle(OTHER,OUTSIDER)).records.length,0);
  assert.equal((await f.bundle(ORG,OUTSIDER)).records.length,0);
@@ -42,7 +42,7 @@ test('verification, claim limits and rule revisions govern drafting and audits',
 });
 test('background search and master volume stay separate from draft evidence',async()=>{
  const f=await fixture();try{
- await f.pg.exec("update research_evidence.packages set status='active'");
+ await f.pg.exec("update research_evidence.packages set status='active',activated_at=now()");
  await f.pg.query("insert into research_evidence.research_sections values($1,'SEC-01','ALICE context','ALICE households background',array['https://example.org/alice'],'background_only',$2)",[version,JSON.stringify({section_id:'SEC-01',content_markdown:'ALICE households background',retrieval_policy:'background_only'})]);
  await f.pg.query("insert into research_evidence.document_parts values($1,'master_research_volume.md',1,'world'),($1,'master_research_volume.md',0,'Hello ')",[version]);
  const search=(await f.pg.query("select gf_research_search($1,$2,'ALICE',0) result",[ORG,OWNER])).rows[0].result;
@@ -54,7 +54,7 @@ test('background search and master volume stay separate from draft evidence',asy
 });
 test('research cannot be edited through institutional fact writes',async()=>{
  const f=await fixture();try{
- await f.pg.exec("update research_evidence.packages set status='active'");
+ await f.pg.exec("update research_evidence.packages set status='active',activated_at=now()");
  const original=f.repo.brain;f.repo.brain=async ctx=>{const b=await original(ctx),r=await f.bundle(ctx.org_id,ctx.user_id);return {...b,research:r,facts:[...b.facts,...researchFacts(r)]};};
  const brain=await f.repo.brain(f.owner),fact=brain.facts[0];
  await assert.rejects(service(f.repo,{}).handle(f.owner,{action:'save_fact',id:fact.id,brain_revision:brain.revision,fact:{value:'changed'}}),/read-only/);
