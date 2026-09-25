@@ -1,7 +1,7 @@
 "use strict";
 const { createDb } = require("../source-intelligence/db");
 const { Fault, fail, id, visible, authorizedFacts, factBlockers } = require("./core");
-const { researchFacts } = require("./research");
+const { researchFacts, researchSummary, researchRef, browserRecord } = require("./research");
 const flatten = (r) => ({
   ...r.content,
   id: r.id,
@@ -18,29 +18,22 @@ function requireDocumentText(changes) {
 }
 // Browser copies only. The server keeps full research records for drafting,
 // auditing and claim rules; nothing stored is changed.
-// A research fact points to its record in brain.research.records instead of
-// repeating it, and drops the fixed research note the browser never shows.
+// A research fact is sent only as a lightweight reference (researchRef), and
+// only when the current application actually cites it. Everything else is
+// fetched on demand through the research_* actions.
 function browserFact(f) {
   if (!f.research) return f;
   const { notes, research, ...rest } = f;
   return { ...rest, research: { package_version: research.package_version, record_id: research.record_id } };
 }
-// Original-source provenance fields are not displayed or searched in the
-// browser. They remain in the database and in the downloadable master volume.
-const PROVENANCE_ONLY = ["source_fields_original", "original_record"];
+// Kept for callers that need a whole browser-safe bundle (tests, tools).
 function browserResearch(research) {
   if (!research) return research;
-  return {
-    ...research,
-    records: (research.records || []).map(r => {
-      const copy = { ...r };
-      for (const k of PROVENANCE_ONLY) delete copy[k];
-      return copy;
-    }),
-  };
+  return { ...research, records: (research.records || []).map(browserRecord) };
 }
-function repository(env = process.env, fetcher = fetch) {
-  const db = createDb(env, fetcher);
+// `db` is injectable so tests can run the real repository against an
+// in-process database; production always uses the Supabase REST client.
+function repository(env = process.env, fetcher = fetch, db = createDb(env, fetcher)) {
   const base = env.SUPABASE_URL.replace(/\/$/, "");
   const headers = (token) => ({
     apikey: token
@@ -102,21 +95,30 @@ function repository(env = process.env, fetcher = fetch) {
         })),
       };
     },
-    async brain(ctx) {
+    // The full brain includes every authorized research record and the facts
+    // derived from them; strategy, drafting, audit and evidence checks use it.
+    // With { research: false } (bootstrap only) research is replaced by a
+    // summary RPC whose size does not grow with the number of records.
+    async brain(ctx, { research: full = true } = {}) {
       const [[workspace], facts, programs, documents, research] = await Promise.all([
         db.select("gf_workspaces", { org_id: "eq." + ctx.org_id }),
         db.all("gf_facts", { org_id: "eq." + ctx.org_id }),
         db.all("gf_programs", { org_id: "eq." + ctx.org_id }),
         this.documentSummaries(ctx),
-        this.research(ctx),
+        full ? this.research(ctx) : this.researchSummary(ctx),
       ]);
       if (!workspace) fail("Grant Factory workspace is unavailable.", 503);
+      const orgFacts = facts.map(flatten);
+      // A derived organization fact may trace back to research facts, and its
+      // draft readiness depends on them. Never compute it without them.
+      if (!full && orgFacts.some(f => f.verification_status === "DERIVED")) return this.brain(ctx);
       return {
         revision: workspace.brain_revision,
         voice: workspace.voice,
         framework: workspace.framework || null,
-        facts: [...facts.map(flatten), ...researchFacts(research)],
-        research,
+        facts: full ? [...orgFacts, ...researchFacts(research)] : orgFacts,
+        research: full ? research : null,
+        research_summary: full ? researchSummary(research) : research,
         programs: programs.map(flatten),
         documents: documents.map(flatten),
       };
@@ -141,6 +143,10 @@ function repository(env = process.env, fetcher = fetch) {
     },
     async research(ctx) {
       return db.rpc("gf_research_bundle", { p_org: ctx.org_id, p_actor: ctx.user_id });
+    },
+    // Package identities and counts for the authorized, active packages only.
+    async researchSummary(ctx) {
+      return db.rpc("gf_research_summary", { p_org: ctx.org_id, p_actor: ctx.user_id });
     },
     async researchSearch(ctx, query, offset = 0) {
       return db.rpc("gf_research_search", { p_org: ctx.org_id, p_actor: ctx.user_id, p_query: query, p_offset: offset });
@@ -258,15 +264,24 @@ function repository(env = process.env, fetcher = fetch) {
         throw e;
       }
     },
-    publicBrain(brain, ctx, applicationId) {
+    // What the browser receives. Organization facts are complete; research is
+    // a summary plus references for research facts the given application
+    // cites (so its answers and eligibility reviews can show their evidence).
+    publicBrain(brain, ctx, applicationId, app = null) {
       const ready = new Set(authorizedFacts(brain, applicationId).map(f => f.id));
+      const status = (f) => {
+        const blockers = ready.has(f.id) ? [] : factBlockers(f, brain, applicationId);
+        return { draft_ready: ready.has(f.id), draft_blockers: ready.has(f.id) ? [] : blockers.length ? blockers : ["The underlying evidence needs review before this fact can be used."] };
+      };
+      const cited = app ? JSON.stringify(app) : "";
+      const { research, research_summary, ...rest } = brain;
       return {
-        ...brain,
-        facts: brain.facts.filter((f) => visible(f, ctx.role)).map(f => {
-          const blockers = ready.has(f.id) ? [] : factBlockers(f, brain, applicationId);
-          return { ...browserFact(f), draft_ready: ready.has(f.id), draft_blockers: ready.has(f.id) ? [] : blockers.length ? blockers : ["The underlying evidence needs review before this fact can be used."] };
-        }),
-        research: browserResearch(brain.research),
+        ...rest,
+        facts: brain.facts.filter((f) => !f.research && visible(f, ctx.role)).map(f => ({ ...f, ...status(f) })),
+        research: research_summary || researchSummary(research),
+        research_refs: cited
+          ? brain.facts.filter(f => f.research && visible(f, ctx.role) && cited.includes(f.id)).map(f => researchRef(f, ready.has(f.id), status(f).draft_blockers))
+          : [],
         documents: brain.documents
           .filter((d) => visible(d, ctx.role))
           .map(({ blocks, ...d }) => d),

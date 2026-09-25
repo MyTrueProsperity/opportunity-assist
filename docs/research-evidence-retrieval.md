@@ -16,12 +16,29 @@ The 564 research sections are **background only**, with full-text search and twe
 
 CFSC-041 remains verified with its explicit table-14.1% versus narrative-14.0% caution, which is displayed and passed to the writer/auditor. Its inclusion in the review queue does not erase the checked table value. There are 44 evidence records: 12 draft-eligible and 32 requiring review. The review queue contains 33 entries.
 
+## Loading research in the browser
+
+Grant Factory's startup response (`bootstrap`) carries only a **research summary**: the active, assigned package identities and counts of records, verified records, packets, statistics and claim rules (`gf_research_summary`). Its size depends on the number of packages, not the number of records, so adding research does not grow startup. Research-derived facts are not sent at startup either.
+
+Everything record-sized is fetched on demand, in bounded pages, through the same authorized RPCs (Grant Factory membership, explicit `package_workspaces` assignment, `active` status):
+
+- `research_library`: packages, the funder-packet picker (names only) and counts.
+- `research_records`: one page (at most 25) of full evidence records, searched on the server (legacy aliases resolve to their canonical record; a funder packet narrows to its evidence and returns its narrative), or up to 25 specific records by `{package_version, record_id}`.
+- `research_statistics` and `research_rules`: loaded when those Research Library sections are opened.
+- `research_evidence`: research-derived facts for evidence pickers. A search returns only draft-ready facts, 25 per page; asking for specific ids returns their true readiness and blockers. Readiness is computed with the same `authorizedFacts` used for drafting.
+- Opening an application returns lightweight references (`research_refs`) for the research facts that application cites, so answers and eligibility reviews can show their evidence.
+
+The server still loads the full bundle for strategy, drafting, audit and evidence checks, so AI calls receive the complete records, limits, prohibited wording and claim rules. This is a loading change only: verification, draft eligibility, review gating and claim rules are unchanged. Planning material (framework, crosswalk, narrative guidance) is still not evidence.
+
+`tests/grant-factory-research-on-demand.test.js` measures the bootstrap at production volume (~750 records) and fails if it exceeds 1 MB, if research's share exceeds a small constant, or if adding 400 records grows startup by more than a few hundred bytes.
+
 ## Migration history and loading
 
 Following the existing isolated Grant Factory migration layout, research migrations are under `supabase/research-evidence/`. They depend on the existing `organizations` and `gf_members` tables. Do not run them through the independent Source Intelligence fixture or blindly replay them against production.
 
 - `20260923000108_research_evidence_namespace.sql`: exact supplied migration already recorded in the live database by the staging import.
 - `20260923003402_research_evidence_retrieval.sql`: protected retrieval, workspace assignments and master-document parts. Its filename matches the live migration history.
+- `20260925220731_research_evidence_summary.sql`: `gf_research_summary`, the startup summary (package identities and counts only), with the same authorization as the bundle.
 - Record-ID namespace migrations, one per research volume, recovered byte-for-byte from `supabase_migrations.schema_migrations` (never re-run them against production): `20260923184152` CB, `20260923190159` AM, `20260923190246` EP, `20260923192707` EM, `20260923193828` NC, `20260923210805` CTE_*, `20260925132115` GW, `20260925132215` CNE, `20260925133347` YW, `20260925154408` BM-ENT-V1. Applied in order they reproduce the production `evidence_records_record_id_check` exactly; `tests/research-namespace-alignment.test.js` enforces that, and that `RECORD_ID` in `scripts/prepare-research-package.cjs` accepts the same namespaces. A new volume prefix needs a new narrow migration, the matching `RECORD_ID` change and an update to that test.
 
 To prepare missing background data from a private bundle:

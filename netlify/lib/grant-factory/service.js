@@ -3,7 +3,8 @@ const C = require("./core");
 const { extract, validateFile, MAX_BYTES } = require("./documents");
 const P = require("./parser");
 const { seed } = require("./seed");
-const { researchRules } = require("./research");
+const R = require("./research");
+const { researchRules } = R;
 const { exportPackage } = require("./export");
 const { proposeBatch } = require("./intake");
 const { METHODOLOGY, strategyFramework } = require("./methodology");
@@ -217,8 +218,40 @@ function service(repo, ai) {
         if (!document) C.fail("Research document not found", 404);
         return { download: true, filename: document.filename, mime: "text/markdown;charset=utf-8", base64: Buffer.from(document.content, "utf8").toString("base64") };
       }
-      let brain = await repo.brain(ctx);
-      if (action === "bootstrap")
+      // Research Library, loaded on demand in bounded pages. Every call goes
+      // through the authorized bundle RPC (membership, workspace assignment,
+      // active packages), so nothing here widens what an organization can see.
+      if (action === "research_library") return R.librarySummary(await repo.research(ctx));
+      if (action === "research_records") {
+        const bundle = await repo.research(ctx);
+        if (body.records !== undefined) return R.recordsByKey(bundle, body.records);
+        return R.searchRecords(bundle, { query: C.str(body.query || "", 300), packet: C.str(body.packet || "", 300), offset: body.offset ?? 0, limit: body.limit ?? R.PAGE_LIMIT });
+      }
+      if (action === "research_statistics") return R.statistics(await repo.research(ctx), C.str(body.packet || "", 300));
+      if (action === "research_rules") return R.rules(await repo.research(ctx));
+      // Research-derived facts for the evidence picker and answer explanations.
+      // Draft readiness comes from the same authorizedFacts used for drafting;
+      // a search only ever returns draft-ready facts.
+      if (action === "research_evidence") {
+        const full = await repo.brain(ctx);
+        const appId = body.application_id ? C.id(body.application_id) : undefined;
+        const ready = new Set(C.authorizedFacts(full, appId).map(f => f.id));
+        const facts = full.facts.filter(f => f.research && C.visible(f, ctx.role));
+        const ref = f => R.researchRef(f, ready.has(f.id), ready.has(f.id) ? [] : C.factBlockers(f, full, appId));
+        if (body.ids !== undefined) {
+          if (!Array.isArray(body.ids) || body.ids.length > R.MAX_REFS) C.fail("Request at most " + R.MAX_REFS + " evidence items.");
+          const want = new Set(body.ids.map(String));
+          return { evidence: facts.filter(f => want.has(f.id)).map(ref) };
+        }
+        const q = C.str(body.query || "", 300).trim().toLowerCase();
+        const offset = body.offset ?? 0;
+        if (!Number.isInteger(offset) || offset < 0 || offset > 100000) C.fail("Invalid evidence page");
+        const matches = facts.filter(f => ready.has(f.id) && (!q || JSON.stringify([f.display_name, f.value, f.category, f.tags, f.source_locator]).toLowerCase().includes(q)));
+        return { total: matches.length, offset, evidence: matches.slice(offset, offset + R.PAGE_LIMIT).map(ref) };
+      }
+      // Bootstrap needs only a research summary, not every record.
+      if (action === "bootstrap") {
+        const brain = await repo.brain(ctx, { research: false });
         return {
           role: ctx.role,
           org_id: ctx.org_id,
@@ -231,6 +264,8 @@ function service(repo, ai) {
           ai_enabled: ai.enabled,
           document_types: DOCUMENT_TYPES,
         };
+      }
+      let brain = await repo.brain(ctx);
       if (action === "seed") return seed(repo, ctx, brain, body.pack);
       if (action === "save_voice") {
         owner(ctx);
@@ -510,7 +545,7 @@ function service(repo, ai) {
       if (action === "get_application")
         return {
           app,
-          brain: repo.publicBrain(brain, ctx, app.id),
+          brain: repo.publicBrain(brain, ctx, app.id, app),
           snapshots: await repo.db.select("gf_snapshots", {
             org_id: "eq." + ctx.org_id,
             application_id: "eq." + app.id,
