@@ -97,14 +97,25 @@ const METHODOLOGY = Object.freeze({ version: VERSION, rules: RULES, hash: hash(R
 // Keep only the parts of the private workspace framework relevant to the
 // application's selected programs. The framework is planning material, not
 // evidence, and is never passed to the writer as a supporting fact.
+// An evidence crosswalk maps program components to research record ids. The
+// ids are pointers for strategy only: a record supports a draft claim only
+// when the draft cites it and it is eligible under the normal research gates.
 function strategyFramework(framework, programIds) {
   if (!framework) return null;
   const ids = new Set((programIds || []).filter(Boolean));
+  const matches = list => !list?.length || list.some(x => ids.has(x));
+  const crosswalk = framework.evidence_crosswalk;
   return {
     status: "PLANNING_FRAMEWORK_NOT_EVIDENCE",
     program_alignment: (framework.program_alignment || []).filter(p => !p.program_id || ids.has(p.program_id)),
     logic_model: framework.logic_model || null,
     notes: framework.notes || [],
+    evidence_crosswalk: crosswalk ? {
+      status: "PLANNING_CROSSWALK_NOT_EVIDENCE",
+      version: crosswalk.version || null,
+      entries: (crosswalk.entries || []).filter(e => matches(e.program_ids)).map(({ program_ids, ...e }) => e),
+    } : null,
+    narrative_guidance: (framework.narrative_guidance || []).filter(g => matches(g.program_ids)),
   };
 }
 
