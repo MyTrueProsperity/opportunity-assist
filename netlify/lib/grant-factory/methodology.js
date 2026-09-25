@@ -7,7 +7,7 @@
 // Nothing here is evidence. Rules shape reasoning and wording only.
 const { hash } = require("./core");
 
-const VERSION = "GRANT_METHODOLOGY_V1_2026-09-24";
+const VERSION = "GRANT_METHODOLOGY_V1.1_2026-09-24";
 
 const RULES = [
   {
@@ -89,6 +89,16 @@ const RULES = [
     id: "GM-16",
     title: "Interpretation discipline",
     rule: "For each research record, respect what the source establishes, its supports, its limits and its do-not-claim language. Interpretation (why it matters, which program it informs, appropriate grant use) may guide framing but never adds facts. Planning frameworks, program mappings and logic models describe intended design; they are not evidence of need, effectiveness or results.",
+  },
+  {
+    id: "GM-17",
+    title: "Status claims need their own proof",
+    rule: "Keep these distinctions unless a supplied organizational source establishes the stronger status. Citing a framework, method or measurement instrument is not adopting or implementing it. Evidence about another model, or a clearinghouse, registry or evidence-tier review of another model, is not a rating, listing, certification or evidence tier for the applicant or its program; assign a tier only when the governing opportunity and a completed assessment support that exact classification. Partner interest, a contact, an endorsement or a letter of support is not a commitment of funds, staff, placements or services. A high review score, recommendation or selection for negotiation is not an award, payment or disbursement. A published success rate is context, not the applicant's probability of award. Drafting templates are conditional structures, not approved organizational statements.",
+  },
+  {
+    id: "GM-18",
+    title: "Measure definitions",
+    rule: "Name a measure the way its governing source defines it. Use an official indicator label (for example a federal workforce performance indicator) only when applying that indicator's definitions, eligible population, timing and data source; otherwise describe it as an internal measure. Do not relabel a similar internal measure as the official one. An instrument validated for one population, such as adults, is not assumed valid for another, such as minors, without separate justification. Keep separate results separate: placement, retention and satisfaction; competence, revenue and profit; participation and outcome.",
   },
 ];
 
