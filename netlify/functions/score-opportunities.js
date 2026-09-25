@@ -48,8 +48,12 @@ function makeHandler({ env = process.env, fetcher = (...a) => fetch(...a), today
   const ANTHROPIC_API_KEY = env.ANTHROPIC_API_KEY;
 
   /* ---------- Supabase REST helpers (no SDK) ---------- */
+  // A user session is sent with the publishable key; the service role key is
+  // its own apikey. Pairing the service key with the publishable apikey is
+  // rejected (401), which silently dropped summary caching and usage logs.
   function sbHeaders(keyOrToken) {
-    return { apikey: SUPABASE_ANON_KEY, Authorization: "Bearer " + keyOrToken, "Content-Type": "application/json" };
+    const apikey = SERVICE_KEY && keyOrToken === SERVICE_KEY ? SERVICE_KEY : SUPABASE_ANON_KEY;
+    return { apikey, Authorization: "Bearer " + keyOrToken, "Content-Type": "application/json" };
   }
   async function sbAuthGetUser(token) {
     const r = await fetcher(SUPABASE_URL + "/auth/v1/user", { headers: sbHeaders(token) });
@@ -192,8 +196,9 @@ function makeHandler({ env = process.env, fetcher = (...a) => fetch(...a), today
       if (SERVICE_KEY) {
         const aiScored = scored.filter((r) => r.eligibility_status !== "INELIGIBLE");
         const totals = aiScored.reduce((acc, r) => { acc.input_tokens += r.usage.input_tokens || 0; acc.output_tokens += r.usage.output_tokens || 0; return acc; }, { input_tokens: 0, output_tokens: 0 });
+        // Awaited so the write completes before the function returns; a failure is logged, never fatal.
         if (aiScored.length)
-          sbInsert("ai_usage_logs", [{ org_id: org.id, model: MODEL, opportunity_count: aiScored.length, input_tokens: totals.input_tokens, output_tokens: totals.output_tokens }], SERVICE_KEY).catch((err) => console.error("usage log insert failed:", err.message));
+          await sbInsert("ai_usage_logs", [{ org_id: org.id, model: MODEL, opportunity_count: aiScored.length, input_tokens: totals.input_tokens, output_tokens: totals.output_tokens }], SERVICE_KEY).catch((err) => console.error("usage log insert failed:", err.message));
       }
       const results = scored.map(({ usage, ...r }) => r);
       return json(200, { results, org_id: org.id, rubric_version: M.RUBRIC_VERSION, service_role_configured: !!SERVICE_KEY });
