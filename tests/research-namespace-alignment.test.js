@@ -8,11 +8,13 @@ const { createTestRepo } = require('./helpers/grant-db');
 
 const DIR = path.join(__dirname, '../supabase/research-evidence');
 // One representative ID per live namespace (production constraint as of 2026-09-25).
-const LIVE = ['CFSC-001', 'CB-001', 'AM-001', 'EP-001', 'EM-001', 'NC-001', 'GW-001', 'CNE-001', 'YW-001',
+const LIVE = ['CFSC-001', 'CB-001', 'AM-001', 'EP-001', 'EM-001', 'NC-001', 'GW-001', 'CNE-001', 'YW-001', 'BM-ENT-V1-E0033', 'BM-ENT-V1-S001',
   ...['LOCAL', 'RESEARCH', 'EMPLOYER', 'FL', 'ACCESS', 'REGIONAL', 'FUTURE', 'POLICY'].map(k => `CTE_${k}_001`)];
-const INVALID = ['CFSC-1', 'GW-0001', 'E-01', 'GWX-001', 'XX-001', 'CTE_UNKNOWN_001', 'CTE_LOCAL_001_extra', 'cne-001', ' YW-001'];
-// Production pg_get_constraintdef after 20260925133347_research_evidence_youth_workforce_ids.
-const PRODUCTION = "CHECK (((record_id ~ '^(CFSC|CB)-[0-9]{3}$'::text) OR (record_id ~ '^AM-[0-9]{3}$'::text) OR (record_id ~ '^EP-[0-9]{3}$'::text) OR (record_id ~ '^EM-[0-9]{3}$'::text) OR (record_id ~ '^NC-[0-9]{3}$'::text) OR (record_id ~ '^CTE_(LOCAL|RESEARCH|EMPLOYER|FL|ACCESS|REGIONAL|FUTURE|POLICY)_[0-9]{3}$'::text) OR (record_id ~ '^GW-[0-9]{3}$'::text) OR (record_id ~ '^CNE-[0-9]{3}$'::text) OR (record_id ~ '^YW-[0-9]{3}$'::text)))";
+const INVALID = ['CFSC-1', 'GW-0001', 'E-01', 'GWX-001', 'XX-001', 'CTE_UNKNOWN_001', 'CTE_LOCAL_001_extra', 'cne-001', ' YW-001',
+  // Entrepreneurship V1 observation, interpretation and other-volume IDs are aliases or background, never canonical records.
+  'BM-ENT-V1-L0033', 'BM-ENT-V1-I-FORMATION', 'BM-ENT-V1-E033', 'BM-ENT-V1-S0001', 'BM-ENT-V2-E0001', 'bm-ent-v1-e0033'];
+// Production pg_get_constraintdef after 20260925154408_research_evidence_entrepreneurship_v1_ids.
+const PRODUCTION = "CHECK (((record_id ~ '^(CFSC|CB)-[0-9]{3}$'::text) OR (record_id ~ '^AM-[0-9]{3}$'::text) OR (record_id ~ '^EP-[0-9]{3}$'::text) OR (record_id ~ '^EM-[0-9]{3}$'::text) OR (record_id ~ '^NC-[0-9]{3}$'::text) OR (record_id ~ '^CTE_(LOCAL|RESEARCH|EMPLOYER|FL|ACCESS|REGIONAL|FUTURE|POLICY)_[0-9]{3}$'::text) OR (record_id ~ '^GW-[0-9]{3}$'::text) OR (record_id ~ '^CNE-[0-9]{3}$'::text) OR (record_id ~ '^YW-[0-9]{3}$'::text) OR (record_id ~ '^BM-ENT-V1-(E[0-9]{4}|S[0-9]{3})$'::text)))";
 
 async function chain() {
   const f = await createTestRepo();
@@ -58,6 +60,6 @@ test('every namespace migration file matches a recorded production version', () 
   const versions = files.map(n => n.match(/^(\d{14})_[a-z0-9_]+\.sql$/)?.[1]);
   assert.ok(versions.every(Boolean), 'all research migrations are versioned');
   assert.equal(new Set(versions).size, versions.length);
-  for (const v of ['20260923184152', '20260923190159', '20260923190246', '20260923192707', '20260923193828', '20260923210805', '20260925132115', '20260925132215', '20260925133347'])
+  for (const v of ['20260923184152', '20260923190159', '20260923190246', '20260923192707', '20260923193828', '20260923210805', '20260925132115', '20260925132215', '20260925133347', '20260925154408'])
     assert.ok(versions.includes(v), 'namespace migration present: ' + v);
 });
