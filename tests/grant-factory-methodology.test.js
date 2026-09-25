@@ -29,6 +29,26 @@ test("strategy framework includes only the selected programs and is marked as no
   assert.deepEqual(out.logic_model, { inputs: ["x"] });
   assert.equal("quarantine" in out, false, "quarantined claims never reach the AI");
   assert.equal(strategyFramework(null, ["a"]), null);
+  assert.equal(out.evidence_crosswalk, null);
+  assert.deepEqual(out.narrative_guidance, []);
+});
+
+test("evidence crosswalk reaches strategy only for the selected programs, as pointers not evidence", () => {
+  const fw = {
+    evidence_crosswalk: { version: "X1", entries: [
+      { component: "Paid work", program_ids: ["a", "c"], records: ["R-1"], do_not_claim: "Effect sizes" },
+      { component: "Arts", program_ids: ["b"], records: ["R-2"] },
+      { component: "Shared", records: ["R-3"] },
+    ] },
+    narrative_guidance: [{ id: "N-1", guidance: "Frame need", records: ["R-4"] }, { id: "N-2", program_ids: ["b"] }],
+  };
+  const out = strategyFramework(fw, ["a"]);
+  assert.equal(out.evidence_crosswalk.status, "PLANNING_CROSSWALK_NOT_EVIDENCE");
+  assert.equal(out.evidence_crosswalk.version, "X1");
+  assert.deepEqual(out.evidence_crosswalk.entries.map(e => e.component), ["Paid work", "Shared"]);
+  assert.equal(out.evidence_crosswalk.entries[0].do_not_claim, "Effect sizes");
+  assert.equal("program_ids" in out.evidence_crosswalk.entries[0], false, "internal ids are not sent to the AI");
+  assert.deepEqual(out.narrative_guidance.map(g => g.id), ["N-1"]);
 });
 
 test("methodology reaches strategy, writer and auditor; the framework reaches strategy only", async () => {
@@ -52,6 +72,8 @@ test("methodology reaches strategy, writer and auditor; the framework reaches st
       program_alignment: [{ program_id: primary.id, name: primary.name, funding_alignment: ["education"] }, { program_id: other.id, name: other.name, funding_alignment: ["arts"] }],
       logic_model: { inputs: ["facilities"], caution: "Planned, not achieved." },
       quarantine: [{ id: "Q-01", claim: "Unverified 38% statistic", status: "QUARANTINED" }],
+      evidence_crosswalk: { version: "X1", entries: [{ component: "Primary component", program_ids: [primary.id], records: ["R-1"] }, { component: "Other component", program_ids: [other.id], records: ["R-2"] }] },
+      narrative_guidance: [{ id: "N-1", guidance: "Hidden need framing" }],
     }), ORG]);
     const boot = await s.handle(f.owner, { action: "bootstrap" });
     assert.equal(boot.methodology.version, METHODOLOGY.version);
@@ -63,6 +85,8 @@ test("methodology reaches strategy, writer and auditor; the framework reaches st
     assert.deepEqual(seen.strategy.methodology_rules, METHODOLOGY.rules);
     assert.deepEqual(seen.strategy.organization_framework.program_alignment.map(p => p.name), [primary.name]);
     assert.equal(JSON.stringify(seen.strategy).includes("Unverified 38%"), false);
+    assert.deepEqual(seen.strategy.organization_framework.evidence_crosswalk.entries.map(e => e.component), ["Primary component"]);
+    assert.equal(seen.strategy.organization_framework.narrative_guidance[0].id, "N-1");
     assert.equal(app.content.strategy.evidence_chain, "Need to impact");
     assert.equal(app.content.strategy.budget_consistency, "None found");
     app = await s.handle(f.owner, { action: "save_application", application_id: app.id, revision: app.revision, application: { strategy: { ...app.content.strategy }, strategy_approved: true } });
@@ -71,6 +95,7 @@ test("methodology reaches strategy, writer and auditor; the framework reaches st
     assert.deepEqual(seen.write.methodology_rules, METHODOLOGY.rules);
     assert.equal("organization_framework" in seen.write, false, "the framework is never evidence for the writer");
     assert.equal(JSON.stringify(seen.write).includes("Unverified 38%"), false);
+    assert.equal(JSON.stringify(seen.write).includes("Hidden need framing"), false, "narrative guidance is never writer evidence");
     app = await s.handle(f.owner, { action: "audit_answer", application_id: app.id, revision: app.revision, question_id: qId });
     assert.deepEqual(seen.audit.methodology_rules, METHODOLOGY.rules);
     assert.equal(JSON.stringify(seen.audit).includes("Unverified 38%"), false);
