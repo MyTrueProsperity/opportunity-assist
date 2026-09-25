@@ -47,10 +47,10 @@
 //       programs (up to 6, matching the AI extraction's own limit); each
 //       becomes its own candidate. From there -- duplicate detection,
 //       quality scoring, automatic-approval eligibility -- every record
-//       goes through the exact same pipeline as any other import; the only
-//       thing this mode changes is how last_verified_at gets established,
-//       so a fully-evidenced submission skips the redundant independent
-//       re-fetch a QUEUE submission still gets queued for.
+//       goes through the exact same pipeline as any other import. The
+//       submitted evidence is a hint only: it never sets last_verified_at,
+//       the record is always queued for this system's own VALIDATE fetch,
+//       and automatic approval waits for that independent verification.
 //
 // Auth: Authorization: Bearer <token> against api_credentials (see
 // netlify/lib/source-intelligence/credentials.js) -- a separate concern
