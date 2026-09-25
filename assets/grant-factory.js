@@ -134,6 +134,14 @@
       researchQuery: "",
       researchPacket: "",
       researchBackground: null,
+      // Research is loaded on demand and cached per organization.
+      researchLib: null,
+      researchPage: null,
+      researchStats: null,
+      researchRules: null,
+      researchLoading: false,
+      researchError: "",
+      researchRefs: {},
       reviewDocument: null,
     };
     session = s;
@@ -182,6 +190,7 @@
         s.data.brain = r.brain;
         s.snapshots = r.snapshots;
       }
+      setRefs(s.data.brain);
       render();
     }
     async function mutate(action, payload = {}) {
@@ -345,6 +354,7 @@
           s.researchBackground = null;
           s.researchPacket = "";
           s.researchQuery = "";
+          resetResearch();
           s.tab = "start";
           render();
         } catch (e) {
@@ -564,29 +574,119 @@
           '<p class="gf-meta">' + esc(fw.source || '') + '</p></details>' : '') +
         (fw?.quarantine?.length ? '<details class="gf-card"><summary>Quarantined claims · ' + fw.quarantine.length + ' not available for drafting</summary><p class="gf-note">Unverified statistics and research claims held for verification. Grant Factory never uses these as evidence. Use the verified records listed instead.</p>' + fw.quarantine.map(q => '<div class="gf-list-row"><strong>' + esc(q.id + ' · ' + q.topic) + '</strong> ' + pill(q.status) + '<p>' + esc(q.claim) + '</p><p class="gf-meta">Claimed source: ' + esc(q.claimed_source || 'Not specified') + '</p><p><strong>Finding:</strong> ' + esc(q.review_finding) + '</p>' + (q.use_instead?.length ? '<p><strong>Use instead:</strong> ' + esc(q.use_instead.join(', ')) + '</p>' : '') + '</div>').join('') + '</details>' : '');
     }
+    // ---- Research, loaded on demand ---------------------------------------
+    // Startup carries only a research summary. Records, statistics, rules and
+    // research evidence are fetched in bounded pages when a view needs them,
+    // and cached only for the organization that requested them.
+    function resetResearch() {
+      s.researchLib = null; s.researchPage = null; s.researchStats = null; s.researchRules = null;
+      s.researchLoading = false; s.researchError = ""; s.researchRefs = {};
+    }
+    function setRefs(brain) {
+      for (const r of brain?.research_refs || []) s.researchRefs[r.id] = r;
+    }
+    function evidenceFact(id) {
+      return s.data.brain.facts.find((f) => f.id === id) || s.researchRefs[id];
+    }
+    async function researchCall(action, payload = {}) {
+      const org = s.orgId;
+      const result = await api(action, payload);
+      // Never let a response for the previous organization land in this one.
+      if (org !== s.orgId) throw Error("The organization changed. Open the research again.");
+      return result;
+    }
+    async function loadResearch() {
+      if (s.researchLoading) return;
+      s.researchLoading = true;
+      s.researchError = "";
+      try {
+        const lib = await researchCall("research_library");
+        const page = await researchCall("research_records", { query: s.researchQuery, packet: s.researchPacket, offset: 0 });
+        s.researchLib = lib;
+        s.researchPage = page;
+      } catch (e) {
+        s.researchError = e.message;
+      } finally {
+        s.researchLoading = false;
+      }
+      if (s.tab === "research") render();
+    }
+    function statisticRows(rows) {
+      return rows.map(t=>'<div class="gf-list-row"><strong>' + esc(t.stat_id + ' · ' + t.finding) + '</strong> ' + pill(t.external_use_status) + '<p class="gf-meta">' + esc(t.geography + ' · ' + t.year + ' · ' + t.population) + '</p><p>' + esc(t.best_use) + '</p><ul>' + (t.cautions || []).map(c=>'<li>' + esc(c) + '</li>').join('') + '</ul><p>Source: ' + esc(t.source_org) + ' · Evidence ' + esc(t.record_id) + '</p></div>').join('') || '<p>No statistics for this selection.</p>';
+    }
+    function ruleRows(rows) {
+      return rows.map(r=>'<p><strong>' + esc(r.rule_id + ' · ' + r.title) + '</strong><br>' + esc(r.rule) + '</p>').join('');
+    }
+    // Research evidence choices inside an evidence dialog: the facts already
+    // cited, plus a server search that returns only draft-ready research.
+    function researchCheck(r, checked) {
+      return '<label class="gf-check"><input type="checkbox" name="evidence" value="' + esc(r.id) + '" ' + (checked ? 'checked' : '') + (r.draft_ready ? '' : ' disabled') + '><span><strong>' + esc(r.display_name) + '</strong><br>' + esc(r.value) + (r.draft_ready ? '' : '<br><span class="gf-note">' + esc((r.draft_blockers || []).join(' ')) + '</span>') + '</span></label>';
+    }
+    function researchPicker(selected) {
+      const chosen = (selected || []).map((id) => s.researchRefs[id]).filter(Boolean);
+      return '<fieldset class="gf-card"><legend>Research evidence</legend><p class="gf-note">Only verified research that is ready for drafting can be selected. Search to add more.</p>' +
+        '<div class="gf-evidence" data-research-chosen>' + chosen.map((r) => researchCheck(r, true)).join('') + '</div>' +
+        '<div class="gf-row"><input type="search" data-research-query placeholder="Search verified research" aria-label="Search verified research"><button type="button" class="btn btn-ghost btn-sm" data-research-search>Search research</button></div>' +
+        '<div class="gf-evidence" data-research-results></div></fieldset>';
+    }
+    function wireResearchPicker(modal) {
+      const input = modal.querySelector('[data-research-query]');
+      const out = modal.querySelector('[data-research-results]');
+      if (!input || !out) return;
+      const run = async () => {
+        out.innerHTML = '<p>Searching…</p>';
+        try {
+          const r = await researchCall("research_evidence", { query: input.value.slice(0, 300), application_id: s.app?.id });
+          for (const e of r.evidence) s.researchRefs[e.id] = e;
+          const taken = new Set([...modal.querySelectorAll('input[name="evidence"]')].filter((i) => i.checked).map((i) => i.value));
+          out.innerHTML = '<p class="gf-meta">' + r.total + ' matching · showing ' + r.evidence.length + (r.total > r.evidence.length ? ' (refine the search to see others)' : '') + '</p>' +
+            r.evidence.filter((e) => !taken.has(e.id)).map((e) => researchCheck(e, false)).join('');
+        } catch (e) {
+          out.innerHTML = '<p class="gf-note">' + esc(e.message) + '</p>';
+        }
+      };
+      modal.querySelector('[data-research-search]').onclick = run;
+      input.onkeydown = (e) => { if (e.key === "Enter") { e.preventDefault(); run(); } };
+    }
     function renderResearch(el) {
-      const library = s.data.brain.research || { packages: [], records: [], packets: [], statistics: [], rules: [], aliases: [] };
-      const packet = library.packets.find(p => p.package_version + '/' + p.packet_id === s.researchPacket);
-      const ids = packet ? new Set([...(packet.priority_evidence_ids || []),...(packet.need_evidence_ids || []),...(packet.research_evidence_ids || [])]) : null;
-      const query = s.researchQuery.trim().toLowerCase();
-      const records = library.records.filter(r => {
-        if (packet && (r.package_version !== packet.package_version || !ids.has(r.record_id))) return false;
-        const alias = (library.aliases || []).find(a => a.package_version === r.package_version && a.legacy_record_id.toLowerCase() === query);
-        if (alias) return r.record_id === alias.canonical_record_id;
-        return !query || JSON.stringify([r.record_id,r.topic,r.finding,r.funding_tags,r.geography,r.approved_language]).toLowerCase().includes(query);
-      });
-      el.innerHTML = '<div class="gf-row"><div><h2>Research Library</h2><p class="gf-note">Community context and intervention research. Only verified records are eligible for drafting. Every claim still requires review.</p></div></div>' +
-        (!library.packages.length ? '<p>No active research package is assigned to this workspace.</p>' :
-        '<p>' + library.records.length + ' evidence records · ' + library.records.filter(r => r.external_use_status === 'VERIFIED').length + ' verified · ' + library.packets.length + ' funder packets</p>' +
-        library.packages.map(p => btn('research-document','Download master volume',p.package_version)).join('') +
-        '<form id="gf-research-form" class="gf-card"><div class="two">' + field('query','Search evidence or background',s.researchQuery) + select('packet','Funder packet',[['','All packets'],...library.packets.map(p=>[p.package_version + '/' + p.packet_id,p.name])],s.researchPacket) + '</div><button class="btn btn-primary" type="submit">Search</button></form>' +
+      const summary = s.data.brain.research || { packages: [], counts: {} };
+      const head = '<div class="gf-row"><div><h2>Research Library</h2><p class="gf-note">Community context and intervention research. Only verified records are eligible for drafting. Every claim still requires review.</p></div></div>';
+      if (!summary.packages.length) {
+        el.innerHTML = head + '<p>No active research package is assigned to this workspace.</p>' + methodologyCards();
+        return;
+      }
+      if (!s.researchLib || !s.researchPage) {
+        el.innerHTML = head + (s.researchError ? '<p class="gf-message error">' + esc(s.researchError) + '</p>' + btn('research-reload', 'Try again') : '<p>Loading the research library… ' + (summary.counts.records || 0) + ' evidence records.</p>') + methodologyCards();
+        if (!s.researchLoading && !s.researchError) loadResearch();
+        return;
+      }
+      const lib = s.researchLib, pg = s.researchPage, c = lib.counts;
+      const packet = pg.packet;
+      el.innerHTML = head +
+        '<p>' + c.records + ' evidence records · ' + c.verified + ' verified · ' + c.packets + ' funder packets</p>' +
+        lib.packages.map(p => btn('research-document','Download master volume',p.package_version)).join('') +
+        '<form id="gf-research-form" class="gf-card"><div class="two">' + field('query','Search evidence or background',s.researchQuery) + select('packet','Funder packet',[['','All packets'],...lib.packets.map(p=>[p.package_version + '/' + p.packet_id,p.name])],s.researchPacket) + '</div><button class="btn btn-primary" type="submit">Search</button></form>' +
         methodologyCards() +
         (packet ? '<section class="gf-card"><h3>' + esc(packet.name) + '</h3><p>' + esc(packet.approved_narrative) + '</p><p><strong>Limits:</strong> ' + esc(packet.prohibited_claims) + '</p><p class="gf-note">Packet language guides planning; only eligible evidence records support draft claims.</p></section>' : '') +
-        '<h3>Evidence · ' + records.length + '</h3>' + records.map(r=>'<details class="gf-card"><summary>' + esc(r.record_id + ' · ' + r.topic) + ' ' + pill(r.external_use_status) + ' · ' + esc(r.geography_scope.join(', ') + ' / ' + r.evidence_domain) + '</summary>' + researchDetail(r) + '</details>').join('') +
-        '<details class="gf-card"><summary>Strongest statistics</summary>' + library.statistics.filter(t=>!packet || (t.package_version === packet.package_version && packet.strongest_statistic_ids.includes(t.stat_id))).map(t=>'<div class="gf-list-row"><strong>' + esc(t.stat_id + ' · ' + t.finding) + '</strong> ' + pill(t.external_use_status) + '<p class="gf-meta">' + esc(t.geography + ' · ' + t.year + ' · ' + t.population) + '</p><p>' + esc(t.best_use) + '</p><ul>' + (t.cautions || []).map(c=>'<li>' + esc(c) + '</li>').join('') + '</ul><p>Source: ' + esc(t.source_org) + ' · Evidence ' + esc(t.record_id) + '</p></div>').join('') + '</details>' +
-        '<details class="gf-card"><summary>Claim rules · ' + library.rules.length + '</summary>' + library.rules.map(r=>'<p><strong>' + esc(r.rule_id + ' · ' + r.title) + '</strong><br>' + esc(r.rule) + '</p>').join('') + '</details>' +
+        '<h3>Evidence · ' + pg.total + (pg.total > pg.records.length ? ' · showing ' + (pg.offset + 1) + '–' + (pg.offset + pg.records.length) : '') + '</h3>' +
+        pg.records.map(r=>'<details class="gf-card"><summary>' + esc(r.record_id + ' · ' + r.topic) + ' ' + pill(r.external_use_status) + ' · ' + esc((r.geography_scope || []).join(', ') + ' / ' + r.evidence_domain) + '</summary>' + researchDetail(r) + '</details>').join('') +
+        (pg.offset > 0 ? btn('research-records','Previous records',String(Math.max(0,pg.offset-pg.limit))) : '') +
+        (pg.offset + pg.limit < pg.total ? btn('research-records','More records',String(pg.offset+pg.limit)) : '') +
+        '<details class="gf-card" data-load="stats"' + (s.researchStats ? ' open' : '') + '><summary>Strongest statistics</summary><div data-body>' + (s.researchStats ? statisticRows(s.researchStats) : '<p>Loading…</p>') + '</div></details>' +
+        '<details class="gf-card" data-load="rules"' + (s.researchRules ? ' open' : '') + '><summary>Claim rules · ' + c.rules + '</summary><div data-body>' + (s.researchRules ? ruleRows(s.researchRules) : '<p>Loading…</p>') + '</div></details>' +
         '<section class="gf-card"><h3>Background research</h3><p class="gf-note">Background only. Historical prose may contain superseded wording; use the canonical records and rules for external claims.</p>' +
-        (s.researchBackground ? '<p>' + s.researchBackground.total + ' matching sections</p>' + s.researchBackground.sections.map(r=>'<details><summary>' + esc(r.title || r.section_id) + '</summary><p class="gf-meta">' + esc(r.section_id + ' · ' + r.source_locator) + '</p><pre style="white-space:pre-wrap;overflow-wrap:anywhere">' + esc(r.content_markdown) + '</pre></details>').join('') + (s.researchBackground.offset > 0 ? btn('research-page','Previous sections',String(Math.max(0,s.researchBackground.offset-20))) : '') + (s.researchBackground.offset + 20 < s.researchBackground.total ? btn('research-page','More sections',String(s.researchBackground.offset+20)) : '') : '<p>Enter a search to find background sections.</p>') + '</section>');
+        (s.researchBackground ? '<p>' + s.researchBackground.total + ' matching sections</p>' + s.researchBackground.sections.map(r=>'<details><summary>' + esc(r.title || r.section_id) + '</summary><p class="gf-meta">' + esc(r.section_id + ' · ' + r.source_locator) + '</p><pre style="white-space:pre-wrap;overflow-wrap:anywhere">' + esc(r.content_markdown) + '</pre></details>').join('') + (s.researchBackground.offset > 0 ? btn('research-page','Previous sections',String(Math.max(0,s.researchBackground.offset-20))) : '') + (s.researchBackground.offset + 20 < s.researchBackground.total ? btn('research-page','More sections',String(s.researchBackground.offset+20)) : '') : '<p>Enter a search to find background sections.</p>') + '</section>';
+      // Statistics and claim rules load only when opened.
+      el.querySelectorAll('details[data-load]').forEach((d) => {
+        d.ontoggle = async () => {
+          if (!d.open) return;
+          const body = d.querySelector('[data-body]');
+          try {
+            if (d.dataset.load === 'stats' && !s.researchStats) { s.researchStats = (await researchCall('research_statistics', { packet: s.researchPacket })).statistics; body.innerHTML = statisticRows(s.researchStats); }
+            if (d.dataset.load === 'rules' && !s.researchRules) { s.researchRules = (await researchCall('research_rules')).rules; body.innerHTML = ruleRows(s.researchRules); }
+          } catch (e) { body.innerHTML = '<p class="gf-note">' + esc(e.message) + '</p>'; }
+        };
+      });
       const form = el.querySelector('#gf-research-form');
       if (form) form.onsubmit = async event => {
         event.preventDefault();
@@ -594,7 +694,8 @@
         const values = new FormData(form);
         s.researchQuery = String(values.get('query') || '').slice(0,300);
         s.researchPacket = String(values.get('packet') || '');
-        await perform('research-page','0');
+        s.researchStats = null;
+        await perform('research-search','0');
       };
     }
     function renderPrograms(el) {
@@ -805,7 +906,7 @@
                 '</div>' + (ans?.status === 'NEEDS_INPUT' ? '<div class="gf-callout"><strong>This answer needs more information.</strong>' + (a.inputs || []).filter(i => i.question_id === q.id && i.status !== 'RESOLVED').map(i => '<p>' + esc(i.prompt) + '</p>').join('') + '<button data-apptab="input" class="btn btn-ghost btn-sm">Answer these questions</button></div>' : '') + '<details><summary>Why did OA say this?</summary>' +
                 (ans?.evidence_ids || [])
                   .map((id) => {
-                    const f = s.data.brain.facts.find((f) => f.id === id);
+                    const f = evidenceFact(id);
                     return (
                       "<p><strong>" +
                       esc(f?.display_name || "Unavailable evidence") +
@@ -1106,7 +1207,17 @@
           });
           modal.querySelector('[data-action="advanced-fact"]').onclick = () => { modal.close(); perform('fact', id); };
         } else if (action === "research-page") {
-          s.researchBackground = await api("research_search", { query: s.researchQuery, offset: Number(id) });
+          s.researchBackground = await researchCall("research_search", { query: s.researchQuery, offset: Number(id) });
+          render();
+        } else if (action === "research-search") {
+          s.researchPage = await researchCall("research_records", { query: s.researchQuery, packet: s.researchPacket, offset: 0 });
+          s.researchBackground = s.researchQuery.trim() ? await researchCall("research_search", { query: s.researchQuery, offset: 0 }) : null;
+          render();
+        } else if (action === "research-records") {
+          s.researchPage = await researchCall("research_records", { query: s.researchQuery, packet: s.researchPacket, offset: Number(id) });
+          render();
+        } else if (action === "research-reload") {
+          s.researchError = "";
           render();
         } else if (action === "research-document") {
           download(await api("research_document", { package_version: id }));
@@ -1131,6 +1242,7 @@
           s.app = r.app;
           s.snapshots = r.snapshots;
           s.data.brain = r.brain;
+          setRefs(r.brain);
           s.tab = "applications";
           s.appTab = "questions";
           render();
@@ -1210,10 +1322,11 @@
             verification_status: "NEEDS_VERIFICATION",
             sensitivity_level: "INTERNAL",
           };
-          if (f.research) {
-            // Research facts carry a reference; the full record is in the Research Library data.
-            const record = (s.data.brain.research?.records || []).find(r => r.package_version === f.research.package_version && r.record_id === f.research.record_id);
-            dialog("Research evidence · read only", record ? researchDetail(record) : '<p>This research record is not in the current library. Refresh and try again.</p>', async () => {});
+          const ref = f.research ? f : s.researchRefs[id];
+          if (ref?.research) {
+            // Research facts carry a reference; the full record is fetched when opened.
+            const { records } = await researchCall("research_records", { records: [ref.research] });
+            dialog("Research evidence · read only", records[0] ? researchDetail(records[0]) : '<p>This research record is not available to this workspace. Refresh and try again.</p>');
             return;
           }
           dialog(
@@ -1697,7 +1810,7 @@
           ).value;
           const a = s.app.answers.find((a) => a.question_id === id);
           const facts = s.data.brain.facts.filter(allowed);
-          dialog(
+          const picker = dialog(
             "Evidence for this answer",
             '<p>Select the facts that support this answer. A separate claim audit checks whether they support what it actually says.</p><div class="gf-evidence">' +
               facts
@@ -1715,6 +1828,7 @@
                 )
                 .join("") +
               "</div>" +
+              researchPicker((a?.evidence_ids || []).filter((e) => !facts.some((f) => f.id === e))) +
               check(
                 "layout",
                 "I checked page / ambiguous character limits in the funder format",
@@ -1730,6 +1844,7 @@
               delete s.unsaved[id];
             },
           );
+          wireResearchPicker(picker);
         } else if (action === "audit")
           await mutate("audit_answer", { question_id: id });
         else if (action === "approve-answer")
@@ -1809,8 +1924,8 @@
               });
             },
           );
-        else if (action === "eligibility-review")
-          dialog(
+        else if (action === "eligibility-review") {
+          const review = dialog(
             "Executive eligibility review",
             area("note", "Evidence-based eligibility finding") +
               '<div class="gf-evidence">' +
@@ -1825,7 +1940,8 @@
                     "</label>",
                 )
                 .join("") +
-              "</div>",
+              "</div>" +
+              researchPicker([]),
             async (f) => {
               await mutate("review_eligibility", {
                 rule_id: id,
@@ -1834,6 +1950,8 @@
               });
             },
           );
+          wireResearchPicker(review);
+        }
         else if (action === "attachments-edit") {
           const attachments = s.app.content.attachments || [];
           dialog(
