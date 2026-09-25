@@ -78,7 +78,8 @@ async function submitCandidate(db,candidate,{runId,method,observationKey,provena
   const c=normalized(candidate);
   const duplicate=compareCandidate(c,records||await registry(db),aliases||await db.all('source_aliases'));
   const q=quality(c,duplicate);
-  const verified=!!c.fetched_at;
+  // Submitter-supplied evidence is never verification, even if a caller set fetched_at.
+  const verified=!!c.fetched_at&&!c.submitted_evidence;
   const row=await db.rpc('source_ingest_candidate',{p_candidate:{identity_key:identityKey(c),source_name:c.source_name||c.program_name||c.source_url,source_url:c.source_url,normalized_url:c.normalized_url,state_code:c.target_state||null,proposed:c,scores:q.scores,duplicate_matches:duplicate.matches,duplicate_outcome:q.outcome,matched_program_id:duplicate.matched_program_id,quality_ready:q.quality_ready,reason:duplicate.reason,reason_code:q.reason_code,discovery_method:method,first_run_id:runId||null,...(verified?{last_verified_at:c.fetched_at}:{})},p_sighting:{run_id:runId||null,observation_key:observationKey,provenance}});
   return {row,duplicate,quality:q};
 }
@@ -123,17 +124,10 @@ async function importExternalBatch(db,job) {
     if(duplicate.outcome==='EXISTING')counts.exact_duplicate++;
     else if(['POSSIBLE_DUPLICATE_REVIEW','MATERIAL_DISTINCT_TRACK'].includes(duplicate.outcome))counts.possible_duplicate++;
     else counts.new_candidate++;
-    // A trusted submission that came back verified (parseTrusted always sets
-    // fetched_at once page_text was processed, whether or not any individual
-    // claim was grounded) already went through the exact check this VALIDATE
-    // job exists to perform, so queueing one here would just re-fetch the
-    // same page this submitter already supplied -- exactly the redundant
-    // network/AI cost TRUSTED_AUTOMATION exists to avoid. A submission that
-    // for any reason wasn't verified (parseTrusted only sets fetched_at when
-    // it successfully processed page_text) still falls through to the same
-    // VALIDATE pipeline as any other import.
-    const alreadyVerified=batch.mode==='TRUSTED_AUTOMATION'&&!!row.last_verified_at;
-    if(!['APPROVED','REJECTED','MERGED','UPDATED'].includes(row.status)&&!alreadyVerified){
+    // Every import, trusted or not, still gets this system's own independent
+    // VALIDATE fetch. A TRUSTED_AUTOMATION submission is a hint: its grounded
+    // quotes help locate evidence but prove nothing on their own.
+    if(!['APPROVED','REJECTED','MERGED','UPDATED'].includes(row.status)){
       counts.verification_queued++;
       await enqueue(db,{kind:'VALIDATE',state:batch.state_code,key:'validate:'+row.id,runId:job.run_id,payload:{candidate_id:row.id,url:row.source_url,name:row.source_name}});
     }
@@ -175,6 +169,8 @@ async function publish(db,program,state) {
 }
 async function automaticallyApprove(db,candidate) {
   if(['APPROVED','UPDATED','MERGED','REJECTED'].includes(candidate.status))return {outcome:'ALREADY_DECIDED',program_id:candidate.matched_program_id};
+  // Submitter-supplied evidence never auto-approves. Independent VALIDATE replaces it.
+  if(candidate.proposed?.submitted_evidence)return {outcome:'AWAITING_INDEPENDENT_VERIFICATION'};
   if(!candidate.quality_ready||!candidate.last_verified_at||!candidate.proposed?.program_name)return {outcome:'AWAITING_EVIDENCE'};
   // Older semantic reviews discarded derived identity fields, and normalization
   // rules can change between releases. Rebuild only derived metadata from the
