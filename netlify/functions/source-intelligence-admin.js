@@ -9,7 +9,8 @@ const json=(statusCode,data)=>({statusCode,headers:{'Content-Type':'application/
 // netlify/functions/source-intelligence-import.js) requires a credential to
 // carry this permission in addition to the default SOURCE_INTELLIGENCE_IMPORT
 // -- granted here, not by the credential's owner, since a submitter in this
-// mode skips the independent verification fetch every other mode still gets.
+// mode supplies its own evidence. That evidence is a hint only: the record is
+// still independently fetched and verified before any automatic approval.
 const TRUSTED_AUTOMATION_PERMISSION='SOURCE_INTELLIGENCE_TRUSTED_AUTOMATION';
 // import_batches is the same status/count row the Trusted External Ingestion API
 // uses (netlify/functions/source-intelligence-import.js); a CSV upload here is
