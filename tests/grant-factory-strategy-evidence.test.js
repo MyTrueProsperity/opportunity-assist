@@ -25,7 +25,8 @@ test.before(async () => {
     if (task === "strategy") return { data: STRATEGY };
     throw Error("Unexpected task " + task);
   } };
-  s = service(f.real, ai);
+  // Strategy runs as a background job; run it inline here.
+  s = service(f.real, ai, { dispatch: (ctx, job) => s.runStrategyJob(ctx, job.id) });
   await addProgram(f.ORG);
   const brain = await f.real.brain(f.ctx);
   program = brain.programs[0];
@@ -51,9 +52,13 @@ async function addProgram(org) {
     description: "Paid apprenticeships for youth.", target_population_summary: "Youth ages 16-24", verification_status: "APPROVED",
     external_use_allowed: true, grant_use_allowed: true, source_reference: "Board", source_locator: "Plan p.1" })]);
 }
-async function runStrategy(ctx = f.ctx, a = app) {
-  const fresh = await s.handle(ctx, { action: "get_application", application_id: a.id });
-  return s.handle(ctx, { action: "strategy", application_id: a.id, revision: fresh.app.revision });
+// Queue strategy (the job runs inline), then return the saved application.
+// A failed job is raised as an error carrying its failure code.
+async function runStrategy(ctx = f.ctx, a = app, svc = s) {
+  const fresh = await svc.handle(ctx, { action: "get_application", application_id: a.id });
+  const out = await svc.handle(ctx, { action: "strategy", application_id: a.id, revision: fresh.app.revision });
+  if (out.job.status === "FAILED") throw Object.assign(Error(out.job.error), { code: out.job.failure_code });
+  return (await svc.handle(ctx, { action: "get_application", application_id: a.id })).app;
 }
 const research = (req) => req.facts.filter((x) => x.research);
 
@@ -149,7 +154,7 @@ test("evidence_chain and budget_consistency are saved; fabricated research ids a
   assert.ok(out.content.strategy_evidence.records.every((r) => r.fact_id && r.record_id && r.package_version && r.reasons.length));
   // A record that exists in the library but was not supplied.
   reply.strategy = () => ({ ...STRATEGY, evidence_chain: "Need: GW-250 proves everything." });
-  await assert.rejects(runStrategy(), (e) => e.status === 422 && /GW-250/.test(e.message));
+  await assert.rejects(runStrategy(), (e) => e.code === "EVIDENCE_CHAIN" && /GW-250/.test(e.message));
   const after = await s.handle(f.ctx, { action: "get_application", application_id: app.id });
   assert.match(after.app.content.strategy.evidence_chain, /supports local need/, "the failed run saved nothing");
   delete reply.strategy;
@@ -196,12 +201,12 @@ test("the request budget prunes lower-ranked records and keeps the strongest who
 });
 
 test("organization isolation: another org's strategy never sees this org's research", async () => {
-  const s2 = service(f.real, { enabled: true, async call(task, data) { seen.other = data; return { data: STRATEGY }; } });
+  const s2 = service(f.real, { enabled: true, async call(task, data) { seen.other = data; return { data: STRATEGY }; } }, { dispatch: (ctx, job) => s2.runStrategyJob(ctx, job.id) });
   await addProgram(f.OTHER);
   const b2 = await f.real.brain(f.otherCtx);
   let a2 = await s2.handle(f.otherCtx, { action: "new_application", funder_name: "Aquaponics Apprenticeship Fund", grant_program_name: "Aquaponics grant", text: "1. Describe aquaponics apprenticeship need." });
   a2 = await s2.handle(f.otherCtx, { action: "save_application", application_id: a2.id, revision: a2.revision, application: { primary_program_id: b2.programs[0].id } });
-  a2 = await s2.handle(f.otherCtx, { action: "strategy", application_id: a2.id, revision: a2.revision });
+  await runStrategy(f.otherCtx, a2, s2);
   const pkgs = new Set(research(seen.other).map((x) => x.research.package_version));
   assert.deepEqual([...pkgs], ["VOLUME_OTHER"]);
   assert.equal(JSON.stringify(seen.other).includes("CFSC-001"), false);
@@ -230,7 +235,6 @@ test("the provider refuses an evidence request over budget before contacting the
   await assert.rejects(p.call("strategy", huge), (e) => e.status === 413);
   await assert.rejects(p.call("audit", { ...huge, answer: "A sentence." }), (e) => e.status === 413);
   assert.equal(fetched, 0);
-  // The budget is well inside the model's context window.
   // The hard guard (estimated tokens, which overstate real usage) plus the
   // 4,500-token output allowance stays well inside the context window, and
   // strategy selects evidence below the guard.
