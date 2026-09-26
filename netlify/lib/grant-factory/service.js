@@ -5,6 +5,7 @@ const P = require("./parser");
 const { seed } = require("./seed");
 const R = require("./research");
 const SE = require("./strategy-evidence");
+const SQ = require("./strategy-quantities");
 const AI = require("./ai");
 const { researchRules } = R;
 const { exportPackage } = require("./export");
@@ -224,6 +225,13 @@ function service(repo, ai, { dispatch = null } = {}) {
       Object.assign(result, { cited_records: citations.cited, invalid_citations: citations.invalid });
       if (citations.invalid.length)
         return await fail("EVIDENCE_CHAIN", "The strategy cited research that was not selected as evidence for it (" + citations.invalid.slice(0, 5).join(", ") + "). Nothing was saved; generate again.");
+      // Applicant-specific amounts, rates, quantities, staffing, durations and
+      // calculations must come from what was supplied; missing inputs are
+      // gaps, not estimates.
+      const unsupported = SQ.unsupportedQuantities(strategy, built.request);
+      result.unsupported_quantities = unsupported.slice(0, 25);
+      if (unsupported.length)
+        return await fail("UNSUPPORTED_QUANTITY", "The strategy stated amounts or quantities that the supplied facts, application and selected research do not support (" + [...new Set(unsupported.map((u) => u.text))].slice(0, 5).join("; ") + "). Missing inputs must be named as gaps, not estimated. Nothing was saved; generate again.");
       // Re-read and re-check immediately before saving; the save itself
       // rejects any concurrent change to the application or approved facts.
       app = await repo.app(ctx, job.application_id);
