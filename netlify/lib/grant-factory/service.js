@@ -219,9 +219,11 @@ function service(repo, ai, { dispatch = null } = {}) {
         return await fail(timeout ? "AI_TIMEOUT" : "AI_FAILED", timeout ? "The AI did not finish the strategy in time. Nothing was saved; generate again." : e.message);
       }
       Object.assign(result, { model_ms: Date.now() - started, model: meta.model, input_tokens: meta.usage?.input_tokens ?? null, output_tokens: meta.usage?.output_tokens ?? null });
-      const unsupplied = SE.unsuppliedReferences(strategy, built.request, brain.research?.records);
-      if (unsupplied.length)
-        return await fail("EVIDENCE_CHAIN", "The strategy named research that was not supplied to it (" + unsupplied.slice(0, 5).join(", ") + "). Nothing was saved; generate again.");
+      // Only the research selected as evidence for this request may be cited.
+      const citations = SE.researchCitations(strategy, built.selected, brain.research);
+      Object.assign(result, { cited_records: citations.cited, invalid_citations: citations.invalid });
+      if (citations.invalid.length)
+        return await fail("EVIDENCE_CHAIN", "The strategy cited research that was not selected as evidence for it (" + citations.invalid.slice(0, 5).join(", ") + "). Nothing was saved; generate again.");
       // Re-read and re-check immediately before saving; the save itself
       // rejects any concurrent change to the application or approved facts.
       app = await repo.app(ctx, job.application_id);
@@ -237,7 +239,7 @@ function service(repo, ai, { dispatch = null } = {}) {
         skipped_for_size: built.skipped_for_size, max_records: SE.STRATEGY_RESEARCH_MAX,
         request_chars: built.chars, estimated_tokens: result.estimated_tokens, token_budget: SE.STRATEGY_TOKEN_BUDGET,
         model: result.model, input_tokens: result.input_tokens, output_tokens: result.output_tokens,
-        records: result.records,
+        records: result.records, cited_records: citations.cited,
       };
       invalidateAnswers(app);
       if (!(await repo.strategyJobs.hold(ctx, job)))
