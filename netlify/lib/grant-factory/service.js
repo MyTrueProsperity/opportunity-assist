@@ -221,6 +221,7 @@ function service(repo, ai, { dispatch = null } = {}) {
       }
       Object.assign(result, { model_ms: Date.now() - started, model: meta.model, input_tokens: meta.usage?.input_tokens ?? null, output_tokens: meta.usage?.output_tokens ?? null });
       // Only the research selected as evidence for this request may be cited.
+      const validationStarted = Date.now();
       const citations = SE.researchCitations(strategy, built.selected, brain.research);
       Object.assign(result, { cited_records: citations.cited, invalid_citations: citations.invalid });
       if (citations.invalid.length)
@@ -228,10 +229,15 @@ function service(repo, ai, { dispatch = null } = {}) {
       // Applicant-specific amounts, rates, quantities, staffing, durations and
       // calculations must come from what was supplied; missing inputs are
       // gaps, not estimates.
-      const unsupported = SQ.unsupportedQuantities(strategy, built.request);
-      result.unsupported_quantities = unsupported.slice(0, 25);
+      // Research-derived findings must carry their selected record id in the
+      // same sentence.
+      const analysis = SQ.analyze(strategy, built.request, brain.research);
+      const unsupported = analysis.unsupported;
+      Object.assign(result, { unsupported_quantities: unsupported.slice(0, 25), uncited_research: analysis.uncited.slice(0, 25), validation_ms: Date.now() - validationStarted });
       if (unsupported.length)
         return await fail("UNSUPPORTED_QUANTITY", "The strategy stated amounts or quantities that the supplied facts, application and selected research do not support (" + [...new Set(unsupported.map((u) => u.text))].slice(0, 5).join("; ") + "). Missing inputs must be named as gaps, not estimated. Nothing was saved; generate again.");
+      if (analysis.uncited.length)
+        return await fail("EVIDENCE_CHAIN", "Research findings must cite their selected record id in the same sentence (" + [...new Set(analysis.uncited.map((u) => u.text))].slice(0, 3).join("; ") + "). Nothing was saved; generate again.");
       // Re-read and re-check immediately before saving; the save itself
       // rejects any concurrent change to the application or approved facts.
       app = await repo.app(ctx, job.application_id);
