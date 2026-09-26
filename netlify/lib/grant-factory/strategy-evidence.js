@@ -229,19 +229,71 @@ function strategyRules(brain, facts) {
     (!(r.record_ids || []).length || r.record_ids.some((id) => selected.has(r.package_version + "/" + canonical(r.package_version, id)))));
 }
 
-// Record ids the model named that were not in its request. Any research id in
-// the library that appears in the output but nowhere in the input is treated
-// as fabricated evidence.
-function unsuppliedReferences(output, request, library) {
-  const ids = new Set((library || []).map((r) => r.record_id));
-  // Identifier-shaped tokens (letters/digits joined by - _ .), one linear pass
-  // over each text rather than one scan per library record.
-  const tokens = (value) => new Set(JSON.stringify(value || {}).match(/[A-Za-z0-9]+(?:[-_.][A-Za-z0-9]+)*/g) || []);
-  const supplied = tokens(request);
-  return [...tokens(output)].filter((t) => ids.has(t) && !supplied.has(t)).sort();
+// Research citations in a strategy, checked against the evidence actually
+// selected for that request. The allowlist is the selected research facts and
+// nothing else: a record id that reached the model only through claim rules,
+// methodology, the planning crosswalk, narrative guidance, quarantine notes,
+// funder packets, statistics, aliases or any other prompt text was never
+// supplied as evidence and cannot be cited.
+//
+// A citation is any research identifier from the library (a record id or a
+// legacy alias) that appears in the output. When the model names a package
+// version next to the id ("EM-011 (ECONOMIC_MOBILITY_V1_...)" or
+// "ECONOMIC_MOBILITY_V1_.../EM-011"), the exact package/record pair must be
+// selected; otherwise the id must be the record_id of a selected record.
+// Organization facts, methodology ids and other non-research identifiers are
+// not research citations and are not checked here.
+const TOKEN = /[A-Za-z0-9]+(?:[-_.][A-Za-z0-9]+)*/g;
+const PACKAGE_WORD = /^(package|package_version|version|pkg|from|in)$/i;
+function strings(value, out = []) {
+  if (typeof value === "string") out.push(value);
+  else if (Array.isArray(value)) for (const v of value) strings(v, out);
+  else if (value && typeof value === "object") for (const v of Object.values(value)) strings(v, out);
+  return out;
+}
+function researchCitations(output, selected, bundle) {
+  const known = new Set();
+  for (const r of bundle?.records || []) known.add(r.record_id);
+  for (const a of bundle?.aliases || []) if (a.legacy_record_id) known.add(a.legacy_record_id);
+  const versions = new Set([...(bundle?.records || []), ...selected.map((f) => f.research)].map((r) => r.package_version));
+  const allowed = new Set(selected.map((f) => f.research.package_version + "/" + f.research.record_id));
+  const allowedIds = new Set(selected.map((f) => f.research.record_id));
+  // Package versions a token can name: the exact version or a leading part
+  // of one ("ECONOMIC_MOBILITY_V1"). Anything else is not a package name.
+  const packagesNamed = (t) => {
+    if (known.has(t) || !/_/.test(t)) return null;
+    const hit = [...versions].filter((v) => v === t || v.startsWith(t + "_") || v.startsWith(t + "-"));
+    return hit.length ? hit : null;
+  };
+  const cited = new Map(); // "pkg/id" or id -> { id, packages, valid }
+  for (const text of strings(output)) {
+    const toks = [...text.matchAll(TOKEN)].map((m) => ({ t: m[0], at: m.index, end: m.index + m[0].length }));
+    const gap = (a, b) => text.slice(a.end, b.at);
+    for (let i = 0; i < toks.length; i++) {
+      const id = toks[i].t;
+      if (!known.has(id)) continue;
+      let packages = null;
+      // Following: "EM-011 (PKG)", "EM-011, package PKG".
+      let j = i + 1;
+      if (toks[j] && PACKAGE_WORD.test(toks[j].t) && /^[\s(\[,:;=-]*$/.test(gap(toks[i], toks[j]))) j++;
+      if (toks[j] && /^[\s(\[,:;=-]*$/.test(gap(toks[j - 1], toks[j]))) packages = packagesNamed(toks[j].t);
+      // Preceding: "PKG/EM-011", "PKG: EM-011", "PKG EM-011".
+      if (!packages && toks[i - 1] && /^[\s/:]*$/.test(gap(toks[i - 1], toks[i]))) packages = packagesNamed(toks[i - 1].t);
+      const valid = packages ? packages.some((p) => allowed.has(p + "/" + id)) : allowedIds.has(id);
+      const key = (packages ? packages.join("|") + "/" : "") + id;
+      const prev = cited.get(key);
+      cited.set(key, { id, packages, valid: prev ? prev.valid && valid : valid });
+    }
+  }
+  const all = [...cited.values()];
+  const label = (c) => (c.packages ? c.packages[0] + "/" : "") + c.id;
+  return {
+    cited: [...new Set(all.filter((c) => c.valid).map(label))].sort(),
+    invalid: [...new Set(all.filter((c) => !c.valid).map(label))].sort(),
+  };
 }
 
 module.exports = {
   MODEL_CONTEXT_TOKENS, CHARS_PER_TOKEN, EVIDENCE_REQUEST_TOKEN_BUDGET, STRATEGY_TOKEN_BUDGET, STRATEGY_RESEARCH_MAX, BOOKKEEPING, PACKAGE_SHARE,
-  estimateTokens, size, terms, rankResearch, strategyRequest, strategyRules, strategyFact, evidenceRecord, unsuppliedReferences,
+  estimateTokens, size, terms, rankResearch, strategyRequest, strategyRules, strategyFact, evidenceRecord, researchCitations,
 };
