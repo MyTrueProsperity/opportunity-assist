@@ -59,6 +59,12 @@ async function createTestRepo() {
   );
   await pg.exec(strategyJobs);
   await pg.exec(strategyJobs);
+  const rejections = fs.readFileSync(
+    path.join(__dirname, "../../supabase/grant-factory/20260927000001_strategy_rejections.sql"),
+    "utf8",
+  );
+  await pg.exec(rejections);
+  await pg.exec(rejections);
   await pg.exec(
     `insert into gf_workspaces(org_id) values('${ORG}'),('${OTHER}');insert into gf_members values('${ORG}','${OWNER}','OWNER'),('${ORG}','${MANAGER}','GRANT_MANAGER'),('${OTHER}','${OUTSIDER}','OWNER');`,
   );
