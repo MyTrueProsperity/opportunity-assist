@@ -143,6 +143,9 @@
       researchError: "",
       researchRefs: {},
       reviewDocument: null,
+      // Background strategy job for the open application (status only).
+      strategyJob: null,
+      strategyWatch: 0,
     };
     session = s;
     main.innerHTML =
@@ -351,6 +354,8 @@
           s.app = null;
           s.snapshots = [];
           s.unsaved = {};
+          s.strategyJob = null;
+          s.strategyWatch++;
           s.researchBackground = null;
           s.researchPacket = "";
           s.researchQuery = "";
@@ -578,6 +583,75 @@
     // Startup carries only a research summary. Records, statistics, rules and
     // research evidence are fetched in bounded pages when a view needs them,
     // and cached only for the organization that requested them.
+    // Strategy generation runs as a background job. The page polls a small
+    // status call (never the whole application) and loads the application
+    // once, when the job completes. Leaving or refreshing the page does not
+    // stop the job; opening the application again reconnects to it.
+    const STRATEGY_POLL_MS = 4000;
+    async function watchStrategy() {
+      const token = ++s.strategyWatch;
+      const appId = s.app?.id, org = s.orgId;
+      if (!appId) return;
+      const current = () => token === s.strategyWatch && s.app?.id === appId && s.orgId === org;
+      while (current()) {
+        let job;
+        try {
+          job = (await api("strategy_status", { application_id: appId })).job;
+        } catch (e) {
+          if (!current()) return;
+          s.strategyJob = { ...(s.strategyJob || {}), poll_error: e.message };
+          render();
+          await new Promise((r) => setTimeout(r, STRATEGY_POLL_MS * 2));
+          continue;
+        }
+        if (!current()) return;
+        s.strategyJob = job;
+        if (!job || !["QUEUED", "RUNNING"].includes(job.status)) {
+          if (job?.status === "COMPLETED") {
+            const r = await api("get_application", { application_id: appId });
+            if (!current()) return;
+            s.app = r.app;
+            s.snapshots = r.snapshots;
+            s.data.brain = r.brain;
+            setRefs(r.brain);
+            render();
+            message("Strategy generated. Review it, then save it as reviewed before drafting.");
+          } else {
+            render();
+            if (job?.status === "FAILED") message(job.error || "Strategy generation failed. Nothing was saved.", true);
+          }
+          return;
+        }
+        render();
+        await new Promise((r) => setTimeout(r, STRATEGY_POLL_MS));
+      }
+    }
+    async function checkStrategy() {
+      if (!s.app) return;
+      const appId = s.app.id;
+      try {
+        const { job } = await api("strategy_status", { application_id: appId });
+        if (s.app?.id !== appId) return;
+        s.strategyJob = job;
+        if (job && ["QUEUED", "RUNNING"].includes(job.status)) watchStrategy();
+        else render();
+      } catch {}
+    }
+    function strategyStatus() {
+      const j = s.strategyJob;
+      if (!j || j.application_id !== s.app?.id) return "";
+      if (["QUEUED", "RUNNING"].includes(j.status)) {
+        const since = Math.max(0, Math.round((Date.now() - new Date(j.started_at || j.created_at).getTime()) / 1000));
+        return '<div class="gf-message" role="status"><strong>' + (j.status === "QUEUED" ? "Strategy generation is queued." : "Generating strategy…") +
+          "</strong> This usually takes a minute or two (" + since + " seconds so far). You can leave this page; the strategy is saved when it finishes and appears here when you return." +
+          (j.poll_error ? " Checking progress again after a connection problem." : "") + "</div>";
+      }
+      if (j.status === "FAILED" && !(s.app.content.strategy_evidence?.generated_at > (j.finished_at || ""))) {
+        return '<div class="gf-message error" role="alert"><strong>Strategy generation did not finish.</strong> ' + esc(j.error || "Nothing was saved.") +
+          " Your previous strategy, if any, is unchanged. Choose Generate strategy to try again.</div>";
+      }
+      return "";
+    }
     function resetResearch() {
       s.researchLib = null; s.researchPage = null; s.researchStats = null; s.researchRules = null;
       s.researchLoading = false; s.researchError = ""; s.researchRefs = {};
@@ -950,9 +1024,11 @@
           '<div class="gf-card"><div class="gf-row"><h3>Application strategy</h3>' +
           (!locked
             ? btn("application-details", "Edit details & strategy") +
-              btn("strategy", "Generate strategy")
+              (["QUEUED", "RUNNING"].includes(s.strategyJob?.application_id === s.app.id && s.strategyJob?.status)
+                ? '<button type="button" class="btn btn-ghost" disabled>Generating strategy…</button>'
+                : btn("strategy", "Generate strategy"))
             : "") +
-          "</div><p><strong>Selected program:</strong> " +
+          "</div>" + strategyStatus() + "<p><strong>Selected program:</strong> " +
           esc(p?.name || "Not selected") +
           '</p><p class="gf-note">Request amount: ' +
           esc(a.request_amount ?? "Not set") +
@@ -1245,7 +1321,10 @@
           setRefs(r.brain);
           s.tab = "applications";
           s.appTab = "questions";
+          s.strategyJob = null;
+          s.strategyWatch++;
           render();
+          checkStrategy();
         } else if (action === "new")
           dialog(
             "New application",
@@ -1863,7 +1942,16 @@
             },
           );
         else if (action === "confirm-parser") await mutate("confirm_parser");
-        else if (action === "strategy") await mutate("strategy");
+        else if (action === "strategy") {
+          const r = await api("strategy", { application_id: s.app.id, revision: s.app.revision });
+          s.strategyJob = r.job;
+          render();
+          if (["QUEUED", "RUNNING"].includes(r.job?.status)) {
+            message(r.created ? "Strategy generation started. This usually takes a minute or two." : "Strategy generation is already running for this application.");
+            watchStrategy();
+          } else if (r.job?.status === "COMPLETED") watchStrategy();
+          else if (r.job?.status === "FAILED") message(r.job.error || "Strategy generation failed. Nothing was saved.", true);
+        }
         else if (action === "refresh-inputs") await mutate("refresh_inputs");
         else if (action === "resolve-input") {
           const i = s.app.content.inputs.find((i) => i.id === id);

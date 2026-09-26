@@ -7,7 +7,29 @@ const headers = {
   "Cache-Control": "no-store",
   "X-Content-Type-Options": "nosniff",
 };
-function makeHandler({ repo, ai } = {}) {
+// Start the background strategy worker on this same deployment, forwarding
+// the caller's session so the worker authenticates it independently.
+function strategyDispatcher(event, fetcher = fetch) {
+  const auth = event.headers?.authorization || event.headers?.Authorization;
+  let origin = null;
+  try {
+    origin = event.rawUrl ? new URL(event.rawUrl).origin : null;
+  } catch {}
+  // rawUrl is the deployment that received this request (production or a
+  // deploy preview); caller-supplied Host headers are never used.
+  origin = origin || process.env.URL || null;
+  if (!auth || !origin) return null;
+  return async (ctx, job) => {
+    const r = await fetcher(origin + "/.netlify/functions/grant-factory-strategy-background", {
+      method: "POST",
+      headers: { Authorization: auth, "Content-Type": "application/json" },
+      body: JSON.stringify({ org_id: ctx.org_id, job_id: job.id }),
+      signal: AbortSignal.timeout(10000),
+    });
+    if (!r.ok) throw new Error("Background worker returned " + r.status);
+  };
+}
+function makeHandler({ repo, ai, dispatch } = {}) {
   return async (event) => {
     if (event.httpMethod !== "POST")
       return {
@@ -36,10 +58,9 @@ function makeHandler({ repo, ai } = {}) {
       }
       const repositoryInstance = repo || repository();
       const ctx = await repositoryInstance.context(event, body.org_id);
-      const result = await service(repositoryInstance, ai || provider()).handle(
-        ctx,
-        body,
-      );
+      const result = await service(repositoryInstance, ai || provider(), {
+        dispatch: dispatch === undefined ? strategyDispatcher(event) : dispatch,
+      }).handle(ctx, body);
       return { statusCode: 200, headers, body: JSON.stringify(result) };
     } catch (e) {
       let status = e.status || 500;
@@ -65,3 +86,4 @@ function makeHandler({ repo, ai } = {}) {
 }
 exports.handler = makeHandler();
 exports.makeHandler = makeHandler;
+exports.strategyDispatcher = strategyDispatcher;
