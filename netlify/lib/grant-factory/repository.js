@@ -221,6 +221,8 @@ function repository(env = process.env, fetcher = fetch, db = createDb(env, fetch
       hold: (ctx, job) => db.rpc("gf_strategy_job_hold", { p_org: ctx.org_id, p_job: job.id, p_token: job.lease_token }),
       status: (ctx, appId) => db.rpc("gf_strategy_job_status", { p_org: ctx.org_id, p_actor: ctx.user_id, p_app: id(appId) }),
       dispatched: (ctx, jobId) => db.rpc("gf_strategy_job_dispatched", { p_org: ctx.org_id, p_job: id(jobId) }),
+      // The latest strategy rejected by validation, for diagnosis only.
+      rejection: (ctx, appId) => db.rpc("gf_strategy_job_rejection", { p_org: ctx.org_id, p_actor: ctx.user_id, p_app: id(appId) }),
       };
     },
     async listApps(ctx) {
