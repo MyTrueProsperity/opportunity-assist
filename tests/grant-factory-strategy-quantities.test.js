@@ -103,7 +103,10 @@ test("a supplied amount about something else does not support a claim (no coinci
 });
 test("12. selected research statistics are accepted; unselected or uncited wage figures are not", () => {
   accepted("96% of employers value financial literacy (EP-018).", undefined, "evidence_chain");
+  // Uncited, the same statistic is not an unsupported quantity, but it is an
+  // uncited research finding (see grant-factory-strategy-research-citations).
   accepted("National employer demand: 96% of employers value financial literacy.", undefined, "themes_to_emphasize");
+  assert.ok(SQ.analyze({ ...STRATEGY, themes_to_emphasize: "National employer demand: 96% of employers value financial literacy." }, REQUEST).uncited.some((u) => u.text === "96%"));
   accepted("The median youth wage was $14.50/hour in 2024 (NC-029).", undefined, "evidence_chain");
   // A research wage used as the applicant's own rate, without citing it, is an assumption.
   rejected("Students will be paid $14.50/hour.", ["$14.50/hour"]);
