@@ -25,6 +25,10 @@ const systemPrompt = (task) => BASE + "\n" + instructions[task] + "\n" + RESEARC
 // (18 facts) and audit (one answer's evidence) are bounded by design, and this
 // guard stops any of them from silently outgrowing the model as research grows.
 const EVIDENCE_TASKS = new Set(["strategy", "write", "audit"]);
+// Strategy writes nine substantial sections and runs only in a background
+// function (grant-factory-strategy-background), so it may take longer than a
+// synchronous request. Other tasks keep the 45-second limit.
+const TASK_TIMEOUT_MS = { strategy: 180000 };
 function requestChars(task, data, taskSchema = schemas[task]) {
   return systemPrompt(task).length + JSON.stringify(taskSchema).length + JSON.stringify(data ?? null).length;
 }
@@ -110,7 +114,7 @@ function provider(env = process.env, fetcher = fetch) {
           ],
           tool_choice: { type: "tool", name: "result" },
         }),
-        signal: AbortSignal.timeout(45000),
+        signal: AbortSignal.timeout(TASK_TIMEOUT_MS[task] || 45000),
       });
       if (!r.ok)
         throw new Fault(
@@ -131,4 +135,4 @@ function provider(env = process.env, fetcher = fetch) {
     },
   };
 }
-module.exports = { provider, schemas, validate, requestChars, systemPrompt, EVIDENCE_TASKS };
+module.exports = { provider, schemas, validate, requestChars, systemPrompt, EVIDENCE_TASKS, TASK_TIMEOUT_MS };
