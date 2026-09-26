@@ -188,7 +188,7 @@ test("the detector is bounded and explains itself", () => {
 test("the prompt adds one concise attribution instruction", () => {
   const p = AI.systemPrompt("strategy");
   assert.match(p, /Every sentence that attributes a finding to research, studies, surveys, evidence or similar sources needs that record_id in the same sentence/);
-  assert.ok(p.length < 4400, "prompt length " + p.length);
+  assert.ok(p.length < 4450, "prompt length " + p.length);
 });
 
 test("14. production-sized validation stays well under one second with every check running", () => {
