@@ -57,6 +57,8 @@ const APPROX = /(?:~|≈|\babout\s+|\bapproximately\s+|\bapprox\.?\s+|\broughly\
 const NUM = "(?:\\d{1,3}(?:,\\d{3})+|\\d+)(?:\\.\\d+)?|\\.\\d+";
 const WORDS = Object.keys(WORD_NUMBERS).sort((a, b) => b.length - a.length).join("|");
 const SCAN = new RegExp("(\\$\\s?)?(" + NUM + "|\\b(?:" + WORDS + ")\\b)", "gi");
+// How far past a range dash the second half (and its unit) is read.
+const RANGE_WINDOW = 64;
 const isYear = (v, raw) => /^\d{4}$/.test(raw) && v >= 1900 && v <= 2100;
 
 function parseNumber(raw) {
@@ -139,7 +141,11 @@ function quantities(text) {
     // the kind of the second.
     const range = new RegExp("^\\s?(?:–|—|-|to)\\s?(\\$\\s?)?(" + NUM + ")").exec(rest);
     if (!kind && range) {
-      const second = quantities(s.slice(s.length - rest.length + range[0].length - range[2].length - (range[1] || "").length))[0];
+      // Only the few characters after the dash are read, never the rest of the
+      // text: a full rescan per range made validation exponential in the
+      // number of ranges (about 30 seconds on production evidence).
+      const at = s.length - rest.length + range[0].length - range[2].length - (range[1] || "").length;
+      const second = quantities(s.slice(at, at + RANGE_WINDOW))[0];
       if (second && second.start === 0) { kind = second.kind; strict = second.strict; per = second.per; }
     }
     if (!kind) continue;
@@ -185,19 +191,27 @@ function matches(claim, supplied) {
 const GENERIC = new Set(("hour hours week weeks month months year years day days per annual annually each approximately about typically " +
   "range ranges cost costs total amount amounts one-time depending type").split(" "));
 const subject = (text) => new Set([...terms(text)].filter((t) => !GENERIC.has(t) && !/^\d/.test(t)));
+// Built once per request: every supplied quantity grouped by kind, and every
+// supplied number, so each claim is checked against a small candidate list.
 function supportIndex(texts, { context = false } = {}) {
-  const q = [], n = new Set();
+  const q = [], n = new Set(), byKind = new Map();
   for (const t of texts) {
-    for (const x of quantities(t)) q.push(context ? { ...x, ctx: subject(t.slice(Math.max(0, x.start - 120), x.end + 120)) } : x);
+    for (const x of quantities(t)) {
+      const item = context ? { ...x, ctx: subject(t.slice(Math.max(0, x.start - 120), x.end + 120)) } : x;
+      q.push(item);
+      if (!byKind.has(x.kind)) byKind.set(x.kind, []);
+      byKind.get(x.kind).push(item);
+    }
     for (const v of numbers(t)) n.add(v);
   }
-  return { q, n, context };
+  return { q, n, values: [...n], byKind, context };
 }
 // `ctx` is the subject words near the claim. Organization and application
 // support for a strict claim must share at least one of them.
 function supportedBy(claim, index, ctx) {
-  if (!claim.strict) return [...index.n].some((v) => matches(claim, v)) || index.q.some((s) => matches(claim, s.value));
-  return index.q.some((s) => s.kind === claim.kind && (claim.kind !== "currency" || !s.per || !claim.per || s.per === claim.per) &&
+  if (!index) return false;
+  if (!claim.strict) return index.n.has(claim.value) || index.values.some((v) => matches(claim, v)) || index.q.some((s) => matches(claim, s.value));
+  return (index.byKind.get(claim.kind) || []).some((s) => (claim.kind !== "currency" || !s.per || !claim.per || s.per === claim.per) &&
     (claim.kind === "currency" || !claim.per || !s.per || s.per === claim.per) && matches(claim, s.value) &&
     (!index.context || !ctx || [...s.ctx].some((w) => ctx.has(w))));
 }
@@ -215,11 +229,82 @@ function suppliedSupport(request) {
     const { selection, ...rest } = f;
     research.set(f.research.record_id, supportIndex([JSON.stringify(rest)]));
   }
-  return { org: supportIndex(org, { context: true }), research };
+  const orgText = org.join(" ").toLowerCase();
+  return { org: supportIndex(org, { context: true }), research, sources: sourceNames(request, orgText) };
 }
 
-const SECTION_SPLIT = /\n+|(?<=[.;!?])\s+(?=[A-Z0-9*(\-•])/;
+// Names of the organizations and authors behind the selected research
+// ("Search Institute", "NACE"), so a finding attributed to one of them by
+// name is recognized as research. Names that also appear in the supplied
+// organization facts or application (a partner, a school district) are left
+// out, so ordinary mentions of them are not treated as research.
+function sourceNames(request, orgText) {
+  const names = new Set();
+  const add = (v) => {
+    if (typeof v !== "string") return;
+    for (const part of v.split(/[;,|]|\s\/\s|\s+and\s+/)) {
+      const name = part.replace(/\(.*?\)/g, "").replace(/[.,:\s]+$/, "").trim();
+      if (name.length >= 4 && /^[A-Z]/.test(name) && !/\d/.test(name) && name.split(/\s+/).length <= 8) names.add(name);
+      for (const a of part.match(/\b[A-Z][A-Z&]{2,9}\b/g) || []) names.add(a);
+    }
+  };
+  // "Burch, G. F.; Giambatista, R." -> surnames.
+  const addAuthors = (v) => {
+    for (const a of [].concat(v || [])) if (typeof a === "string")
+      for (const one of a.split(";")) { const surname = one.split(",")[0].replace(/\bet al\.?/i, "").trim(); if (surname.length >= 4 && /^[A-Z][a-z]/.test(surname)) names.add(surname); }
+  };
+  for (const f of request.facts || []) if (f.research) {
+    const r = f.research;
+    add(r.source_org); add(r.publisher); addAuthors(r.source_authors); addAuthors(r.authors); addAuthors(r.author);
+    for (const x of r.sources || []) if (x && typeof x === "object") { add(x.org); add(x.organization); add(x.author); add(x.publisher); }
+  }
+  return [...names].filter((n) => !orgText.includes(n.toLowerCase()) && !/^(?:THE|USA|U\.S)$/.test(n))
+    .map((n) => new RegExp("(?<![\\w-])" + n.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "(?![\\w-])"));
+}
+
+// Wording that presents a statement as a research finding. Such a sentence
+// must carry the selected record id it comes from.
+const RESEARCH_CUE = new RegExp([
+  "\\bmeta-?analys[ie]s\\b", "\\bet al\\b", "\\bRCTs?\\b", "\\brandomi[sz]ed(?: controlled)? (?:trials?|evaluations?|stud(?:y|ies))\\b",
+  "\\bsystematic reviews?\\b", "\\b\\d+[- ](?:study|studies|RCTs?|trials?|evaluations?)\\b",
+  "\\b(?:research|studies|a study|the study|trials?)\\s+(?:show|shows|showed|shown|find|finds|found|indicate|indicates|indicated|suggest|suggests|suggested|demonstrate|demonstrates|demonstrated|report|reports|reported)\\b",
+  "\\baccording to (?:research|studies|a study|the study)\\b",
+].join("|"), "i");
+// A source name counts as an attribution when it is cited like one: in
+// parentheses or brackets, after "according to", "per", "by" or "from", or
+// followed by a year or "reports", "found", "data", "survey" and similar.
+function namesSource(sentence, sources) {
+  for (const re of sources) {
+    for (const m of sentence.matchAll(new RegExp(re.source, "g"))) {
+      const before = sentence.slice(0, m.index), after = sentence.slice(m.index + m[0].length);
+      const open = Math.max(before.lastIndexOf("("), before.lastIndexOf("["));
+      const inParens = open >= 0 && open > Math.max(before.lastIndexOf(")"), before.lastIndexOf("]"));
+      if (inParens || /\b(?:according to|per|by|from|reported by|cited by|source:?)\s*(?:the\s+)?$/i.test(before.slice(-30)) ||
+        /^\W{0,3}(?:\(?(?:19|20)\d\d\)?|reports?|reported|found|finds|shows?|showed|data|survey|study|research|analysis)\b/i.test(after.slice(0, 30)))
+        return m[0];
+    }
+  }
+  return null;
+}
+
+const SECTION_SPLIT = /\n+|(?<=[.;!?])\s+(?=[A-Z0-9*(\-•\[])/;
 const TOKEN = /[A-Za-z0-9]+(?:[-_.][A-Za-z0-9]+)*/g;
+// Sentences of a section. "et al." or "e.g." does not end a sentence, and a
+// citation left on its own after a full stop ("... 84% agree. [EP-018]")
+// stays with the sentence before it.
+const ABBREVIATION = /(?:\bet al|\be\.g|\bi\.e|\bvs|\betc|\bNo|\bDr|\bSt|\bU\.S|\bInc|\bCo|\bapprox|\bFig)\.$/i;
+function sentences(text, isId) {
+  const out = [];
+  for (const part of String(text || "").split(SECTION_SPLIT)) {
+    const tokens = part.match(TOKEN) || [];
+    const citationOnly = tokens.length > 0 && tokens.every((t) => isId(t) || /_V\d/.test(t)) && !/[a-z]{4,}\s+[a-z]{4,}/.test(part.replace(TOKEN, ""));
+    if (out.length && (ABBREVIATION.test(out[out.length - 1].trimEnd()) || citationOnly)) out[out.length - 1] += " " + part;
+    else out.push(part);
+  }
+  return out;
+}
+const BARE_DECIMAL = /(?<![\w.$/-])(\d*\.\d+)(?![\w./%])/g;
+const APPLICANT_KINDS = new Set(["currency", "fte", "staff", "hours", "weeks", "months", "days", "semesters"]);
 
 // Evaluate a simple left-to-right calculation with * and / before + and -.
 function evaluate(values, ops) {
@@ -234,19 +319,38 @@ function evaluate(values, ops) {
   return terms.slice(1).reduce((s, t, i) => (add[i] === "-" ? s - t : s + t), terms[0]);
 }
 
-// Unsupported applicant-specific quantities in a strategy. `request` is the
-// exact request sent to the model.
-function unsupportedQuantities(strategy, request) {
+// One pass over every section of a strategy. `request` is the exact request
+// sent to the model; `bundle` is the research library (for recognizing ids).
+// Returns
+//   unsupported: applicant-specific quantities nothing supplied supports;
+//   uncited: research-derived findings without their selected record id in
+//     the same sentence (a research-only number, a sentence worded as a
+//     research finding, or an evidence chain with no record ids at all).
+function analyze(strategy, request, bundle) {
   const support = suppliedSupport(request);
   const selectedIds = new Set(support.research.keys());
+  const libraryIds = new Set([...(bundle?.records || []).map((r) => r.record_id), ...(bundle?.aliases || []).map((a) => a.legacy_record_id)]);
+  const isId = (t) => selectedIds.has(t) || libraryIds.has(t);
   const problems = [];
+  const uncited = [];
   const derived = [];
+  const chainCites = new Set();
+  let researchUsed = false;
+  const snippet = (t) => t.trim().slice(0, 140);
   const sections = Object.entries(strategy || {}).filter(([, v]) => typeof v === "string");
   // Pass 1: calculations. Pass 2: every other quantity.
   const pending = [];
   for (const [section, text] of sections) {
-    for (const sentence of text.split(SECTION_SPLIT)) {
-      const cites = (sentence.match(TOKEN) || []).filter((t) => selectedIds.has(t));
+    for (const sentence of sentences(text, isId)) {
+      const cites = [...new Set((sentence.match(TOKEN) || []).filter((t) => selectedIds.has(t)))];
+      if (cites.length) researchUsed = true;
+      if (section === "evidence_chain") for (const c of cites) chainCites.add(c);
+      // Wording that presents research: it must carry a selected record id.
+      const cue = RESEARCH_CUE.exec(sentence)?.[0] || namesSource(sentence, support.sources);
+      if (cue) {
+        researchUsed = true;
+        if (!cites.length) uncited.push({ section, text: snippet(sentence), reason: "research finding (\"" + cue + "\") without its selected record id in the same sentence" });
+      }
       // Subject words near a figure (not the whole sentence, which may run
       // across several budget lines).
       const near = (q) => subject(sentence.slice(Math.max(0, q.start - 80), q.end + 80));
@@ -331,21 +435,45 @@ function unsupportedQuantities(strategy, request) {
         from = result.end;
       }
       for (const q of qs) if (!inCalc.has(q.start)) pending.push({ section, q, cites, ctx: near(q) });
+      // Unitless research values ("effects 0.27-0.43", "d = .37") found only
+      // in research must carry the record that contains them.
+      for (const m of sentence.matchAll(BARE_DECIMAL)) {
+        if (qs.some((q) => q.start <= m.index && q.end >= m.index + m[1].length)) continue;
+        const v = Number(m[1]);
+        if (support.org.n.has(v)) continue;
+        const holders = [...support.research].filter(([, ix]) => ix.n.has(v)).map(([id]) => id);
+        if (!holders.length) continue;
+        researchUsed = true;
+        if (!cites.some((c) => holders.includes(c)))
+          uncited.push({ section, text: m[1], reason: (cites.length ? "the cited record does not contain this value" : "research value without its selected record id in the same sentence") + " (found in " + holders.slice(0, 3).join(", ") + ")" });
+      }
     }
   }
   for (const { section, q, cites, ctx } of pending) {
     if (supportedBy(q, support.org, ctx)) continue;
     if (cites.some((c) => supportedBy(q, support.research.get(c)))) continue;
-    // A research statistic (a percent or a count) from a selected record,
-    // even when the sentence does not repeat its id.
-    if (!["currency", "fte", "staff", "hours", "weeks", "months", "days", "semesters"].includes(q.kind) && !q.per &&
-      [...support.research.values()].some((ix) => supportedBy(q, ix))) continue;
     if (derived.some((d) => d.kind === q.kind && matches(q, d.value))) continue;
+    // A research statistic (a percent or a count) that only research
+    // supports: it must cite the selected record that contains it, in the
+    // same sentence. Amounts, rates, staffing and durations are never taken
+    // from uncited research: without a citation they are assumptions.
+    const holders = APPLICANT_KINDS.has(q.kind) || q.per ? [] : [...support.research].filter(([, ix]) => supportedBy(q, ix)).map(([id]) => id);
+    if (holders.length) {
+      researchUsed = true;
+      uncited.push({ section, text: q.text, reason: (cites.length ? "the cited record does not contain this number" : "research number without its selected record id in the same sentence") + " (found in " + holders.slice(0, 3).join(", ") + ")" });
+      continue;
+    }
     problems.push({ section, text: q.text, reason: "not supported by the supplied facts, application or cited selected research" });
   }
+  // A strategy that uses research must cite it in the evidence chain.
+  if (researchUsed && selectedIds.size && !chainCites.size)
+    uncited.push({ section: "evidence_chain", text: "(no record ids)", reason: "the strategy uses research but the evidence chain cites no selected record id" });
   // One entry per distinct problem.
-  const seen = new Set();
-  return problems.filter((p) => { const k = p.section + "|" + p.text + "|" + p.reason; if (seen.has(k)) return false; seen.add(k); return true; });
+  const unique = (list) => { const seen = new Set(); return list.filter((p) => { const k = p.section + "|" + p.text + "|" + p.reason; if (seen.has(k)) return false; seen.add(k); return true; }); };
+  return { unsupported: unique(problems), uncited: unique(uncited), cited: [...chainCites].sort() };
 }
 
-module.exports = { quantities, unsupportedQuantities, suppliedSupport };
+// Unsupported applicant-specific quantities (the PR #30 check).
+const unsupportedQuantities = (strategy, request, bundle) => analyze(strategy, request, bundle).unsupported;
+
+module.exports = { quantities, analyze, unsupportedQuantities, suppliedSupport };
