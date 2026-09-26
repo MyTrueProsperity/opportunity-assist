@@ -23,6 +23,7 @@
 // established"), never estimated.
 
 const { terms } = require("./strategy-evidence");
+const SA = require("./strategy-attribution");
 
 const WORD_NUMBERS = {
   one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10,
@@ -225,12 +226,16 @@ function suppliedSupport(request) {
   for (const f of request.facts || []) if (!f.research) org.push(JSON.stringify(f));
   org.push(JSON.stringify(request.application || {}), JSON.stringify(request.program || {}), JSON.stringify(request.questions || []));
   const research = new Map();
+  const records = new Map();
+  const packages = new Set();
   for (const f of request.facts || []) if (f.research) {
     const { selection, ...rest } = f;
     research.set(f.research.record_id, supportIndex([JSON.stringify(rest)]));
+    records.set(f.research.record_id, SA.recordSupport(rest));
+    if (f.research.package_version) packages.add(f.research.package_version);
   }
   const orgText = org.join(" ").toLowerCase();
-  return { org: supportIndex(org, { context: true }), research, sources: sourceNames(request, orgText) };
+  return { org: supportIndex(org, { context: true }), research, records, packages, orgText, sources: sourceNames(request, orgText) };
 }
 
 // Names of the organizations and authors behind the selected research
@@ -324,8 +329,9 @@ function evaluate(values, ops) {
 // Returns
 //   unsupported: applicant-specific quantities nothing supplied supports;
 //   uncited: research-derived findings without their selected record id in
-//     the same sentence (a research-only number, a sentence worded as a
-//     research finding, or an evidence chain with no record ids at all).
+//     the same sentence (a research-only number, a sentence that attributes a
+//     claim to research, or an evidence chain with no record ids at all), and
+//     cited claims their records do not support.
 function analyze(strategy, request, bundle) {
   const support = suppliedSupport(request);
   const selectedIds = new Set(support.research.keys());
@@ -345,11 +351,19 @@ function analyze(strategy, request, bundle) {
       const cites = [...new Set((sentence.match(TOKEN) || []).filter((t) => selectedIds.has(t)))];
       if (cites.length) researchUsed = true;
       if (section === "evidence_chain") for (const c of cites) chainCites.add(c);
-      // Wording that presents research: it must carry a selected record id.
-      const cue = RESEARCH_CUE.exec(sentence)?.[0] || namesSource(sentence, support.sources);
+      // Wording that attributes a claim to research ("research shows",
+      // "national surveys document", a named source): it must carry a
+      // selected record id in the same sentence.
+      const cue = RESEARCH_CUE.exec(sentence)?.[0] || namesSource(sentence, support.sources) || SA.attribution(sentence, support.orgText);
       if (cue) {
         researchUsed = true;
         if (!cites.length) uncited.push({ section, text: snippet(sentence), reason: "research finding (\"" + cue + "\") without its selected record id in the same sentence" });
+      }
+      // Every cited claim must be one its cited records actually report.
+      if (cites.length) for (const claim of SA.claims(sentence, (t) => selectedIds.has(t), (t) => support.packages.has(t))) {
+        const anchored = quantities(claim.text).some((q) => !APPLICANT_KINDS.has(q.kind) && claim.ids.some((c) => supportedBy(q, support.research.get(c))));
+        const why = SA.unsupportedClaim(claim, support.records, anchored);
+        if (why) uncited.push({ section, text: snippet(claim.text), reason: why });
       }
       // Subject words near a figure (not the whole sentence, which may run
       // across several budget lines).
