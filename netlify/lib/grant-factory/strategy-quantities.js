@@ -192,13 +192,32 @@ function matches(claim, supplied) {
 const GENERIC = new Set(("hour hours week weeks month months year years day days per annual annually each approximately about typically " +
   "range ranges cost costs total amount amounts one-time depending type").split(" "));
 const subject = (text) => new Set([...terms(text)].filter((t) => !GENERIC.has(t) && !/^\d/.test(t)));
+// An organization's own history ("over ten years", "since 2016", "a 10-year
+// track record"). A years figure in the organization's history supports the
+// same years figure stated as the organization's history, even without other
+// shared subject words; "ten years" and "10-year" are the same number.
+const TENURE = /\b(?:histor(?:y|ies|ical)|track record|operat(?:ing|ed|ion|ions)|in operation|since (?:19|20)\d\d|founded|legacy|over (?:the (?:past|last) )?(?:\w+|\d+)[- ]years?|years? of (?:operation|service|programming|work|experience))\b/i;
+// Text a quantity can be supported by: field values, never field names,
+// ids, URLs, file paths or other locators. A number inside a web address
+// ("/10-years-of-developmental-relationships") is not evidence of anything.
+const LOCATOR_KEY = /^(?:id|ids|fact_id|record_id|stat_id|packet_id|rule_id|fact_key|package_version|claim_rules_hash|hash|content_hash|doi|isbn|issn|accessed|retrieved|file|files|filename|mime|storage_path)$|(?:^|_)(?:urls?|uri|links?|href|locators?|paths?)$/i;
+const URL_TEXT = /\b(?:https?:\/\/|www\.)\S+|\b[a-z0-9-]+(?:\.[a-z0-9-]+)+\/[^\s"'<>)\]]*/gi;
+function substantive(value, depth = 0) {
+  if (value == null || depth > 8) return "";
+  if (typeof value === "string") return value.replace(URL_TEXT, " ");
+  if (typeof value === "number") return String(value);
+  if (Array.isArray(value)) return value.map((v) => substantive(v, depth + 1)).join(" | ");
+  if (typeof value === "object") return Object.entries(value).filter(([k]) => !LOCATOR_KEY.test(k)).map(([, v]) => substantive(v, depth + 1)).join(" | ");
+  return "";
+}
 // Built once per request: every supplied quantity grouped by kind, and every
 // supplied number, so each claim is checked against a small candidate list.
 function supportIndex(texts, { context = false } = {}) {
   const q = [], n = new Set(), byKind = new Map();
   for (const t of texts) {
     for (const x of quantities(t)) {
-      const item = context ? { ...x, ctx: subject(t.slice(Math.max(0, x.start - 120), x.end + 120)) } : x;
+      const around = context ? t.slice(Math.max(0, x.start - 120), x.end + 120) : "";
+      const item = context ? { ...x, ctx: subject(around), tenure: x.kind === "years" && TENURE.test(around) } : x;
       q.push(item);
       if (!byKind.has(x.kind)) byKind.set(x.kind, []);
       byKind.get(x.kind).push(item);
@@ -214,7 +233,7 @@ function supportedBy(claim, index, ctx) {
   if (!claim.strict) return index.n.has(claim.value) || index.values.some((v) => matches(claim, v)) || index.q.some((s) => matches(claim, s.value));
   return (index.byKind.get(claim.kind) || []).some((s) => (claim.kind !== "currency" || !s.per || !claim.per || s.per === claim.per) &&
     (claim.kind === "currency" || !claim.per || !s.per || s.per === claim.per) && matches(claim, s.value) &&
-    (!index.context || !ctx || [...s.ctx].some((w) => ctx.has(w))));
+    (!index.context || !ctx || [...s.ctx].some((w) => ctx.has(w)) || (claim.tenure && s.tenure)));
 }
 
 // What was supplied to strategy, split into organization/application
@@ -223,14 +242,14 @@ function supportedBy(claim, index, ctx) {
 // support.
 function suppliedSupport(request) {
   const org = [];
-  for (const f of request.facts || []) if (!f.research) org.push(JSON.stringify(f));
-  org.push(JSON.stringify(request.application || {}), JSON.stringify(request.program || {}), JSON.stringify(request.questions || []));
+  for (const f of request.facts || []) if (!f.research) org.push(substantive(f));
+  org.push(substantive(request.application || {}), substantive(request.program || {}), substantive(request.questions || []));
   const research = new Map();
   const records = new Map();
   const packages = new Set();
   for (const f of request.facts || []) if (f.research) {
     const { selection, ...rest } = f;
-    research.set(f.research.record_id, supportIndex([JSON.stringify(rest)]));
+    research.set(f.research.record_id, supportIndex([substantive(rest)]));
     records.set(f.research.record_id, SA.recordSupport(rest));
     if (f.research.package_version) packages.add(f.research.package_version);
   }
@@ -448,7 +467,10 @@ function analyze(strategy, request, bundle) {
         carry = { ...result, derived: !bad.length };
         from = result.end;
       }
-      for (const q of qs) if (!inCalc.has(q.start)) pending.push({ section, q, cites, ctx: near(q) });
+      for (const q of qs) if (!inCalc.has(q.start)) {
+        if (q.kind === "years") q.tenure = TENURE.test(sentence.slice(Math.max(0, q.start - 80), q.end + 80));
+        pending.push({ section, q, cites, ctx: near(q) });
+      }
       // Unitless research values ("effects 0.27-0.43", "d = .37") found only
       // in research must carry the record that contains them.
       for (const m of sentence.matchAll(BARE_DECIMAL)) {
