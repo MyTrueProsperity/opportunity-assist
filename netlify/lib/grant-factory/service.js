@@ -237,7 +237,7 @@ function service(repo, ai, { dispatch = null } = {}) {
       if (unsupported.length)
         return await fail("UNSUPPORTED_QUANTITY", "The strategy stated amounts or quantities that the supplied facts, application and selected research do not support (" + [...new Set(unsupported.map((u) => u.text))].slice(0, 5).join("; ") + "). Missing inputs must be named as gaps, not estimated. Nothing was saved; generate again.");
       if (analysis.uncited.length)
-        return await fail("EVIDENCE_CHAIN", "Research findings must cite their selected record id in the same sentence (" + [...new Set(analysis.uncited.map((u) => u.text))].slice(0, 3).join("; ") + "). Nothing was saved; generate again.");
+        return await fail("EVIDENCE_CHAIN", "Research findings must cite their selected record id in the same sentence, and that record must report the finding (" + [...new Set(analysis.uncited.map((u) => u.text))].slice(0, 3).join("; ") + "). Nothing was saved; generate again.");
       // Re-read and re-check immediately before saving; the save itself
       // rejects any concurrent change to the application or approved facts.
       app = await repo.app(ctx, job.application_id);
