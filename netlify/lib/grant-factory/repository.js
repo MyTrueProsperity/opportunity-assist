@@ -204,6 +204,25 @@ function repository(env = process.env, fetcher = fetch, db = createDb(env, fetch
         p_changes: changes,
       });
     },
+    // Background strategy jobs (supabase/grant-factory/*_strategy_jobs.sql).
+    // Every call is scoped to the caller's workspace and re-checks membership.
+    get strategyJobs() {
+      const db = this.db;
+      return {
+      enqueue: (ctx, appId, inputHash, appRevision, brainRevision) => db.rpc("gf_strategy_job_enqueue", {
+        p_org: ctx.org_id, p_actor: ctx.user_id, p_app: id(appId), p_input_hash: inputHash,
+        p_app_revision: appRevision, p_brain_revision: brainRevision,
+      }),
+      claim: (ctx, jobId, leaseSeconds) => db.rpc("gf_strategy_job_claim", { p_org: ctx.org_id, p_actor: ctx.user_id, p_job: id(jobId), p_lease_seconds: leaseSeconds }),
+      finish: (ctx, job, status, failureCode, error, result) => db.rpc("gf_strategy_job_finish", {
+        p_org: ctx.org_id, p_job: job.id, p_token: job.lease_token, p_status: status,
+        p_failure_code: failureCode || null, p_error: error || null, p_result: result || {},
+      }),
+      hold: (ctx, job) => db.rpc("gf_strategy_job_hold", { p_org: ctx.org_id, p_job: job.id, p_token: job.lease_token }),
+      status: (ctx, appId) => db.rpc("gf_strategy_job_status", { p_org: ctx.org_id, p_actor: ctx.user_id, p_app: id(appId) }),
+      dispatched: (ctx, jobId) => db.rpc("gf_strategy_job_dispatched", { p_org: ctx.org_id, p_job: id(jobId) }),
+      };
+    },
     async listApps(ctx) {
       return (await db.all("gf_applications", { org_id: "eq." + ctx.org_id }))
         .map(flatten)
