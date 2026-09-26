@@ -112,9 +112,145 @@ function prepareParsed(app, parsed, brain) {
         source_locator: q.source_locator,
       });
 }
-function service(repo, ai) {
-  const call = (ctx, task, data) =>
-    repo.run(ctx, task, () => ai.call(task, data));
+// Strategy inputs that, if changed while a job runs, make its result stale.
+const STRATEGY_FIELDS = ["funder_name", "grant_program_name", "funding_purpose", "funder_priorities", "allowable_costs", "prohibited_costs", "match_requirement", "primary_program_id", "secondary_program_ids"];
+function strategyInputHash(app, brain) {
+  return C.hash({
+    application: Object.fromEntries(STRATEGY_FIELDS.map((k) => [k, app.content[k] ?? null])),
+    questions: (app.questions || []).map((q) => [q.id, q.question_text, q.question_category ?? null, q.question_type ?? null]),
+    brain_revision: brain.revision,
+  });
+}
+// A background strategy job holds its lease this long: well above observed
+// generation time (about 30 to 60 seconds, with a 180-second model timeout)
+// and well inside the 15-minute background-function limit.
+const STRATEGY_LEASE_SECONDS = 300;
+// A queued job that has not started gets one more dispatch after this long.
+const REDISPATCH_AFTER_MS = 45000;
+function publicJob(job) {
+  if (!job) return null;
+  const r = job.result || {};
+  return {
+    id: job.id, application_id: job.application_id, status: job.status,
+    created_at: job.created_at, started_at: job.started_at || null, finished_at: job.finished_at || null,
+    failure_code: job.failure_code || null, error: job.last_error || null,
+    research_selected: r.research_selected ?? null, estimated_tokens: r.estimated_tokens ?? null,
+    strategy_revision: r.strategy_revision ?? null,
+  };
+}
+function service(repo, ai, { dispatch = null } = {}) {
+  const call = (ctx, task, data, meta) =>
+    repo.run(ctx, task, async () => {
+      const r = await ai.call(task, data);
+      if (meta) Object.assign(meta, { model: r.model || null, usage: r.usage || {} });
+      return r;
+    });
+  // Start the background worker for a job. Failure to dispatch leaves the job
+  // QUEUED; status polling dispatches it again, and claiming is idempotent.
+  async function startJob(ctx, job) {
+    if (!dispatch) return;
+    try {
+      await dispatch(ctx, job);
+      await repo.strategyJobs.dispatched(ctx, job.id);
+    } catch (e) {
+      console.error("Strategy job dispatch failed", { job: job.id, message: e.message });
+    }
+  }
+  function strategyRequest(brain, app) {
+    const facts = C.authorizedFacts(brain, app.id).filter(
+      (f) =>
+        !f.program_id ||
+        f.program_id === app.content.primary_program_id ||
+        (app.content.secondary_program_ids || []).includes(f.program_id),
+    );
+    const application = Object.fromEntries(
+      ["funder_name", "grant_program_name", "funding_purpose", "funder_priorities", "allowable_costs", "prohibited_costs", "match_requirement"]
+        .map((k) => [k, app.content[k]]),
+    );
+    // Strategy gets the authorized organization facts plus a bounded,
+    // relevance-ranked selection of authorized research (see
+    // strategy-evidence.js), never the whole research library.
+    return SE.strategyRequest(brain, app, facts, {
+      application,
+      questions: app.questions,
+      program: brain.programs.find((p) => p.id === app.content.primary_program_id),
+      methodology_rules: METHODOLOGY.rules,
+      organization_framework: strategyFramework(brain.framework, [app.content.primary_program_id, ...(app.content.secondary_program_ids || [])]),
+    }, SE.strategyRules, { overhead: AI.requestChars("strategy", null) });
+  }
+  // Run one strategy job (called by the background function). Nothing is
+  // saved unless the complete result passes validation and the application's
+  // strategy inputs are unchanged since the job was queued.
+  async function runStrategyJob(ctx, jobId) {
+    const job = await repo.strategyJobs.claim(ctx, jobId, STRATEGY_LEASE_SECONDS);
+    if (!job) return { claimed: false };
+    const result = {};
+    const fail = async (code, message) => {
+      await repo.strategyJobs.finish(ctx, job, "FAILED", code, message, result);
+      return { claimed: true, status: "FAILED", failure_code: code, error: message };
+    };
+    try {
+      const brain = await repo.brain(ctx);
+      let app = await repo.app(ctx, job.application_id);
+      if (strategyInputHash(app, brain) !== job.input_hash)
+        return await fail("STALE_INPUTS", "The application's program, funder details, questions or approved facts changed after strategy generation was requested. Nothing was saved; generate again.");
+      if (["SUBMITTED", "ARCHIVED"].includes(app.content.status))
+        return await fail("LOCKED", "Submitted applications are immutable.");
+      const built = strategyRequest(brain, app);
+      Object.assign(result, {
+        research_eligible: built.eligible, research_ranked: built.ranked, research_selected: built.selected.length,
+        skipped_for_size: built.skipped_for_size, request_chars: built.chars,
+        estimated_tokens: SE.estimateTokens(built.chars + AI.requestChars("strategy", null)),
+        records: built.selected.map((f) => ({ fact_id: f.id, ...f.selection })),
+      });
+      if (built.overBudget)
+        return await fail("REQUEST_TOO_LARGE", "The organization facts for this program are too large for one strategy request. Nothing was saved.");
+      const meta = {};
+      const started = Date.now();
+      let strategy;
+      try {
+        strategy = await call(ctx, "strategy", built.request, meta);
+      } catch (e) {
+        Object.assign(result, { model_ms: Date.now() - started });
+        const timeout = e.name === "TimeoutError" || /aborted|timeout/i.test(e.message);
+        return await fail(timeout ? "AI_TIMEOUT" : "AI_FAILED", timeout ? "The AI did not finish the strategy in time. Nothing was saved; generate again." : e.message);
+      }
+      Object.assign(result, { model_ms: Date.now() - started, model: meta.model, input_tokens: meta.usage?.input_tokens ?? null, output_tokens: meta.usage?.output_tokens ?? null });
+      const unsupplied = SE.unsuppliedReferences(strategy, built.request, brain.research?.records);
+      if (unsupplied.length)
+        return await fail("EVIDENCE_CHAIN", "The strategy named research that was not supplied to it (" + unsupplied.slice(0, 5).join(", ") + "). Nothing was saved; generate again.");
+      // Re-read and re-check immediately before saving; the save itself
+      // rejects any concurrent change to the application or approved facts.
+      app = await repo.app(ctx, job.application_id);
+      if (strategyInputHash(app, brain) !== job.input_hash)
+        return await fail("STALE_INPUTS", "The application's program, funder details, questions or approved facts changed while the strategy was generating. Nothing was saved; generate again.");
+      invalidate(app);
+      app.content.strategy = { ...strategy, approved: false };
+      // Which research strategy saw, and why. Kept beside the strategy so the
+      // writer and approval flow are unchanged.
+      app.content.strategy_evidence = {
+        generated_at: C.now(), job_id: job.id,
+        research_eligible: built.eligible, research_ranked: built.ranked, research_selected: built.selected.length,
+        skipped_for_size: built.skipped_for_size, max_records: SE.STRATEGY_RESEARCH_MAX,
+        request_chars: built.chars, estimated_tokens: result.estimated_tokens, token_budget: SE.STRATEGY_TOKEN_BUDGET,
+        model: result.model, input_tokens: result.input_tokens, output_tokens: result.output_tokens,
+        records: result.records,
+      };
+      invalidateAnswers(app);
+      if (!(await repo.strategyJobs.hold(ctx, job)))
+        return { claimed: true, status: "FAILED", failure_code: "EXPIRED", error: "The job expired before it could save. Nothing was saved." };
+      try {
+        await repo.save(ctx, app, brain, "strategy");
+      } catch (e) {
+        return await fail("SAVE_CONFLICT", "The application or approved facts changed while the strategy was saving. Nothing was saved; generate again.");
+      }
+      result.strategy_revision = app.revision;
+      await repo.strategyJobs.finish(ctx, job, "COMPLETED", null, null, result);
+      return { claimed: true, status: "COMPLETED", strategy_revision: app.revision };
+    } catch (e) {
+      return await fail("FAILED", e.status && e.status < 500 ? e.message : "Strategy generation failed. Nothing was saved; generate again.");
+    }
+  }
   async function upload(ctx, brain, body) {
     const filename = C.str(body.filename, 200).replace(/[^a-zA-Z0-9_.-]/g, "_");
     const encoded = C.str(body.base64, MAX_BYTES * 1.4);
@@ -208,6 +344,7 @@ function service(repo, ai) {
     a.status = "NEEDS_REVIEW";
   }
   return {
+    runStrategyJob,
     async handle(ctx, body) {
       const action = body.action || "bootstrap";
       if (action === "research_search") {
@@ -234,6 +371,15 @@ function service(repo, ai) {
       // Research-derived facts for the evidence picker and answer explanations.
       // Draft readiness comes from the same authorizedFacts used for drafting;
       // a search only ever returns draft-ready facts.
+      // Lightweight job status for polling: no research or application load.
+      if (action === "strategy_status") {
+        let job = await repo.strategyJobs.status(ctx, C.id(body.application_id));
+        if (job?.status === "QUEUED" && Date.now() - new Date(job.dispatched_at || job.created_at).getTime() > REDISPATCH_AFTER_MS) {
+          await startJob(ctx, job);
+          job = await repo.strategyJobs.status(ctx, job.application_id);
+        }
+        return { job: publicJob(job) };
+      }
       if (action === "research_evidence") {
         const full = await repo.brain(ctx);
         const appId = body.application_id ? C.id(body.application_id) : undefined;
@@ -602,6 +748,20 @@ function service(repo, ai) {
           base64: out.bytes.toString("base64"),
         };
       }
+      // Queue strategy generation. The model call runs in a background
+      // function; this returns immediately. Repeated requests join the
+      // application's queued or running job.
+      if (action === "strategy") {
+        checkRevision(body, app);
+        if (["SUBMITTED", "ARCHIVED"].includes(app.content.status))
+          C.fail("Submitted applications are immutable. Create a new application for a new cycle.", 409);
+        if (!app.content.primary_program_id)
+          C.fail("Choose a primary program first.");
+        const queued = await repo.strategyJobs.enqueue(ctx, app.id, strategyInputHash(app, brain), app.revision, brain.revision);
+        if (queued.created) await startJob(ctx, queued.job);
+        const job = queued.created ? (await repo.strategyJobs.status(ctx, app.id)) || queued.job : queued.job;
+        return { job: publicJob(job), created: queued.created };
+      }
       checkRevision(body, app);
       invalidate(app);
       if (action === "parse") {
@@ -688,60 +848,6 @@ function service(repo, ai) {
         app.content.parser_reviewed = true;
         app.content.parser_reviewed_by = ctx.user_id;
         app.content.parser_reviewed_at = C.now();
-      } else if (action === "strategy") {
-        if (!app.content.primary_program_id)
-          C.fail("Choose a primary program first.");
-        const facts = C.authorizedFacts(brain, app.id).filter(
-          (f) =>
-            !f.program_id ||
-            f.program_id === app.content.primary_program_id ||
-            (app.content.secondary_program_ids || []).includes(f.program_id),
-        );
-        const application = Object.fromEntries(
-          [
-            "funder_name",
-            "grant_program_name",
-            "funding_purpose",
-            "funder_priorities",
-            "allowable_costs",
-            "prohibited_costs",
-            "match_requirement",
-          ].map((k) => [k, app.content[k]]),
-        );
-        // Strategy gets the authorized organization facts plus a bounded,
-        // relevance-ranked selection of authorized research (see
-        // strategy-evidence.js), never the whole research library.
-        const built = SE.strategyRequest(brain, app, facts, {
-          application,
-          questions: app.questions,
-          program: brain.programs.find(
-            (p) => p.id === app.content.primary_program_id,
-          ),
-          methodology_rules: METHODOLOGY.rules,
-          organization_framework: strategyFramework(brain.framework, [app.content.primary_program_id, ...(app.content.secondary_program_ids || [])]),
-        }, SE.strategyRules, { overhead: AI.requestChars("strategy", null) });
-        if (built.overBudget)
-          C.fail("The organization facts for this program are too large for one strategy request. No strategy was generated.", 413);
-        const result = await call(ctx, "strategy", built.request);
-        const unsupplied = SE.unsuppliedReferences(result, built.request, brain.research?.records);
-        if (unsupplied.length)
-          C.fail("The strategy named research that was not supplied to it (" + unsupplied.slice(0, 5).join(", ") + "). No strategy was saved. Try again.", 422);
-        app.content.strategy = { ...result, approved: false };
-        // Which research strategy saw, and why. Kept beside the strategy so the
-        // writer and approval flow are unchanged.
-        app.content.strategy_evidence = {
-          generated_at: C.now(),
-          research_eligible: built.eligible,
-          research_ranked: built.ranked,
-          research_selected: built.selected.length,
-          skipped_for_size: built.skipped_for_size,
-          max_records: SE.STRATEGY_RESEARCH_MAX,
-          request_chars: built.chars,
-          estimated_tokens: SE.estimateTokens(built.chars + AI.requestChars("strategy", null)),
-          token_budget: SE.STRATEGY_TOKEN_BUDGET,
-          records: built.selected.map((f) => ({ fact_id: f.id, ...f.selection })),
-        };
-        invalidateAnswers(app);
       } else if (action === "draft") {
         if (!app.content.parser_reviewed)
           C.fail("First check the questions against the funder's application, then choose Confirm extraction review at the top of Questions & drafts. Adding or changing a question requires this check again.");
@@ -1036,4 +1142,4 @@ function service(repo, ai) {
     },
   };
 }
-module.exports = { service, DOCUMENT_TYPES };
+module.exports = { service, DOCUMENT_TYPES, strategyInputHash, STRATEGY_LEASE_SECONDS };
