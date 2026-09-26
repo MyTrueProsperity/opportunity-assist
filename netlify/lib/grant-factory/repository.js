@@ -277,6 +277,13 @@ function repository(env = process.env, fetcher = fetch, db = createDb(env, fetch
               status: "FAILED",
               error: String(e.message).slice(0, 500),
               completed_at: new Date().toISOString(),
+              // A response the provider returned and we rejected (output
+              // limit, invalid structure) still cost tokens; meter it.
+              ...(e.usage ? {
+                model: e.model || null,
+                input_tokens: e.usage.input_tokens ?? null,
+                output_tokens: e.usage.output_tokens ?? null,
+              } : {}),
             },
           )
           .catch(() => {});

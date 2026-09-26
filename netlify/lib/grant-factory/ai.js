@@ -28,7 +28,21 @@ const EVIDENCE_TASKS = new Set(["strategy", "write", "audit"]);
 // Strategy writes nine substantial sections and runs only in a background
 // function (grant-factory-strategy-background), so it may take longer than a
 // synchronous request. Other tasks keep the 45-second limit.
-const TASK_TIMEOUT_MS = { strategy: 180000 };
+const TASK_TIMEOUT_MS = { strategy: 300000 };
+// Model output allowance per task. Strategy's nine sections, with an evidence
+// chain that states what each cited record supports and does not support,
+// exceeded 4,500 tokens in production. A response that still reaches its
+// allowance is incomplete and is rejected, never saved.
+const TASK_MAX_TOKENS = { parse: 12000, extract_facts: 6500, strategy: 12000 };
+const DEFAULT_MAX_TOKENS = 4500;
+// A rejected response still costs tokens: carry the provider's usage on the
+// error so the AI run log meters it (repository.run). Nothing is invented
+// when the provider reported no usage.
+function rejected(error, response, model) {
+  if (response?.usage) error.usage = response.usage;
+  error.model = model;
+  return error;
+}
 function requestChars(task, data, taskSchema = schemas[task]) {
   return systemPrompt(task).length + JSON.stringify(taskSchema).length + JSON.stringify(data ?? null).length;
 }
@@ -101,8 +115,7 @@ function provider(env = process.env, fetcher = fetch) {
         },
         body: JSON.stringify({
           model,
-          max_tokens:
-            task === "parse" ? 12000 : task === "extract_facts" ? 6500 : 4500,
+          max_tokens: TASK_MAX_TOKENS[task] || DEFAULT_MAX_TOKENS,
           system: systemPrompt(task),
           messages: [{ role: "user", content: JSON.stringify(data) }],
           tools: [
@@ -122,17 +135,21 @@ function provider(env = process.env, fetcher = fetch) {
           "The AI provider could not complete this task. No approval was recorded. Retry later.",
         );
       const response = await r.json();
-      if (response.stop_reason === "max_tokens")
-        fail(
-          "AI result was incomplete. Split the source or shorten the task.",
-          502,
-        );
-      const out = response.content?.find(
-        (b) => b.type === "tool_use" && b.name === "result",
-      )?.input;
-      validate(out, taskSchema);
-      return { data: out, model, usage: response.usage };
+      try {
+        if (response.stop_reason === "max_tokens")
+          fail(
+            "AI result was incomplete. Split the source or shorten the task.",
+            502,
+          );
+        const out = response.content?.find(
+          (b) => b.type === "tool_use" && b.name === "result",
+        )?.input;
+        validate(out, taskSchema);
+        return { data: out, model, usage: response.usage };
+      } catch (e) {
+        throw rejected(e, response, model);
+      }
     },
   };
 }
-module.exports = { provider, schemas, validate, requestChars, systemPrompt, EVIDENCE_TASKS, TASK_TIMEOUT_MS };
+module.exports = { provider, schemas, validate, requestChars, systemPrompt, EVIDENCE_TASKS, TASK_TIMEOUT_MS, TASK_MAX_TOKENS, DEFAULT_MAX_TOKENS };

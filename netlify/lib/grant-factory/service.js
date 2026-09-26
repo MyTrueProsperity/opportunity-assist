@@ -121,10 +121,12 @@ function strategyInputHash(app, brain) {
     brain_revision: brain.revision,
   });
 }
-// A background strategy job holds its lease this long: well above observed
-// generation time (about 30 to 60 seconds, with a 180-second model timeout)
-// and well inside the 15-minute background-function limit.
-const STRATEGY_LEASE_SECONDS = 300;
+// A background strategy job holds its lease this long: above the 300-second
+// model timeout plus evidence loading and saving, and well inside the
+// 15-minute background-function limit. (Production generation took about
+// 60 seconds for 4,500 output tokens; a full 12,000-token strategy needs
+// about 160.)
+const STRATEGY_LEASE_SECONDS = 420;
 // A queued job that has not started gets one more dispatch after this long.
 const REDISPATCH_AFTER_MS = 45000;
 function publicJob(job) {
@@ -211,7 +213,8 @@ function service(repo, ai, { dispatch = null } = {}) {
       try {
         strategy = await call(ctx, "strategy", built.request, meta);
       } catch (e) {
-        Object.assign(result, { model_ms: Date.now() - started });
+        // A rejected provider response still reports its usage.
+        Object.assign(result, { model_ms: Date.now() - started, ...(e.usage ? { model: e.model || null, input_tokens: e.usage.input_tokens ?? null, output_tokens: e.usage.output_tokens ?? null } : {}) });
         const timeout = e.name === "TimeoutError" || /aborted|timeout/i.test(e.message);
         return await fail(timeout ? "AI_TIMEOUT" : "AI_FAILED", timeout ? "The AI did not finish the strategy in time. Nothing was saved; generate again." : e.message);
       }
