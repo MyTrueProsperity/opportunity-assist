@@ -25,7 +25,7 @@
 // writer not to claim ("do not claim that the study increased college
 // completion"). Nothing is corrected automatically; the strategy is rejected.
 
-const NOUN = "research|evidence|stud(?:y|ies)|surveys?|polls?|evaluations?|literature|findings|data|analys[ie]s|meta-?analys[ie]s|trials?|experiments?|randomi[sz]ed|scholarship";
+const NOUN = "research|evidence|stud(?:y|ies)|surveys?|polls?|evaluations?|literature|findings|data|analys[ie]s|meta-?analys[ie]s|trials?|experiments?|randomi[sz]ed";
 const VERB = "shows?|showed|shown|showing|finds|found|indicates?|indicated|indicating|suggests?|suggested|suggesting|demonstrates?|demonstrated|demonstrating|" +
   "documents?|documented|documenting|supports?|supported|supporting|confirms?|confirmed|confirming|reports?|reported|reporting|reveals?|revealed|revealing|" +
   "establish(?:es|ed)?|links?|linked|linking|ties|tied|associates?|associated|points? to|pointed to|proves?|proved|proven|identif(?:y|ies|ied)|" +
@@ -46,6 +46,10 @@ const PLAN_START = /^\s*(?:[-*•\d.)\s]*)(?:(?:gaps?|missing|decisions?(?: and 
 // A plan or recommendation just before the evidence noun ("will collect
 // data showing", "should commission research that documents").
 const PLAN_WORD = /\b(?:will|would|should|could|shall|must|plans? to|intends? to|aims? to|proposes? to|recommend\w*|needs? to|to (?:collect|gather|develop|measure|track|build|conduct|design|commission|test|assess|evaluate|determine))\b/i;
+// Absence of evidence, not a claim: "not documented in supplied evidence",
+// "not established by the available research", "no evidence shows",
+// "lack of research demonstrating". Checked just before the match.
+const NEGATED = /\b(?:not|no|never|nor|neither|without|cannot|can['’]t|isn['’]t|aren['’]t|wasn['’]t|weren['’]t|doesn['’]t|don['’]t|didn['’]t|hasn['’]t|haven['’]t|lacks?|lacking|lack of|absence of|absent|insufficient|limited|missing|unavailable|little|scant)\s+(?:[A-Za-z'’-]+\s+){0,3}$/i;
 // Adjectives that often lead an evidence noun and are never an owner.
 const GENERIC_LEAD = new Set("the a an national federal state statewide recent longitudinal multiple several randomized independent peer-reviewed existing published external academic many most some rigorous new current other large small prior earlier later quasi-experimental experimental".split(" "));
 
@@ -118,7 +122,7 @@ function deniedOutcomes(r) {
 // One entry per selected record, built once per request.
 function recordSupport(fact) {
   const r = fact.research || {};
-  const text = [fact.display_name, fact.value, fact.category, r.topic, r.subtopic, r.title, r.finding, flat(r.supports), r.approved_language, r.population,
+  const text = [fact.display_name, typeof fact.value === "string" ? fact.value.replace(/\b(?:https?:\/\/|www\.)\S+/gi, " ") : fact.value, fact.category, r.topic, r.subtopic, r.title, r.finding, flat(r.supports), r.approved_language, r.population,
     r.geography, r.source_org, r.publisher, flat(r.source_authors), flat(r.authors), r.source_title, flat(r.keywords), flat(r.funding_tags), r.evidence_domain].filter(Boolean).join(" ");
   return { stems: contentStems(text), denied: deniedOutcomes(r) };
 }
@@ -145,6 +149,9 @@ function attribution(sentence, orgText = "") {
     const clause = clauseBefore(sentence, h.at);
     // A plan, recommendation or instruction clause.
     if (PLAN_START.test(clause) || PLAN_WORD.test(sentence.slice(Math.max(0, Math.min(h.at, h.nounAt) - 30), h.nounAt))) continue;
+    // A gap or limitation ("... are not documented in supplied evidence").
+    const clauseStart = h.at - clause.length;
+    if (NEGATED.test(sentence.slice(Math.max(clauseStart, Math.min(h.at, h.nounAt) - 50), Math.min(h.at, h.nounAt)))) continue;
     // The organization's or applicant's own data.
     const beforeNoun = sentence.slice(Math.max(0, h.nounAt - 60), h.nounAt);
     if (OWN.test(beforeNoun)) continue;

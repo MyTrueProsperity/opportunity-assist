@@ -141,6 +141,20 @@ function publicJob(job) {
     strategy_revision: r.strategy_revision ?? null,
   };
 }
+// A strategy rejected by validation, kept on the FAILED job for diagnosis
+// (never on the application). Text sections only, bounded.
+const REJECTED_SECTION_CHARS = 20000;
+const REJECTED_TOTAL_CHARS = 80000;
+function rejectedOutput(strategy) {
+  const out = {};
+  let total = 0;
+  for (const [k, v] of Object.entries(strategy || {})) {
+    if (typeof v !== "string" || k === "approved" || total >= REJECTED_TOTAL_CHARS) continue;
+    out[k] = v.slice(0, Math.min(REJECTED_SECTION_CHARS, REJECTED_TOTAL_CHARS - total));
+    total += out[k].length;
+  }
+  return out;
+}
 function service(repo, ai, { dispatch = null } = {}) {
   const call = (ctx, task, data, meta) =>
     repo.run(ctx, task, async () => {
@@ -192,6 +206,12 @@ function service(repo, ai, { dispatch = null } = {}) {
       await repo.strategyJobs.finish(ctx, job, "FAILED", code, message, result);
       return { claimed: true, status: "FAILED", failure_code: code, error: message };
     };
+    // Validation rejected the model's output: keep it on the job to diagnose.
+    const reject = async (strategy, code, message) => {
+      Object.assign(result, { rejected: true, rejected_strategy: rejectedOutput(strategy) });
+      await repo.strategyJobs.finish(ctx, job, "FAILED", code, message, result);
+      return { claimed: true, status: "FAILED", failure_code: code, error: message };
+    };
     try {
       const brain = await repo.brain(ctx);
       let app = await repo.app(ctx, job.application_id);
@@ -225,7 +245,7 @@ function service(repo, ai, { dispatch = null } = {}) {
       const citations = SE.researchCitations(strategy, built.selected, brain.research);
       Object.assign(result, { cited_records: citations.cited, invalid_citations: citations.invalid });
       if (citations.invalid.length)
-        return await fail("EVIDENCE_CHAIN", "The strategy cited research that was not selected as evidence for it (" + citations.invalid.slice(0, 5).join(", ") + "). Nothing was saved; generate again.");
+        return await reject(strategy, "EVIDENCE_CHAIN", "The strategy cited research that was not selected as evidence for it (" + citations.invalid.slice(0, 5).join(", ") + "). Nothing was saved; generate again.");
       // Applicant-specific amounts, rates, quantities, staffing, durations and
       // calculations must come from what was supplied; missing inputs are
       // gaps, not estimates.
@@ -235,9 +255,9 @@ function service(repo, ai, { dispatch = null } = {}) {
       const unsupported = analysis.unsupported;
       Object.assign(result, { unsupported_quantities: unsupported.slice(0, 25), uncited_research: analysis.uncited.slice(0, 25), validation_ms: Date.now() - validationStarted });
       if (unsupported.length)
-        return await fail("UNSUPPORTED_QUANTITY", "The strategy stated amounts or quantities that the supplied facts, application and selected research do not support (" + [...new Set(unsupported.map((u) => u.text))].slice(0, 5).join("; ") + "). Missing inputs must be named as gaps, not estimated. Nothing was saved; generate again.");
+        return await reject(strategy, "UNSUPPORTED_QUANTITY", "The strategy stated amounts or quantities that the supplied facts, application and selected research do not support (" + [...new Set(unsupported.map((u) => u.text))].slice(0, 5).join("; ") + "). Missing inputs must be named as gaps, not estimated. Nothing was saved; generate again.");
       if (analysis.uncited.length)
-        return await fail("EVIDENCE_CHAIN", "Research findings must cite their selected record id in the same sentence, and that record must report the finding (" + [...new Set(analysis.uncited.map((u) => u.text))].slice(0, 3).join("; ") + "). Nothing was saved; generate again.");
+        return await reject(strategy, "EVIDENCE_CHAIN", "Research findings must cite their selected record id in the same sentence, and that record must report the finding (" + [...new Set(analysis.uncited.map((u) => u.text))].slice(0, 3).join("; ") + "). Nothing was saved; generate again.");
       // Re-read and re-check immediately before saving; the save itself
       // rejects any concurrent change to the application or approved facts.
       app = await repo.app(ctx, job.application_id);
@@ -398,6 +418,14 @@ function service(repo, ai, { dispatch = null } = {}) {
           job = await repo.strategyJobs.status(ctx, job.application_id);
         }
         return { job: publicJob(job) };
+      }
+      // The latest strategy output rejected by validation, for diagnosis. It is
+      // marked REJECTED, is never the application's strategy, and cannot be
+      // approved or drafted from.
+      if (action === "strategy_rejection") {
+        const r = await repo.strategyJobs.rejection(ctx, C.id(body.application_id));
+        if (!r) C.fail("No rejected strategy output for this application.", 404);
+        return { rejection: { ...r, status: "REJECTED", job_status: r.status, current: false, approvable: false } };
       }
       if (action === "research_evidence") {
         const full = await repo.brain(ctx);
