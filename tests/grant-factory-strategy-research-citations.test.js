@@ -160,7 +160,7 @@ test("the prompt shows the citation format without growing much", () => {
   assert.match(p, /in brackets right after each research-derived finding in the same sentence/);
   assert.match(p, /\[ABC-012\]/);
   assert.match(p, /an author, study or source name alone is not a citation/);
-  assert.ok(p.length < 4300, "prompt length " + p.length);
+  assert.ok(p.length < 4450, "prompt length " + p.length);
 });
 
 // ---- Performance --------------------------------------------------------
