@@ -198,31 +198,31 @@
     "type": "object",
     "properties": {
       "primary_case": {
-        "type": "string"
+        "type": "string", "description": "At most 200 words."
       },
       "funder_priorities": {
-        "type": "string"
+        "type": "string", "description": "At most 150 words."
       },
       "alignment_points": {
-        "type": "string"
+        "type": "string", "description": "At most 250 words."
       },
       "themes_to_emphasize": {
-        "type": "string"
+        "type": "string", "description": "At most 200 words."
       },
       "themes_to_deemphasize": {
-        "type": "string"
+        "type": "string", "description": "At most 150 words."
       },
       "likely_funding_use": {
-        "type": "string"
+        "type": "string", "description": "At most 200 words."
       },
       "evidence_gaps": {
-        "type": "string"
+        "type": "string", "description": "At most 350 words."
       },
       "evidence_chain": {
-        "type": "string"
+        "type": "string", "description": "At most 1000 words."
       },
       "budget_consistency": {
-        "type": "string"
+        "type": "string", "description": "At most 350 words."
       }
     },
     "required": [
