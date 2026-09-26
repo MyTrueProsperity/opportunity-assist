@@ -44,7 +44,8 @@ test("methodology reaches strategy, writer and auditor; the framework reaches st
       if (task === "audit") return { data: { coverage_complete: true, claims: [{ claim: data.answer, status: "SUPPORTED", reason: "ok", evidence_ids: [mission.id] }] } };
       throw Error("Unexpected task " + task);
     } };
-    const s = service(f.repo, ai);
+    // Strategy runs as a background job; run it inline here.
+    const s = service(f.repo, ai, { dispatch: (ctx, job) => s.runStrategyJob(ctx, job.id) });
     await s.handle(f.owner, { action: "seed", pack: testPack() });
     brain = await f.repo.brain(f.owner);
     const [primary, other] = brain.programs;
@@ -59,7 +60,9 @@ test("methodology reaches strategy, writer and auditor; the framework reaches st
     let app = await s.handle(f.owner, { action: "new_application", funder_name: "Test Foundation", grant_program_name: "Education grant", text: "1. Describe your mission. Maximum 100 words." });
     const qId = app.questions[0].id;
     app = await s.handle(f.owner, { action: "save_application", application_id: app.id, revision: app.revision, application: { primary_program_id: primary.id } });
-    app = await s.handle(f.owner, { action: "strategy", application_id: app.id, revision: app.revision });
+    const started = await s.handle(f.owner, { action: "strategy", application_id: app.id, revision: app.revision });
+    assert.equal(started.job.status, "COMPLETED");
+    app = (await s.handle(f.owner, { action: "get_application", application_id: app.id })).app;
     assert.deepEqual(seen.strategy.methodology_rules, METHODOLOGY.rules);
     assert.deepEqual(seen.strategy.organization_framework.program_alignment.map(p => p.name), [primary.name]);
     assert.equal(JSON.stringify(seen.strategy).includes("Unverified 38%"), false);
