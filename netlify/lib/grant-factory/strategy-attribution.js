@@ -12,7 +12,12 @@
 // verb (in either order), or "according to" an evidence noun. It does not fire
 // on:
 //   - the organization's or applicant's own data ("our alumni data show",
-//     "the application states"), or a source named in the organization facts;
+//     "the application states"), a source named in the organization facts,
+//     or the organization's own evidence ("the Institute's own evidence
+//     supports", "Bright Minds evidence supports");
+//   - a description of what an application, funder question or prompt asks
+//     for ("an explanation of what historical Bright Minds evidence
+//     supports", "asks what evidence supports the model");
 //   - plans, recommendations, gaps, questions and instructions ("collect data
 //     showing", "evaluation will show", "Gaps: no outcome data", "Do not ...");
 //   - an evidence noun used as a label ("research-informed design",
@@ -52,6 +57,17 @@ const PLAN_WORD = /\b(?:will|would|should|could|shall|must|plans? to|intends? to
 // "not established by the available research", "no evidence shows",
 // "lack of research demonstrating". Checked just before the match.
 const NEGATED = /\b(?:not|no|never|nor|neither|without|cannot|can['’]t|isn['’]t|aren['’]t|wasn['’]t|weren['’]t|doesn['’]t|don['’]t|didn['’]t|hasn['’]t|haven['’]t|lacks?|lacking|lack of|absence of|absent|insufficient|limited|missing|unavailable|little|scant)\s+(?:[A-Za-z'’-]+\s+){0,3}$/i;
+// An explicit owner just before "evidence": the organization's own evidence,
+// records or documentation, not external research ("the Institute's own
+// evidence", "our evidence", "internal evidence"). A bare qualifier
+// ("historical evidence") is not an owner; nor is "research evidence".
+const OWNER = /\b(?:our|its|their|own|internal|organi[sz]ation(?:'s|’s|al)?|institute(?:'s|’s)?|program(?:'s|’s|matic)?|applicant(?:'s|’s)?|alumni|participants?(?:'|’)?(?:s)?|school(?:'s|’s)?|academy(?:'s|’s)?)\s+(?:[A-Za-z'’-]+\s+){0,2}$/i;
+// Text that describes what an application, funder question or prompt asks
+// the applicant to provide, rather than asserting a finding: "an explanation
+// of what historical Bright Minds evidence supports", "asks what evidence
+// supports the model", "a description of how the data show ...". Checked
+// just before the evidence noun.
+const REQUEST = /\b(?:(?:descriptions?|explanations?|accounts?|summar(?:y|ies)|statements?|discussions?|clarifications?)\s+of|asks?|asked|asking|describ(?:e|es|ing)|explain(?:s|ing)?|clarif(?:y|ies|ying)|identif(?:y|ies|ying)|specif(?:y|ies|ying)|stat(?:e|es|ing)|address(?:es|ing)?|answer(?:s|ing)?|about|on)\s+(?:what|which|how|whether)\s+(?:[A-Za-z'’-]+\s+){0,4}$/i;
 // Adjectives that often lead an evidence noun and are never an owner.
 const GENERIC_LEAD = new Set("the a an national federal state statewide recent longitudinal multiple several randomized independent peer-reviewed existing published external academic many most some rigorous new current other large small prior earlier later quasi-experimental experimental".split(" "));
 
@@ -164,13 +180,21 @@ function attribution(sentence, orgText = "") {
     // surveys, evaluations and empirical findings are always external, so
     // "Historical research supports ..." still needs its record id.
     const beforeNoun = sentence.slice(Math.max(0, h.nounAt - 60), h.nounAt);
-    const external = !OWN_NOUN.test(h.noun) || /\b(?:empirical|research|study|studies|evaluation|survey|trial)\s+$/i.test(beforeNoun);
+    const researchNoun = /\b(?:empirical|research|study|studies|evaluation|survey|trial)\s+$/i.test(beforeNoun);
+    const external = !OWN_NOUN.test(h.noun) || researchNoun;
     if (!external && OWN.test(beforeNoun)) continue;
+    // "Evidence" is the organization's own when an explicit owner or the
+    // organization's name leads it ("the Institute's own evidence", "Bright
+    // Minds evidence"); "historical evidence" and "research evidence" are not.
+    const ownable = !external || (/^evidence$/i.test(h.noun) && !researchNoun);
+    if (ownable && /^evidence$/i.test(h.noun) && OWNER.test(beforeNoun)) continue;
     const lead = beforeNoun.match(/((?:[A-Z][\w'’-]*\s+){1,4})$/);
-    if (!external && lead && orgText) {
+    if (ownable && lead && orgText) {
       const name = lead[1].trim().split(/\s+/).filter((w) => !GENERIC_LEAD.has(w.toLowerCase())).join(" ").toLowerCase();
       if (name.length >= 4 && orgText.includes(name)) continue;
     }
+    // Describing what a question or application asks for, not asserting it.
+    if (REQUEST.test(clauseBefore(sentence, h.nounAt))) continue;
     // "evidence gaps", "data points", "study hall": a label, not a report.
     if (/^\s*(?:gaps?|plan|plans|needs?|collection|system|systems|design|capacity|infrastructure|hall|tools?)\b/i.test(sentence.slice(h.nounAt).replace(/^[A-Za-z-]+/, ""))) continue;
     return h.text.trim();
@@ -264,6 +288,7 @@ function instructionOrGap(sentence, at) {
   const clause = clauseBefore(sentence, at);
   if (PLAN_START.test(clause)) return true;
   if (PLAN_WORD.test(sentence.slice(Math.max(0, at - 30), at))) return true;
+  if (REQUEST.test(clause)) return true;
   return NEGATED.test(sentence.slice(Math.max(at - clause.length, at - 50), at));
 }
 

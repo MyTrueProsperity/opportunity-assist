@@ -105,6 +105,48 @@ test("genuine organization historical and internal-data statements are not resea
     assert.ok(SA.attribution(sentence), sentence);
 });
 
+test("the exact Bright Minds historical-evidence sentence (funder_priorities) is a description of the question, not a research claim", () => {
+  ok(withSection("funder_priorities", "The application questions require: (1) a description of planned programs clearly identifying future activities; and (2) an explanation of what historical Bright Minds evidence supports, without confusing documented alumni outcomes with total students served or success rates."));
+  // The distinction Bill drew.
+  ok(withSection("funder_priorities", "What historical Bright Minds evidence supports this approach?"));
+  rejected(withSection("funder_priorities", "National research evidence supports this approach."), /research evidence supports/);
+});
+
+test("describing what an application, funder question or prompt asks for is not a research claim", () => {
+  for (const sentence of [
+    "The funder question asks what evidence supports the model.",
+    "Question 2 asks applicants to explain what research shows about their approach.",
+    "Provide a description of how the data show participant outcomes.",
+    "Clarify what historical data demonstrate about participant outcomes.",
+    "The prompt requests a statement of which studies support the design.",
+  ]) ok(withSection("funder_priorities", sentence));
+  // The same words asserted as findings still need a selected record.
+  rejected(withSection("funder_priorities", "The application asks what evidence supports this design; national research demonstrates that mentoring improves outcomes."), /research demonstrates/);
+  rejected(withSection("alignment_points", "What research shows is that mentoring improves outcomes."), /research shows/);
+});
+
+test("the Institute's own evidence, records and documentation are not external research; external evidence still is", () => {
+  for (const sentence of [
+    "The Institute's own evidence supports an applied-learning model.",
+    "Our evidence supports the integrated design.",
+    "Internal evidence supports continued alumni engagement.",
+    "Bright Minds evidence supports professional communication gains among alumni.",
+    "The organization's documentation shows 123+ alumni outcomes.",
+    "Bright Minds records document alumni across many colleges and sectors.",
+  ]) ok(withSection("primary_case", sentence));
+  for (const sentence of [
+    "Historical evidence indicates gains in earnings.",
+    "Research evidence supports the integrated design.",
+    "National research evidence supports this approach.",
+    "External evidence supports mentoring.",
+    "Survey evidence documents employer priorities.",
+    "Studies demonstrate gains in youth employment.",
+    "Internal evaluations show gains.",
+  ]) assert.ok(SA.attribution(sentence, "institute of bright minds bright minds"), sentence);
+  rejected(withSection("alignment_points", "National research supports the program's integrated approach."), /research supports/);
+  rejected(withSection("evidence_chain", "National employer priorities and research rationales support the program's design priorities but do not establish local gaps."), /research rationales support/);
+});
+
 test("existing controls are intact", () => {
   // Selected-evidence allowlist and canonical ids.
   assert.deepEqual(validate(withSection("evidence_chain", "Hardship: 44% of households are below ALICE [EM-051].")).invalid, ["EM-051"]);
