@@ -1,18 +1,12 @@
 "use strict";
 // EVALUATION-ONLY fork of netlify/lib/grant-factory/strategy-quantities.js.
-// Never loaded by production code. Differences from production are marked
-// CANDIDATE and switched by the options object passed to make():
-//   segmentation  a semicolon starts a new clause whatever follows it (not
-//                 only before a capital); a sentence also ends at ".**" and
-//                 before an opening quotation mark; a clause with no citation
-//                 borrows the next citation in the sentence, else the one
-//                 before it
-//   calcGuard     "n=49" and "d = .37" are not calculations (a single-letter
-//                 symbol before "=")
-//   ownership, support  passed through to the candidate attribution module
-// Everything else is byte-for-byte the production module.
+// Never loaded by production code. It exists so the candidate attribution
+// module (tests/validator-eval/candidate/strategy-attribution.js) can be run
+// through the production analysis; the options object is passed through to
+// it. Everything else is byte-for-byte the production module (segmentation,
+// citation ownership and the calculation guard became production in Step 1).
 
-function make(options = { segmentation: true, ownership: true, support: true, calcGuard: true }) {
+function make(options = { support: true }) {
 // Quantitative grounding for strategy.
 //
 // Strategy may state an applicant-specific amount, rate, quantity, staffing
@@ -327,14 +321,18 @@ function namesSource(sentence, sources, skip = () => false) {
   return null;
 }
 
-const SECTION_SPLIT = options.segmentation
-  ? /\n+|(?<=[.!?](?:\*\*|\*)?)\s+(?=[A-Z0-9*(\-•\["“])/ // CANDIDATE
-  : /\n+|(?<=[.!?])\s+(?=[A-Z0-9*(\-•\[])/;
-// Clauses of a sentence joined by semicolons. A semicolon does not end the
+// A sentence ends at ".", "!" or "?", also when bold markup closes right
+// after it ("**Missing: ...**. National data ...") and also before an opening
+// quotation mark ("... identified. \"Every student ...\"").
+const SECTION_SPLIT = /\n+|(?<=[.!?](?:\*\*|\*)?)\s+(?=[A-Z0-9*(\-•\["“])/;
+// Clauses of a sentence joined by semicolons, whatever follows the semicolon
+// ("...; Raposa 2019)" is a clause too). A semicolon does not end the
 // sentence for citations: a clause with no record id of its own is tied to
 // the next citation in the same sentence ("17% ...; Florida requires ...
-// [CFSC-942, CFSC-937]"), never to a citation in another sentence.
-const CLAUSE_SPLIT = options.segmentation ? /(?<=;)\s+/ /* CANDIDATE */ : /(?<=;)\s+(?=[A-Z0-9*(\-•\[])/;
+// [CFSC-942, CFSC-937]"), else to the citation before it ("(RS-108: ...;
+// modest improvements; Raposa 2019)"), never to a citation in another
+// sentence.
+const CLAUSE_SPLIT = /(?<=;)\s+/;
 const TOKEN = /[A-Za-z0-9]+(?:[-_.][A-Za-z0-9]+)*/g;
 // Sentences of a section. "et al." or "e.g." does not end a sentence, and a
 // citation left on its own after a full stop ("... 84% agree. [EP-018]")
@@ -395,7 +393,7 @@ function analyze(strategy, request, bundle) {
     for (let ci = 0; ci < clauses.length; ci++) {
       const sentence = clauses[ci];
       const own = clauseCites[ci];
-      const cites = own.length ? own : clauseCites.slice(ci + 1).find((c) => c.length) || (options.segmentation ? [...clauseCites.slice(0, ci)].reverse().find((c) => c.length) : null) || []; // CANDIDATE: else the citation before
+      const cites = own.length ? own : clauseCites.slice(ci + 1).find((c) => c.length) || [...clauseCites.slice(0, ci)].reverse().find((c) => c.length) || [];
       if (cites.length) researchUsed = true;
       if (section === "evidence_chain") for (const c of cites) chainCites.add(c);
       // Wording that attributes a claim to research ("research shows",
@@ -432,7 +430,9 @@ function analyze(strategy, request, bundle) {
       // Each "=" closes a calculation over the numbers since the previous "=".
       let from = 0, carry = null;
       for (const eq of sentence.matchAll(/=/g)) {
-        if (options.calcGuard && /(?:^|[\s(,;:])[A-Za-z]\s?$/.test(sentence.slice(0, eq.index))) continue; // CANDIDATE: "n=49", "d = .37"
+        // A single-letter symbol before "=" ("n=47 studies", "d = .37") is a
+        // statistic, not a calculation.
+        if (/(?:^|[\s(,;:])[A-Za-z]\s?$/.test(sentence.slice(0, eq.index))) continue;
         const span = sentence.slice(from, eq.index);
         const operandMatches = bare.filter((b) => b.index >= from && b.index < eq.index && !/[A-Za-z_][-.]?$/.test(sentence.slice(0, b.index)));
         const resultQ = qs.find((q) => q.start > eq.index) || null;
