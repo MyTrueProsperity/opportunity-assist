@@ -162,7 +162,22 @@ function recordSupport(fact) {
   const r = fact.research || {};
   const text = [fact.display_name, typeof fact.value === "string" ? fact.value.replace(/\b(?:https?:\/\/|www\.)\S+/gi, " ") : fact.value, fact.category, r.topic, r.subtopic, r.title, r.finding, flat(r.supports), r.approved_language, r.population,
     r.geography, r.source_org, r.publisher, flat(r.source_authors), flat(r.authors), r.source_title, flat(r.keywords), flat(r.funding_tags), r.evidence_domain].filter(Boolean).join(" ");
-  return { stems: contentStems(text), words: options.support ? contentLemmas(text) : null, denied: deniedOutcomes(r) };
+  const stems = contentStems(text);
+  // CANDIDATE sourceAcronyms: the acronym of a multi-word source or publisher
+  // name ("National Association of Colleges and Employers" -> "nace") is a
+  // subject term of the record, so a citation that names the source by its
+  // acronym is recognized.
+  if (options.sourceAcronyms) for (const v of [r.source_org, r.publisher, ...[].concat(r.source_authors || []), ...[].concat(r.authors || [])]) {
+    if (typeof v !== "string") continue;
+    for (const part of v.split(/[;,]|\s\/\s/)) {
+      const all = part.trim().split(/\s+/).filter((w) => /^[A-Za-z]/.test(w));
+      const caps = all.filter((w) => /^[A-Z]/.test(w));
+      if (caps.length < 2 || all.length > 8) continue;
+      // With and without the minor words: "FDE" and "FDOE" for "Florida Department of Education".
+      for (const ws of [caps, all]) { const a = ws.map((w) => w[0].toLowerCase()).join(""); if (a.length >= 3 && a.length <= 6) stems.add(a); }
+    }
+  }
+  return { stems, words: options.support ? contentLemmas(text) : null, denied: deniedOutcomes(r) };
 }
 // CANDIDATE: whole-word forms (light lemmatizer) so a single-term match is
 // never a six-character stem collision ("reading" against "readiness").
@@ -316,14 +331,89 @@ function unsupportedClaim(claim, records, anchored = false) {
   // held to the production thresholds (one shared term for two, two shared
   // terms and a quarter for three or more), on stems, whole words counting
   // as stems too.
+  if (claim.label && options.labelDistinctive) {
+    // CANDIDATE labelDistinctive: a label is judged by its distinctive terms
+    // (df at most a quarter of the selected records). It passes when a cited
+    // record shares a distinctive term or any two terms with it. Otherwise it
+    // is rejected only when its distinctive terms describe some other selected
+    // record; a label that describes nothing in particular is imprecise, not
+    // misleading, and passes.
+    const own = contentStems(text);
+    if (!own.size) return null;
+    const df = documentFrequency(records);
+    const distinctive = (st) => (df.counts.get(st) || 0) <= df.threshold;
+    const union = new Set();
+    for (const id of claim.ids) for (const s of records.get(id)?.stems || []) union.add(s);
+    const shared = [...own].filter((st) => union.has(st));
+    if (shared.length >= 2 || shared.some(distinctive)) return null;
+    for (const [id, rec] of records) {
+      if (claim.ids.includes(id)) continue;
+      const terms = [...own].filter((st) => rec.stems.has(st) && distinctive(st));
+      if (terms.length) return "the cited record" + (claim.ids.length > 1 ? "s do" : " does") + " not report this label; it describes " + id + " (" + terms.join(", ") + ")";
+    }
+    return null;
+  }
+  if (claim.label && options.labelWeighted) {
+    // CANDIDATE labelWeighted: which record does the label describe? Each
+    // shared subject term weighs 1/df (df = selected records containing it).
+    // The label is misleading when some other selected record outscores the
+    // cited records on distinctive terms (df at most a quarter of the
+    // records); a label that describes nothing in particular is imprecise
+    // and passes; ties pass.
+    const own = contentStems(text);
+    if (!own.size) return null;
+    const df = documentFrequency(records);
+    const w = (st) => 1 / (df.counts.get(st) || 1);
+    const union = new Set();
+    for (const id of claim.ids) for (const s of records.get(id)?.stems || []) union.add(s);
+    const cited = [...own].filter((st) => union.has(st)).reduce((a, st) => a + w(st), 0);
+    let best = null, bestScore = 0;
+    for (const [id, rec] of records) {
+      if (claim.ids.includes(id)) continue;
+      const terms = [...own].filter((st) => rec.stems.has(st) && (df.counts.get(st) || 0) <= df.threshold);
+      const score = terms.reduce((a, st) => a + w(st), 0);
+      if (score > bestScore) { bestScore = score; best = id + " (" + terms.join(", ") + ")"; }
+    }
+    if (bestScore > cited + 1e-9) return "the cited record" + (claim.ids.length > 1 ? "s do" : " does") + " not report this label; it describes " + best;
+    return null;
+  }
   if (claim.label) {
     const own = contentStems(text);
     if (own.size < (options.labelMin || 2)) return null;
     const union = new Set();
     for (const id of claim.ids) for (const s of records.get(id)?.stems || []) union.add(s);
-    const matched = [...own].filter((s) => union.has(s)).length;
-    const enough = options.labelLenient ? matched >= 1 : (own.size <= 2 ? matched >= 1 : matched >= 2 && matched / own.size >= 0.25);
+    const matchedTerms = [...own].filter((s) => union.has(s));
+    const matched = matchedTerms.length;
+    let enough = options.labelLenient ? matched >= 1 : (own.size <= 2 ? matched >= 1 : matched >= 2 && matched / own.size >= 0.25);
+    // CANDIDATE labelShortDistinctive: a two-term label matching only one
+    // common term (df above a quarter of the records) is not yet supported.
+    if (enough && options.labelShortDistinctive && own.size === 2 && matched === 1) {
+      const df = documentFrequency(records);
+      if ((df.counts.get(matchedTerms[0]) || 0) > df.threshold) enough = false;
+    }
+    // CANDIDATE labelCommonMajority: a match made only of common terms (df
+    // above a quarter of the records) must cover more than half of the
+    // label's terms; "arts education" is not supported by "education" alone.
+    if (enough && options.labelCommonMajority) {
+      const df = documentFrequency(records);
+      if (!matchedTerms.some((st) => (df.counts.get(st) || 0) <= df.threshold) && matched / own.size <= 0.5) enough = false;
+    }
     if (enough) return null;
+    // CANDIDATE labelOtherRecord: a label that fails the thresholds is
+    // rejected only when it describes some other selected record (shares a
+    // term distinctive of that record); a label that describes nothing in
+    // particular is imprecise, not misleading.
+    if (options.labelOtherRecord) {
+      const df = documentFrequency(records);
+      let other = null;
+      for (const [id, rec] of records) {
+        if (claim.ids.includes(id)) continue;
+        const shared = [...own].filter((st) => rec.stems.has(st) && (df.counts.get(st) || 0) <= df.threshold && !((options.labelShortDistinctive || options.labelCommonMajority) && union.has(st)));
+        if (shared.length) { other = id + " (" + shared.join(", ") + ")"; break; }
+      }
+      if (!other) return null;
+      return "the cited record" + (claim.ids.length > 1 ? "s do" : " does") + " not report this label (" + matched + " of " + own.size + " subject terms match); the label describes " + other;
+    }
     return "the cited record" + (claim.ids.length > 1 ? "s do" : " does") + " not report this label (" + matched + " of " + own.size + " subject terms match)";
   }
   // An effect a cited record reports as absent, stated as present.
@@ -383,7 +473,7 @@ function documentFrequency(records) {
   if (df) return df;
   const counts = new Map();
   for (const r of records.values()) for (const s of r.stems) counts.set(s, (counts.get(s) || 0) + 1);
-  df = { counts, threshold: Math.max(1, Math.ceil(records.size / 4)) };
+  df = { counts, threshold: Math.max(1, Math.ceil(records.size / (options.dfDivisor || 4))) };
   DF.set(records, df);
   return df;
 }
