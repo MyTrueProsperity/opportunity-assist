@@ -1,15 +1,24 @@
 "use strict";
 // EVALUATION-ONLY fork of netlify/lib/grant-factory/strategy-attribution.js.
 // Never loaded by production code. Differences from production are marked
-// CANDIDATE and switched by the options object passed to make():
-//   support    a cited claim is supported by at least one distinctive shared
-//              term (a whole word the record uses, found in few of the
-//              selected records) or two shared terms of any kind; no 25%
-//              ratio, no phraseBefore
-// Everything else is byte-for-byte the production module (segmentation,
-// citation ownership and the calculation guard became production in Step 1).
+// CANDIDATE and switched by the options object passed to make(); every
+// switch is on by default, which is the production behavior since Step 1.5:
+//   support           the support scorer (one distinctive whole-word term or
+//                     two shared terms); off: the Step 1 thresholds and the
+//                     phrase before the citation
+//   contentOwnership  "Label (ID: content)": the content is the claim
+//   labelCheck        the label is a separate claim under the label rule
+//   sourceAcronyms    acronyms of source names are record vocabulary
+//   listOwnership     (strategy-quantities fork) a parenthetical citation
+//                     list owns the claim before it
+//   numberGuard       (strategy-quantities fork, off by default) digits in
+//                     identifiers and number words in hyphenated compounds
+//                     are not supplied numbers
+// Everything else is byte-for-byte the production module.
+const DEFAULTS = { support: true, contentOwnership: true, labelCheck: true, sourceAcronyms: true, listOwnership: true, numberGuard: false };
 
-function make(options = { support: true }) {
+function make(options = DEFAULTS) {
+options = { ...DEFAULTS, ...options };
 // Research attribution for strategy.
 //
 // A sentence that explicitly attributes a factual claim to external evidence
@@ -153,15 +162,32 @@ function deniedOutcomes(r) {
   }
   return out;
 }
-// One entry per selected record, built once per request.
+// One entry per selected record, built once per request: its subject stems,
+// its whole words, and the outcomes it denies.
 function recordSupport(fact) {
   const r = fact.research || {};
   const text = [fact.display_name, typeof fact.value === "string" ? fact.value.replace(/\b(?:https?:\/\/|www\.)\S+/gi, " ") : fact.value, fact.category, r.topic, r.subtopic, r.title, r.finding, flat(r.supports), r.approved_language, r.population,
     r.geography, r.source_org, r.publisher, flat(r.source_authors), flat(r.authors), r.source_title, flat(r.keywords), flat(r.funding_tags), r.evidence_domain].filter(Boolean).join(" ");
-  return { stems: contentStems(text), words: options.support ? contentLemmas(text) : null, denied: deniedOutcomes(r) };
+  const stems = contentStems(text);
+  // The acronym of a multi-word source, publisher or author name ("National
+  // Association of Colleges and Employers" -> "nace") is a subject term of
+  // the record, so a citation that names the source by its acronym is
+  // recognized. Both forms are added: "FDE" and "FDOE" for "Florida
+  // Department of Education".
+  // CANDIDATE sourceAcronyms
+  if (options.sourceAcronyms) for (const v of [r.source_org, r.publisher, ...[].concat(r.source_authors || []), ...[].concat(r.authors || [])]) {
+    if (typeof v !== "string") continue;
+    for (const part of v.split(/[;,]|\s\/\s/)) {
+      const all = part.trim().split(/\s+/).filter((w) => /^[A-Za-z]/.test(w));
+      const caps = all.filter((w) => /^[A-Z]/.test(w));
+      if (caps.length < 2 || all.length > 8) continue;
+      for (const ws of [caps, all]) { const a = ws.map((w) => w[0].toLowerCase()).join(""); if (a.length >= 3 && a.length <= 6) stems.add(a); }
+    }
+  }
+  return { stems, words: options.support ? contentLemmas(text) : null, denied: deniedOutcomes(r) };
 }
-// CANDIDATE: whole-word forms (light lemmatizer) so a single-term match is
-// never a six-character stem collision ("reading" against "readiness").
+// Whole-word forms (a light lemmatizer) so that a single-term match is never
+// a six-character stem collision ("reading" against "readiness").
 function lemma(w) {
   let s = w.toLowerCase().replace(/['’]s?$/, "");
   if (/ies$/.test(s) && s.length > 4) s = s.slice(0, -3) + "y";
@@ -178,6 +204,18 @@ function contentLemmas(text) {
     out.add(lemma(lw));
   }
   return out;
+}
+// How many selected records contain each stem, cached per record map. A stem
+// is distinctive when at most a quarter of the selected records have it.
+const DF = new WeakMap();
+function documentFrequency(records) {
+  let df = DF.get(records);
+  if (df) return df;
+  const counts = new Map();
+  for (const r of records.values()) for (const s of r.stems) counts.set(s, (counts.get(s) || 0) + 1);
+  df = { counts, threshold: Math.max(1, Math.ceil(records.size / 4)) };
+  DF.set(records, df);
+  return df;
 }
 
 // ---- attribution ------------------------------------------------------------
@@ -244,15 +282,21 @@ const LABEL_PREFIX = /^[\s\-•*\d.)(]*(?:\*\*)?[^:()\[\]]{1,60}?(?:\*\*)?:\s*/;
 //   "CFSC-942: 17% ..." or     citation-first: nothing but a heading before the
 //   "[EP-018] reports that"    id, so the claim is the text after it, up to the
 //                             next citation;
-//   "Label (CFSC-937: ...)"    a label with subject words of its own stays the
-//                             claim, as before; the text after the colon is
-//                             not read in its place;
+//   "Label (CFSC-937: ...)"    the content after the colon is the substantive
+//                             claim; the label before the id is a separate
+//                             claim marked `label`, held to the label rule in
+//                             unsupportedClaim; content that is little more
+//                             than a figure is judged together with its
+//                             label;
+//   "Claim (A: ...; B: ...;    `listIds` are the ids of the later items of a
+//    C: ...)"                  parenthetical list the sentence opens: the last
+//                             label in the sentence is owned by all of them;
 //   "... [A] and national      a group with no subject words of its own, after
 //   research [B] finds ..."    an earlier claim, attaches to the claim before
 //                             it and to the claim after it, so text between
 //                             two citations passes when either record reports
 //                             it.
-function claims(sentence, isSelected, isPackage = () => false) {
+function claims(sentence, isSelected, isPackage = () => false, listIds = []) {
   const cites = [];
   for (const m of sentence.matchAll(/[A-Za-z0-9]+(?:[-_.][A-Za-z0-9]+)*/g)) if (isSelected(m[0])) cites.push({ id: m[0], start: m.index, end: m.index + m[0].length });
   // Package versions next to a record id are part of its citation.
@@ -272,6 +316,16 @@ function claims(sentence, isSelected, isPackage = () => false) {
     const next = groups[i + 1];
     const citationFirst = !contentStems(text).size && (/^\s*:/.test(sentence.slice(g.end)) || (!out.length && !pending.length));
     from = g.end;
+    // CANDIDATE contentOwnership, labelCheck
+    if (options.contentOwnership && !citationFirst && contentStems(text).size && /^\s*:/.test(sentence.slice(g.end))) {
+      const following = between(g.end, next ? next.start : sentence.length).replace(/^\s*:\s*/, "");
+      const ids = [...new Set([...pending, ...g.ids, ...(next ? [] : listIds)])];
+      if (options.labelCheck) out.push({ ids, text: text.replace(/[\s(\[]+$/, ""), after: false, label: true });
+      out.push(contentStems(following).size >= 2 ? { ids, text: following.trim(), after: true } : { ids, text: (text + " " + following).trim(), after: true });
+      pending = [];
+      from = next ? next.start : sentence.length;
+      return;
+    }
     if (citationFirst) {
       const following = between(g.end, next ? next.start : sentence.length).replace(/^\s*:\s*/, "");
       out.push({ ids: [...new Set([...pending, ...g.ids])], text: (text + " " + following).trim(), after: true });
@@ -292,6 +346,7 @@ const NEGATION = /\b(?:not|no|did not|didn['’]t|without|neither|nor|unchanged|
 // which already ties the claim to that record's finding.
 function unsupportedClaim(claim, records, anchored = false) {
   const text = claim.text;
+  if (claim.label) return misleadingLabel(claim, records);
   // An effect a cited record reports as absent, stated as present.
   for (const id of claim.ids) {
     const rec = records.get(id);
@@ -306,11 +361,14 @@ function unsupportedClaim(claim, records, anchored = false) {
       }
     }
   }
-  // The claim's subject must be what the cited records report: either the
-  // whole claim, or the phrase the citation is attached to (the item just
-  // before it in a list or compound sentence), under the same thresholds.
+  // The claim's subject must be what the cited records report: one shared
+  // term that is distinctive among the selected records (found in at most a
+  // quarter of them) and used as a whole word by the record, or two shared
+  // terms of any kind; a claim anchored by a number the record contains, or
+  // a very short claim, needs one shared term.
   const union = new Set();
   for (const id of claim.ids) for (const s of records.get(id)?.stems || []) union.add(s);
+  // CANDIDATE support (off: the Step 1 thresholds and the phrase before the citation)
   if (!options.support) {
     const check = (t) => {
       const own = contentStems(t);
@@ -325,36 +383,46 @@ function unsupportedClaim(claim, records, anchored = false) {
     }
     return "the cited record" + (claim.ids.length > 1 ? "s do" : " does") + " not report this claim (" + whole.matched + " of " + whole.own + " subject terms match)";
   }
-  // CANDIDATE support: one distinctive shared term (found in at most a
-  // quarter of the selected records) or two shared terms of any kind; a
-  // number the record contains (anchored) or a very short claim needs one.
-  const df = documentFrequency(records);
   const own = contentStems(text);
   const matched = [...own].filter((s) => union.has(s));
-  // A single shared term must be a whole word the record uses (not only a
-  // stem) and distinctive among the selected records.
   const wordUnion = new Set();
   for (const id of claim.ids) for (const w of records.get(id)?.words || []) wordUnion.add(w);
+  const df = documentFrequency(records);
   const exact = [...contentLemmas(text)].filter((w) => wordUnion.has(w));
   const distinctive = exact.filter((w) => { const st = stem(w); return (df.counts.get(SAME.get(st) || st) || 0) <= df.threshold; });
-  const enough = !own.size || matched.length >= 2 || distinctive.length >= 1 || ((anchored || own.size <= 2) && matched.length >= 1);
-  if (enough) return null;
+  if (!own.size || matched.length >= 2 || distinctive.length >= 1 || ((anchored || own.size <= 2) && matched.length >= 1)) return null;
   return "the cited record" + (claim.ids.length > 1 ? "s do" : " does") + " not report this claim (" + matched.length + " of " + own.size + " subject terms match, none distinctive)";
 }
-// CANDIDATE: how many selected records contain each stem, cached per record
-// map. A stem is distinctive when at most a quarter of the records have it.
-const DF = new WeakMap();
-function documentFrequency(records) {
-  let df = DF.get(records);
-  if (df) return df;
-  const counts = new Map();
-  for (const r of records.values()) for (const s of r.stems) counts.set(s, (counts.get(s) || 0) + 1);
-  df = { counts, threshold: Math.max(1, Math.ceil(records.size / 4)) };
-  DF.set(records, df);
-  return df;
+// A descriptive label before a citation ("Dual-enrollment policy (CFSC-937:
+// ...)") must describe the cited records. It passes under the subject-term
+// thresholds (one shared term for two, two shared terms and a quarter for
+// three or more), except that a match made only of common terms (found in
+// more than a quarter of the selected records) must cover more than half of
+// the label's terms: "arts education" is not supported by "education" alone.
+// A label that fails is rejected only when it describes some other selected
+// record, sharing with it a distinctive term the cited records lack; a label
+// that describes nothing in particular is imprecise, not misleading.
+function misleadingLabel(claim, records) {
+  const own = contentStems(claim.text);
+  if (!own.size) return null;
+  const union = new Set();
+  for (const id of claim.ids) for (const s of records.get(id)?.stems || []) union.add(s);
+  const df = documentFrequency(records);
+  const distinctive = (st) => (df.counts.get(st) || 0) <= df.threshold;
+  const matched = [...own].filter((s) => union.has(s));
+  let enough = own.size <= 2 ? matched.length >= 1 : matched.length >= 2 && matched.length / own.size >= 0.25;
+  if (enough && !matched.some(distinctive) && matched.length / own.size <= 0.5) enough = false;
+  if (enough) return null;
+  for (const [id, rec] of records) {
+    if (claim.ids.includes(id)) continue;
+    const shared = [...own].filter((st) => rec.stems.has(st) && distinctive(st) && !union.has(st));
+    if (shared.length) return "the cited record" + (claim.ids.length > 1 ? "s do" : " does") + " not report this label (" + matched.length + " of " + own.size + " subject terms match); the label describes " + id + " (" + shared.join(", ") + ")";
+  }
+  return null;
 }
-// The phrase a citation is attached to: the last list item or clause before
-// it, extended leftwards until it has at least three subject terms.
+// CANDIDATE (support off): the phrase a citation is attached to, the last
+// list item or clause before it, extended leftwards until it has at least
+// three subject terms.
 const PHRASE_SPLIT = /,\s+|;\s+|:\s+|\s+(?:and|or|while|whereas|but)\s+|\s+[\u2013\u2014-]\s+|\(/;
 function phraseBefore(text) {
   const parts = String(text).split(PHRASE_SPLIT);
@@ -377,7 +445,7 @@ function instructionOrGap(sentence, at) {
   return NEGATED.test(sentence.slice(Math.max(at - clause.length, at - 50), at));
 }
 
-return { attribution, claims, unsupportedClaim, recordSupport, deniedOutcomes, contentStems, instructionOrGap, phraseBefore, options };
+return { attribution, claims, unsupportedClaim, recordSupport, deniedOutcomes, contentStems, instructionOrGap, options };
 
 }
-module.exports = { make };
+module.exports = { make, DEFAULTS };
