@@ -15,7 +15,7 @@
 //                     identifiers and number words in hyphenated compounds
 //                     are not supplied numbers
 // Everything else is byte-for-byte the production module.
-const DEFAULTS = { support: true, contentOwnership: true, labelCheck: true, sourceAcronyms: true, listOwnership: true, numberGuard: false };
+const DEFAULTS = { support: true, contentOwnership: true, labelCheck: true, sourceAcronyms: true, listOwnership: true, numberGuard: false, subjectAttribution: false, leadDeterminers: false };
 
 function make(options = DEFAULTS) {
 options = { ...DEFAULTS, ...options };
@@ -90,6 +90,16 @@ const OWNER = /\b(?:our|its|their|own|internal|organi[sz]ation(?:'s|’s|al)?|in
 const REQUEST = /\b(?:(?:descriptions?|explanations?|accounts?|summar(?:y|ies)|statements?|discussions?|clarifications?)\s+of|asks?|asked|asking|describ(?:e|es|ing)|explain(?:s|ing)?|clarif(?:y|ies|ying)|identif(?:y|ies|ying)|specif(?:y|ies|ying)|stat(?:e|es|ing)|address(?:es|ing)?|answer(?:s|ing)?|about|on)\s+(?:what|which|how|whether)\s+(?:[A-Za-z'’-]+\s+){0,4}$/i;
 // Adjectives that often lead an evidence noun and are never an owner.
 const GENERIC_LEAD = new Set("the a an national federal state statewide recent longitudinal multiple several randomized independent peer-reviewed existing published external academic many most some rigorous new current other large small prior earlier later quasi-experimental experimental".split(" "));
+// CANDIDATE leadDeterminers: a sentence-initial determiner or pronoun
+// ("These findings support ...") is not the organization's name, even when
+// the word appears somewhere in the organization facts.
+const LEAD_DETERMINERS = new Set("these this those that such both all each every no some any additional further similar related key available relevant".split(" "));
+// CANDIDATE subjectAttribution: assertive verbs beyond the proximity list.
+const VERB2 = VERB + "|distinguish(?:es|ed)?|coexists?|favou?rs?|warrants?|justif(?:y|ies)|informs?|underpins?|validates?|corroborates?|calls? for|makes? the case|is supportive|are supportive|aligns? with|is consistent with|are consistent with";
+const VERB2_RE = new RegExp("^(?:" + VERB2 + ")$", "i");
+// Tokens that end the scan for the verb: the subject's predicate is
+// something else (an auxiliary, a modal, a plan), or a new clause begins.
+const SCAN_STOP = new RegExp("^(?:" + MODAL + "|is|are|was|were|be|been|being|has|have|had|does|do|did|remains?|remained|exists?|existed|lacks?|lacked|appears?|seems?|so|but|yet|because|since|while|whereas|although|though|unless|if|which|that|who|where|when|then|however|therefore|thus)$", "i");
 
 // ---- words and stems ------------------------------------------------------
 
@@ -235,6 +245,38 @@ function attribution(sentence, orgText = "") {
   for (const m of sentence.matchAll(NOUN_VERB)) hits.push({ at: m.index, text: m[0], noun: m[1], nounAt: m.index, verbAt: m.index + m[0].length - m[3].length });
   VERB_NOUN.lastIndex = 0;
   for (const m of sentence.matchAll(VERB_NOUN)) hits.push({ at: m.index, text: m[0], noun: m[3], nounAt: m.index + m[0].length - m[3].length, verbAt: m.index });
+  // CANDIDATE subjectAttribution: a research noun phrase that opens the
+  // sentence or a clause ("National research on A, B and C supports ...",
+  // "External evidence (A, B) supports ...", ", as research distinguishes
+  // ..."), however long its complement, followed by an assertive verb. The
+  // scan from the noun consumes words, commas and parentheticals (at most 25
+  // tokens) and stops at a modal, an auxiliary or a new clause.
+  if (options.subjectAttribution) {
+    const NOUN_RE = new RegExp("\\b(" + NOUN + ")(?![-\\w])", "gi");
+    for (const m of sentence.matchAll(NOUN_RE)) {
+      const before = sentence.slice(0, m.index);
+      // Inside a parenthesis the noun is part of a list or an aside, not the subject.
+      if ((before.match(/\(/g) || []).length > (before.match(/\)/g) || []).length) continue;
+      const opener = Math.max(before.lastIndexOf(";"), before.lastIndexOf(":"), before.lastIndexOf(","), before.lastIndexOf("\u2014"), before.lastIndexOf(" - "));
+      const lead = before.slice(opener + 1);
+      if (!/^[\s*_]*(?:(?:as|and|while|although|though|because|since|but)\s+)?(?:[A-Za-z'’-]+\s+){0,3}$/i.test(lead)) continue;
+      const rest = sentence.slice(m.index + m[0].length);
+      const tokens = [...rest.matchAll(/\([^()]*\)|[A-Za-z'’-]+|[,;:]/g)];
+      let found = null;
+      for (let i = 0; i < Math.min(tokens.length, 25); i++) {
+        const t = tokens[i][0];
+        if (t === ",") continue;
+        if (t === ";" || t === ":" || t.startsWith("(")) { if (t !== ",") { if (t === ";" || t === ":") break; continue; } }
+        // One-, two- and three-word verbs ("supports", "calls for", "is supportive", "makes the case").
+        const words = [t, tokens[i + 1] && tokens[i + 1][0], tokens[i + 2] && tokens[i + 2][0]];
+        const phrase = [words[0], words.slice(0, 2).join(" "), words.slice(0, 3).join(" ")].find((ph) => VERB2_RE.test(ph));
+        if (phrase) { found = { verb: phrase, verbAt: m.index + m[0].length + tokens[i].index }; break; }
+        if (SCAN_STOP.test(t)) break;
+      }
+      if (!found) continue;
+      hits.push({ at: m.index, text: sentence.slice(m.index, found.verbAt + found.verb.length), noun: m[1], nounAt: m.index, verbAt: found.verbAt, subject: true });
+    }
+  }
   hits.sort((a, b) => a.at - b.at);
   for (const h of hits) {
     const clause = clauseBefore(sentence, h.at);
@@ -258,13 +300,14 @@ function attribution(sentence, orgText = "") {
     if (ownable && /^evidence$/i.test(h.noun) && OWNER.test(beforeNoun)) continue;
     const lead = beforeNoun.match(/((?:[A-Z][\w'’-]*\s+){1,4})$/);
     if (ownable && lead && orgText) {
-      const name = lead[1].trim().split(/\s+/).filter((w) => !GENERIC_LEAD.has(w.toLowerCase())).join(" ").toLowerCase();
+      const name = lead[1].trim().split(/\s+/).filter((w) => !GENERIC_LEAD.has(w.toLowerCase()) && !(options.leadDeterminers && LEAD_DETERMINERS.has(w.toLowerCase()))).join(" ").toLowerCase();
       if (name.length >= 4 && orgText.includes(name)) continue;
     }
     // Describing what a question or application asks for, not asserting it.
     if (REQUEST.test(clauseBefore(sentence, h.nounAt))) continue;
     // "evidence gaps", "data points", "study hall": a label, not a report.
     if (/^\s*(?:gaps?|plan|plans|needs?|collection|system|systems|design|capacity|infrastructure|hall|tools?)\b/i.test(sentence.slice(h.nounAt).replace(/^[A-Za-z-]+/, ""))) continue;
+    if (h.subject && h.text.length > 40) return h.text.slice(0, 20).trim() + " ... " + h.text.slice(h.verbAt - h.at).trim();
     return h.text.trim();
   }
   return null;
