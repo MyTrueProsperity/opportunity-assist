@@ -86,12 +86,17 @@ const stem = (w) => {
   if (s.length > 3 && s.endsWith("s") && !s.endsWith("ss")) s = s.slice(0, -1);
   return s;
 };
+// A few measurement words that name the same thing ("outcome measures
+// aligned with national frameworks" and a record on "competencies ... for
+// assessment"). Applied to claims and records alike.
+const SAME = new Map([["measur", "assess"], ["metric", "assess"], ["indica", "assess"], ["framew", "compet"]]);
 function contentStems(text) {
   const out = new Set();
   for (const w of String(text || "").match(WORD) || []) {
     const lw = w.toLowerCase();
     if (lw.length < 3 || STOP.has(lw) || NEUTRAL.has(lw)) continue;
-    out.add(stem(lw));
+    const st = stem(lw);
+    out.add(SAME.get(st) || st);
   }
   return out;
 }
@@ -193,8 +198,9 @@ function claims(sentence, isSelected, isPackage = () => false) {
   let from = 0;
   groups.forEach((g, i) => {
     let text = between(from, g.start);
-    if (!contentStems(text).size) text += " " + between(g.end, groups[i + 1] ? groups[i + 1].start : sentence.length);
-    out.push({ ids: [...new Set(g.ids)], text });
+    let after = false;
+    if (!contentStems(text).size) { text += " " + between(g.end, groups[i + 1] ? groups[i + 1].start : sentence.length); after = true; }
+    out.push({ ids: [...new Set(g.ids)], text, after });
     from = g.end;
   });
   return out;
@@ -220,14 +226,45 @@ function unsupportedClaim(claim, records, anchored = false) {
       }
     }
   }
-  // The claim's subject must be what the cited records report.
-  const own = contentStems(text);
-  if (!own.size) return null;
+  // The claim's subject must be what the cited records report: either the
+  // whole claim, or the phrase the citation is attached to (the item just
+  // before it in a list or compound sentence), under the same thresholds.
   const union = new Set();
   for (const id of claim.ids) for (const s of records.get(id)?.stems || []) union.add(s);
-  const matched = [...own].filter((s) => union.has(s)).length;
-  const enough = anchored || own.size <= 2 ? matched >= 1 : matched >= 2 && matched / own.size >= 0.25;
-  return enough ? null : "the cited record" + (claim.ids.length > 1 ? "s do" : " does") + " not report this claim (" + matched + " of " + own.size + " subject terms match)";
+  const check = (t) => {
+    const own = contentStems(t);
+    const matched = [...own].filter((s) => union.has(s)).length;
+    return { own: own.size, matched, enough: !own.size || (anchored || own.size <= 2 ? matched >= 1 : matched >= 2 && matched / own.size >= 0.25) };
+  };
+  const whole = check(text);
+  if (whole.enough) return null;
+  if (!claim.after) {
+    const phrase = phraseBefore(text);
+    if (phrase !== text && check(phrase).enough) return null;
+  }
+  return "the cited record" + (claim.ids.length > 1 ? "s do" : " does") + " not report this claim (" + whole.matched + " of " + whole.own + " subject terms match)";
+}
+// The phrase a citation is attached to: the last list item or clause before
+// it, extended leftwards until it has at least three subject terms.
+const PHRASE_SPLIT = /,\s+|;\s+|:\s+|\s+(?:and|or|while|whereas|but)\s+|\s+[\u2013\u2014-]\s+|\(/;
+function phraseBefore(text) {
+  const parts = String(text).split(PHRASE_SPLIT);
+  let phrase = "";
+  for (let i = parts.length - 1; i >= 0; i--) {
+    phrase = parts[i] + (phrase ? " " + phrase : "");
+    if (contentStems(phrase).size >= 3) break;
+  }
+  return phrase;
+}
+// A plan, recommendation, instruction, question or statement of absent
+// evidence around position "at": not a research claim. The same exclusion the
+// attribution detector applies, for the other research cues.
+function instructionOrGap(sentence, at) {
+  if (/\?\s*$/.test(sentence)) return true;
+  const clause = clauseBefore(sentence, at);
+  if (PLAN_START.test(clause)) return true;
+  if (PLAN_WORD.test(sentence.slice(Math.max(0, at - 30), at))) return true;
+  return NEGATED.test(sentence.slice(Math.max(at - clause.length, at - 50), at));
 }
 
-module.exports = { attribution, claims, unsupportedClaim, recordSupport, deniedOutcomes, contentStems };
+module.exports = { attribution, claims, unsupportedClaim, recordSupport, deniedOutcomes, contentStems, instructionOrGap, phraseBefore };

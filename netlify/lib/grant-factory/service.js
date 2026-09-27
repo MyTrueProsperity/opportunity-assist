@@ -122,12 +122,12 @@ function strategyInputHash(app, brain) {
     brain_revision: brain.revision,
   });
 }
-// A background strategy job holds its lease this long: above the 300-second
-// model timeout plus evidence loading and saving, and well inside the
-// 15-minute background-function limit. (Production generation took about
+// A background strategy job holds its lease this long: above two 300-second
+// model calls (one automatic regeneration) plus evidence loading and saving,
+// and inside the 15-minute background-function limit. (Production generation took about
 // 60 seconds for 4,500 output tokens; a full 12,000-token strategy needs
 // about 160.)
-const STRATEGY_LEASE_SECONDS = 420;
+const STRATEGY_LEASE_SECONDS = 780;
 // A queued job that has not started gets one more dispatch after this long.
 const REDISPATCH_AFTER_MS = 45000;
 function publicJob(job) {
@@ -154,6 +154,32 @@ function rejectedOutput(strategy) {
     total += out[k].length;
   }
   return out;
+}
+// At most one automatic regeneration after strategy-content validation
+// rejects a completed response.
+const STRATEGY_MAX_GENERATIONS = 2;
+// The content-validation outcome of one generation, or null if it passed.
+function strategyRejection(citations, analysis) {
+  if (citations.invalid.length)
+    return { code: "EVIDENCE_CHAIN", message: "The strategy cited research that was not selected as evidence for it (" + citations.invalid.slice(0, 5).join(", ") + "). Nothing was saved; generate again.",
+      problems: citations.invalid.map((id) => ({ section: null, text: id, reason: "cites a research record that was not selected for this request" })) };
+  if (analysis.unsupported.length)
+    return { code: "UNSUPPORTED_QUANTITY", message: "The strategy stated amounts or quantities that the supplied facts, application and selected research do not support (" + [...new Set(analysis.unsupported.map((u) => u.text))].slice(0, 5).join("; ") + "). Missing inputs must be named as gaps, not estimated. Nothing was saved; generate again.",
+      problems: [...analysis.unsupported, ...analysis.uncited] };
+  if (analysis.uncited.length)
+    return { code: "EVIDENCE_CHAIN", message: "Research findings must cite their selected record id in the same sentence, and that record must report the finding (" + [...new Set(analysis.uncited.map((u) => u.text))].slice(0, 3).join("; ") + "). Nothing was saved; generate again.",
+      problems: analysis.uncited };
+  return null;
+}
+// Concise, structured feedback for the one regeneration: what failed, not the
+// rejected text to patch.
+const FEEDBACK_ITEMS = 12;
+function validationFeedback(rejection) {
+  return {
+    instruction: "A previous strategy for this request was rejected by validation for the problems below. Write a completely new strategy from the supplied facts and research; do not repeat these problems. Cite only supplied research record_ids, each in the sentence it supports and only for what that record reports; state applicant amounts only when supplied, otherwise name them as gaps.",
+    failure_code: rejection.code,
+    problems: rejection.problems.slice(0, FEEDBACK_ITEMS).map((p) => ({ section: p.section || null, text: String(p.text || "").slice(0, 160), reason: String(p.reason || "").slice(0, 200) })),
+  };
 }
 function service(repo, ai, { dispatch = null } = {}) {
   const call = (ctx, task, data, meta) =>
@@ -228,36 +254,51 @@ function service(repo, ai, { dispatch = null } = {}) {
       });
       if (built.overBudget)
         return await fail("REQUEST_TOO_LARGE", "The organization facts for this program are too large for one strategy request. Nothing was saved.");
-      const meta = {};
-      const started = Date.now();
-      let strategy;
-      try {
-        strategy = await call(ctx, "strategy", built.request, meta);
-      } catch (e) {
-        // A rejected provider response still reports its usage.
-        Object.assign(result, { model_ms: Date.now() - started, ...(e.usage ? { model: e.model || null, input_tokens: e.usage.input_tokens ?? null, output_tokens: e.usage.output_tokens ?? null } : {}) });
-        const timeout = e.name === "TimeoutError" || /aborted|timeout/i.test(e.message);
-        return await fail(timeout ? "AI_TIMEOUT" : "AI_FAILED", timeout ? "The AI did not finish the strategy in time. Nothing was saved; generate again." : e.message);
+      // Generate, then validate. A completed response that strategy-content
+      // validation rejects (unselected or uncited research, a record that does
+      // not report the claim, unsupported quantities) gets exactly one new
+      // generation, with concise feedback on what failed; the rejected text is
+      // never edited or reused. Any other failure is final. Each call is
+      // logged and metered on its own; every rejected output is kept on the
+      // job for diagnosis.
+      let strategy, citations, analysis, rejection = null;
+      const attempts = [];
+      const rejectedAttempts = [];
+      for (let attempt = 1; attempt <= STRATEGY_MAX_GENERATIONS; attempt++) {
+        const meta = {};
+        const started = Date.now();
+        const request = attempt === 1 ? built.request : { ...built.request, validation_feedback: validationFeedback(rejection) };
+        try {
+          strategy = await call(ctx, "strategy", request, meta);
+        } catch (e) {
+          // A rejected provider response still reports its usage.
+          Object.assign(result, { model_ms: Date.now() - started, ...(e.usage ? { model: e.model || null, input_tokens: e.usage.input_tokens ?? null, output_tokens: e.usage.output_tokens ?? null } : {}) });
+          const timeout = e.name === "TimeoutError" || /aborted|timeout/i.test(e.message);
+          if (attempts.length) Object.assign(result, { generations: attempts.length + 1, attempts });
+          return await fail(timeout ? "AI_TIMEOUT" : "AI_FAILED", timeout ? "The AI did not finish the strategy in time. Nothing was saved; generate again." : e.message);
+        }
+        Object.assign(result, { model_ms: Date.now() - started, model: meta.model, input_tokens: meta.usage?.input_tokens ?? null, output_tokens: meta.usage?.output_tokens ?? null });
+        // Only the research selected as evidence for this request may be cited.
+        const validationStarted = Date.now();
+        citations = SE.researchCitations(strategy, built.selected, brain.research);
+        // Applicant-specific amounts, rates, quantities, staffing, durations
+        // and calculations must come from what was supplied; research findings
+        // must carry a selected record id that reports them.
+        analysis = SQ.analyze(strategy, built.request, brain.research);
+        Object.assign(result, { cited_records: citations.cited, invalid_citations: citations.invalid,
+          unsupported_quantities: analysis.unsupported.slice(0, 25), uncited_research: analysis.uncited.slice(0, 25), validation_ms: Date.now() - validationStarted });
+        rejection = strategyRejection(citations, analysis);
+        attempts.push({ attempt, model_ms: result.model_ms, input_tokens: result.input_tokens, output_tokens: result.output_tokens,
+          validation_ms: result.validation_ms, failure_code: rejection?.code || null, cited_records: citations.cited,
+          invalid_citations: citations.invalid, unsupported_quantities: result.unsupported_quantities, uncited_research: result.uncited_research,
+          ...(attempt > 1 ? { feedback_items: request.validation_feedback.problems.length } : {}) });
+        if (!rejection) break;
+        rejectedAttempts.push({ attempt, failure_code: rejection.code, strategy: rejectedOutput(strategy) });
       }
-      Object.assign(result, { model_ms: Date.now() - started, model: meta.model, input_tokens: meta.usage?.input_tokens ?? null, output_tokens: meta.usage?.output_tokens ?? null });
-      // Only the research selected as evidence for this request may be cited.
-      const validationStarted = Date.now();
-      const citations = SE.researchCitations(strategy, built.selected, brain.research);
-      Object.assign(result, { cited_records: citations.cited, invalid_citations: citations.invalid });
-      if (citations.invalid.length)
-        return await reject(strategy, "EVIDENCE_CHAIN", "The strategy cited research that was not selected as evidence for it (" + citations.invalid.slice(0, 5).join(", ") + "). Nothing was saved; generate again.");
-      // Applicant-specific amounts, rates, quantities, staffing, durations and
-      // calculations must come from what was supplied; missing inputs are
-      // gaps, not estimates.
-      // Research-derived findings must carry their selected record id in the
-      // same sentence.
-      const analysis = SQ.analyze(strategy, built.request, brain.research);
-      const unsupported = analysis.unsupported;
-      Object.assign(result, { unsupported_quantities: unsupported.slice(0, 25), uncited_research: analysis.uncited.slice(0, 25), validation_ms: Date.now() - validationStarted });
-      if (unsupported.length)
-        return await reject(strategy, "UNSUPPORTED_QUANTITY", "The strategy stated amounts or quantities that the supplied facts, application and selected research do not support (" + [...new Set(unsupported.map((u) => u.text))].slice(0, 5).join("; ") + "). Missing inputs must be named as gaps, not estimated. Nothing was saved; generate again.");
-      if (analysis.uncited.length)
-        return await reject(strategy, "EVIDENCE_CHAIN", "Research findings must cite their selected record id in the same sentence, and that record must report the finding (" + [...new Set(analysis.uncited.map((u) => u.text))].slice(0, 3).join("; ") + "). Nothing was saved; generate again.");
+      Object.assign(result, { generations: attempts.length, attempts });
+      if (rejectedAttempts.length) result.rejected_attempts = rejectedAttempts;
+      if (rejection)
+        return await reject(strategy, rejection.code, rejection.message + (attempts.length > 1 ? " The automatic regeneration was also rejected." : ""));
       // Re-read and re-check immediately before saving; the save itself
       // rejects any concurrent change to the application or approved facts.
       app = await repo.app(ctx, job.application_id);

@@ -294,12 +294,14 @@ const RESEARCH_CUE = new RegExp([
   "\\b(?:research|studies|a study|the study|trials?)\\s+(?:show|shows|showed|shown|find|finds|found|indicate|indicates|indicated|suggest|suggests|suggested|demonstrate|demonstrates|demonstrated|report|reports|reported)\\b",
   "\\baccording to (?:research|studies|a study|the study)\\b",
 ].join("|"), "i");
+const RESEARCH_CUE_ALL = new RegExp(RESEARCH_CUE.source, "gi");
 // A source name counts as an attribution when it is cited like one: in
 // parentheses or brackets, after "according to", "per", "by" or "from", or
 // followed by a year or "reports", "found", "data", "survey" and similar.
-function namesSource(sentence, sources) {
+function namesSource(sentence, sources, skip = () => false) {
   for (const re of sources) {
     for (const m of sentence.matchAll(new RegExp(re.source, "g"))) {
+      if (skip(m.index)) continue;
       const before = sentence.slice(0, m.index), after = sentence.slice(m.index + m[0].length);
       const open = Math.max(before.lastIndexOf("("), before.lastIndexOf("["));
       const inParens = open >= 0 && open > Math.max(before.lastIndexOf(")"), before.lastIndexOf("]"));
@@ -383,7 +385,11 @@ function analyze(strategy, request, bundle) {
       // Wording that attributes a claim to research ("research shows",
       // "national surveys document", a named source): it must carry a
       // selected record id in the same sentence.
-      const cue = RESEARCH_CUE.exec(sentence)?.[0] || namesSource(sentence, support.sources) || SA.attribution(sentence, support.orgText);
+      // Plans, recommendations, instructions ("Do not turn national research
+      // findings (... meta-analyses ...) into local estimates"), questions and
+      // statements of absent evidence are not research claims, for every cue.
+      const skip = (at) => SA.instructionOrGap(sentence, at);
+      const cue = [...sentence.matchAll(RESEARCH_CUE_ALL)].find((m) => !skip(m.index))?.[0] || namesSource(sentence, support.sources, skip) || SA.attribution(sentence, support.orgText);
       if (cue) {
         researchUsed = true;
         if (!cites.length) uncited.push({ section, text: snippet(sentence), reason: "research finding (\"" + cue + "\") without its selected record id in the same sentence" });

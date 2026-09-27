@@ -69,9 +69,9 @@ test("strategy may use 12,000 output tokens and 300 seconds; other tasks keep th
   assert.deepEqual(seen.audit, { max: 4500, timeout: 45000 }, "audit unchanged");
 });
 
-test("a strategy job holds a 7-minute lease, above the model timeout", async () => {
-  assert.equal(STRATEGY_LEASE_SECONDS, 420);
-  assert.ok(STRATEGY_LEASE_SECONDS > AI.TASK_TIMEOUT_MS.strategy / 1000 + 60);
+test("a strategy job holds a 13-minute lease, above two model timeouts (one automatic regeneration)", async () => {
+  assert.equal(STRATEGY_LEASE_SECONDS, 780);
+  assert.ok(STRATEGY_LEASE_SECONDS > 2 * AI.TASK_TIMEOUT_MS.strategy / 1000 + 60);
   assert.ok(STRATEGY_LEASE_SECONDS < 900, "well inside the 15-minute background limit");
   let lease;
   await f.pg.query("delete from gf_strategy_jobs");
@@ -82,7 +82,7 @@ test("a strategy job holds a 7-minute lease, above the model timeout", async () 
     return reply();
   };
   await s.runStrategyJob(f.ctx, job.id);
-  assert.equal((await lease).rows[0].s, 420);
+  assert.equal((await lease).rows[0].s, 780);
 });
 
 test("a complete 12,000-token strategy is saved, with usage metered", async () => {
