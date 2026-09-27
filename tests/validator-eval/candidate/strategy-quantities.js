@@ -177,6 +177,14 @@ function numbers(text) {
   const out = new Set();
   const s = String(text || "");
   for (const m of s.matchAll(new RegExp("(" + NUM + ")|\\b(" + WORDS + ")\\b", "gi"))) {
+    // CANDIDATE numberGuard: digits inside an identifier ("CFSC-937", "V1",
+    // "S11") and a number word inside a hyphenated compound ("one-to-one",
+    // "two-year") are not supplied numbers.
+    if (options.numberGuard) {
+      const before = s.slice(0, m.index), after = s.slice(m.index + m[0].length);
+      if (m[1] && (/[A-Za-z_]$/.test(before) || /[A-Za-z_][-._]$/.test(before) || /^[A-Za-z_]/.test(after))) continue;
+      if (m[2] && (/-$/.test(before) || /^-[A-Za-z]/.test(after))) continue;
+    }
     const v = parseNumber(m[1] || m[2]);
     if (Number.isFinite(v)) out.add(v);
   }
