@@ -175,10 +175,14 @@ function strategyRejection(citations, analysis) {
 // rejected text to patch.
 const FEEDBACK_ITEMS = 12;
 function validationFeedback(rejection) {
+  const problems = rejection.problems.slice(0, FEEDBACK_ITEMS);
+  // A label before a citation ("Dual-enrollment policy (CFSC-937: ...)") that
+  // describes a different record gets its own instruction.
+  const label = problems.some((p) => /not report this label/.test(String(p.reason || ""))) ? " A descriptive label placed before a record id, as in \"Label (ID: finding)\", must describe that record; where the label names a subject the cited record does not cover, relabel it or cite the record that covers it." : "";
   return {
-    instruction: "A previous strategy for this request was rejected by validation for the problems below. Write a completely new strategy from the supplied facts and research; do not repeat these problems. Cite only supplied research record_ids, each in the sentence it supports and only for what that record reports; state applicant amounts only when supplied, otherwise name them as gaps. General rule: every sentence that affirmatively attributes a finding or conclusion to external research, studies, surveys, literature, evaluations or research evidence must contain the supporting canonical selected research record ID in that sentence. If you cannot cite the supporting selected record, rewrite the sentence without making the external-research attribution.",
+    instruction: "A previous strategy for this request was rejected by validation for the problems below. Write a completely new strategy from the supplied facts and research; do not repeat these problems. Cite only supplied research record_ids, each in the sentence it supports and only for what that record reports; state applicant amounts only when supplied, otherwise name them as gaps. General rule: every sentence that affirmatively attributes a finding or conclusion to external research, studies, surveys, literature, evaluations or research evidence must contain the supporting canonical selected research record ID in that sentence. If you cannot cite the supporting selected record, rewrite the sentence without making the external-research attribution." + label,
     failure_code: rejection.code,
-    problems: rejection.problems.slice(0, FEEDBACK_ITEMS).map((p) => ({ section: p.section || null, text: String(p.text || "").slice(0, 160), reason: String(p.reason || "").slice(0, 200) })),
+    problems: problems.map((p) => ({ section: p.section || null, text: String(p.text || "").slice(0, 160), reason: String(p.reason || "").slice(0, 200) })),
   };
 }
 function service(repo, ai, { dispatch = null } = {}) {
@@ -1230,4 +1234,4 @@ function service(repo, ai, { dispatch = null } = {}) {
     },
   };
 }
-module.exports = { service, DOCUMENT_TYPES, strategyInputHash, STRATEGY_LEASE_SECONDS };
+module.exports = { service, DOCUMENT_TYPES, strategyInputHash, STRATEGY_LEASE_SECONDS, validationFeedback };
