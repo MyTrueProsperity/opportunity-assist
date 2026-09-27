@@ -115,8 +115,12 @@ test("a rejected first generation gets one completely new generation, with struc
   // The regeneration is a new request with feedback, not the rejected text to patch.
   const fb = calls[1].validation_feedback;
   assert.ok(fb && /completely new strategy/.test(fb.instruction));
+  // Both the specific errors and the general citation rule.
+  assert.match(fb.instruction, /every sentence that affirmatively attributes a finding or conclusion to external research, studies, surveys, literature, evaluations or research evidence must contain the supporting canonical selected research record ID in that sentence/i);
+  assert.match(fb.instruction, /rewrite the sentence without making the external-research attribution/i);
   assert.equal(fb.failure_code, "EVIDENCE_CHAIN");
   assert.ok(fb.problems.length >= 1 && fb.problems.length <= 12);
+  assert.ok(fb.problems.some((p) => p.text.includes(BAD.slice(0, 40)) && /record id/.test(p.reason)), "the specific rejected sentence is in the feedback");
   assert.ok(fb.problems.every((p) => p.text.length <= 160 && p.reason.length <= 200));
   assert.equal(calls[0].validation_feedback, undefined);
   assert.equal(JSON.stringify(calls[1]).includes('"alignment_points":"' + BAD), false, "the rejected strategy is not sent back");
@@ -166,6 +170,27 @@ test("if the regeneration is also rejected, the job fails safely, nothing is sav
   assert.equal(rejection.rejected_attempts.length, 2);
   // At most one rejected-output job per application.
   assert.equal((await f.pg.query("select count(*) n from gf_strategy_jobs where application_id=$1 and (result ? 'rejected_strategy' or result ? 'rejected_attempts')", [app.id])).rows[0].n, 1);
+});
+
+test("the second generation is subject to every existing validator", async () => {
+  const cases = [
+    ["selected-record allowlist", () => ({ ...STRATEGY, alignment_points: "Mentoring improves outcomes [GW-250]." }), "EVIDENCE_CHAIN", (r) => r.invalid_citations.includes("GW-250")],
+    ["uncited research attribution", () => ({ ...STRATEGY, alignment_points: "National research supports the program's integrated approach." }), "EVIDENCE_CHAIN", (r) => r.uncited_research.some((u) => /research supports/.test(u.reason))],
+    ["substantive support", (data) => ({ ...STRATEGY, alignment_points: "Research shows violin lessons raise toddler sleep duration [" + data.facts.filter((x) => x.research)[0].research.record_id + "]." }), "EVIDENCE_CHAIN", (r) => r.uncited_research.some((u) => /does not report this claim/.test(u.reason))],
+    ["quantitative grounding", () => ({ ...STRATEGY, budget_consistency: "Students earn $15/hour for 10 hours/week." }), "UNSUPPORTED_QUANTITY", (r) => r.unsupported_quantities.some((u) => u.text === "$15/hour")],
+  ];
+  for (const [name, second, code, check] of cases) {
+    replies = [bad, second]; fail = null;
+    const before = await fresh();
+    const { job, app: saved, runs } = await runStrategy();
+    assert.equal(job.status, "FAILED", name);
+    assert.equal(job.failure_code, code, name);
+    assert.equal(calls.length, 2, name);
+    assert.equal(runs.length, 2, name);
+    assert.equal(job.result.generations, 2, name);
+    assert.ok(check(job.result), name + ": " + JSON.stringify(job.result.attempts[1]));
+    assert.equal(saved.revision, before.revision, name + ": nothing saved");
+  }
 });
 
 test("a valid first generation is saved with no regeneration", async () => {
