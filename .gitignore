@@ -8,3 +8,14 @@ test-results/
 data/grant-factory/
 *.private-seed.json
 supabase/.temp/
+tests/validator-eval/private/
+node_modules/
+dist/
+.env*
+!.env.example
+.netlify/
+work/
+test-results/
+data/grant-factory/
+*.private-seed.json
+supabase/.temp/
