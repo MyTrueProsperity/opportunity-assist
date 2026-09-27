@@ -311,7 +311,12 @@ function namesSource(sentence, sources) {
   return null;
 }
 
-const SECTION_SPLIT = /\n+|(?<=[.;!?])\s+(?=[A-Z0-9*(\-•\[])/;
+const SECTION_SPLIT = /\n+|(?<=[.!?])\s+(?=[A-Z0-9*(\-•\[])/;
+// Clauses of a sentence joined by semicolons. A semicolon does not end the
+// sentence for citations: a clause with no record id of its own is tied to
+// the next citation in the same sentence ("17% ...; Florida requires ...
+// [CFSC-942, CFSC-937]"), never to a citation in another sentence.
+const CLAUSE_SPLIT = /(?<=;)\s+(?=[A-Z0-9*(\-•\[])/;
 const TOKEN = /[A-Za-z0-9]+(?:[-_.][A-Za-z0-9]+)*/g;
 // Sentences of a section. "et al." or "e.g." does not end a sentence, and a
 // citation left on its own after a full stop ("... 84% agree. [EP-018]")
@@ -366,8 +371,13 @@ function analyze(strategy, request, bundle) {
   // Pass 1: calculations. Pass 2: every other quantity.
   const pending = [];
   for (const [section, text] of sections) {
-    for (const sentence of sentences(text, isId)) {
-      const cites = [...new Set((sentence.match(TOKEN) || []).filter((t) => selectedIds.has(t)))];
+    for (const whole of sentences(text, isId)) {
+    const clauses = whole.split(CLAUSE_SPLIT);
+    const clauseCites = clauses.map((c) => [...new Set((c.match(TOKEN) || []).filter((t) => selectedIds.has(t)))]);
+    for (let ci = 0; ci < clauses.length; ci++) {
+      const sentence = clauses[ci];
+      const own = clauseCites[ci];
+      const cites = own.length ? own : clauseCites.slice(ci + 1).find((c) => c.length) || [];
       if (cites.length) researchUsed = true;
       if (section === "evidence_chain") for (const c of cites) chainCites.add(c);
       // Wording that attributes a claim to research ("research shows",
@@ -383,6 +393,13 @@ function analyze(strategy, request, bundle) {
         const anchored = quantities(claim.text).some((q) => !APPLICANT_KINDS.has(q.kind) && claim.ids.some((c) => supportedBy(q, support.research.get(c))));
         const why = SA.unsupportedClaim(claim, support.records, anchored);
         if (why) uncited.push({ section, text: snippet(claim.text), reason: why });
+      }
+      // A research claim in a clause that relies on the sentence's next
+      // citation must be one that citation's records report.
+      if (cue && !own.length && cites.length) {
+        const anchored = quantities(sentence).some((q) => !APPLICANT_KINDS.has(q.kind) && cites.some((c) => supportedBy(q, support.research.get(c))));
+        const why = SA.unsupportedClaim({ ids: cites, text: sentence }, support.records, anchored);
+        if (why) uncited.push({ section, text: snippet(sentence), reason: why });
       }
       // Subject words near a figure (not the whole sentence, which may run
       // across several budget lines).
@@ -484,6 +501,7 @@ function analyze(strategy, request, bundle) {
           uncited.push({ section, text: m[1], reason: (cites.length ? "the cited record does not contain this value" : "research value without its selected record id in the same sentence") + " (found in " + holders.slice(0, 3).join(", ") + ")" });
       }
     }
+  }
   }
   for (const { section, q, cites, ctx } of pending) {
     if (supportedBy(q, support.org, ctx)) continue;
