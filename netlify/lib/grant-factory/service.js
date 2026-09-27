@@ -176,7 +176,7 @@ function strategyRejection(citations, analysis) {
 const FEEDBACK_ITEMS = 12;
 function validationFeedback(rejection) {
   return {
-    instruction: "A previous strategy for this request was rejected by validation for the problems below. Write a completely new strategy from the supplied facts and research; do not repeat these problems. Cite only supplied research record_ids, each in the sentence it supports and only for what that record reports; state applicant amounts only when supplied, otherwise name them as gaps.",
+    instruction: "A previous strategy for this request was rejected by validation for the problems below. Write a completely new strategy from the supplied facts and research; do not repeat these problems. Cite only supplied research record_ids, each in the sentence it supports and only for what that record reports; state applicant amounts only when supplied, otherwise name them as gaps. General rule: every sentence that affirmatively attributes a finding or conclusion to external research, studies, surveys, literature, evaluations or research evidence must contain the supporting canonical selected research record ID in that sentence. If you cannot cite the supporting selected record, rewrite the sentence without making the external-research attribution.",
     failure_code: rejection.code,
     problems: rejection.problems.slice(0, FEEDBACK_ITEMS).map((p) => ({ section: p.section || null, text: String(p.text || "").slice(0, 160), reason: String(p.reason || "").slice(0, 200) })),
   };
