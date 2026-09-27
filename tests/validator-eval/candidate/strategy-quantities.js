@@ -1,0 +1,559 @@
+"use strict";
+// EVALUATION-ONLY fork of netlify/lib/grant-factory/strategy-quantities.js.
+// Never loaded by production code. Differences from production are marked
+// CANDIDATE and switched by the options object passed to make():
+//   segmentation  a semicolon starts a new clause whatever follows it (not
+//                 only before a capital); a sentence also ends at ".**" and
+//                 before an opening quotation mark; a clause with no citation
+//                 borrows the next citation in the sentence, else the one
+//                 before it
+//   calcGuard     "n=49" and "d = .37" are not calculations (a single-letter
+//                 symbol before "=")
+//   ownership, support  passed through to the candidate attribution module
+// Everything else is byte-for-byte the production module.
+
+function make(options = { segmentation: true, ownership: true, support: true, calcGuard: true }) {
+// Quantitative grounding for strategy.
+//
+// Strategy may state an applicant-specific amount, rate, quantity, staffing
+// level, duration, unit cost, budget allocation or calculation only when it is
+// supported by what was actually supplied to it:
+//   - organization facts, the program, the application (funder and
+//     opportunity details) and its questions; or
+//   - a selected research fact, when the number is that record's finding.
+// Claim rules, methodology, the planning framework, selection reasons and
+// other instructions are not support.
+//
+// A number is a quantitative claim only when it carries a currency sign, a
+// percent sign, or a unit (hours, weeks, FTE, students, courses and so on).
+// Bare numbers (section and list numbers, years, dates, grades, record ids)
+// are structural and are not checked.
+//
+// A calculation ("150 students x 10 hours/week x $15/hour x 36 weeks =
+// $810,000") is allowed only when every input is supported; its result is
+// then checked arithmetically and may be repeated elsewhere.
+//
+// Missing inputs must be written as gaps ("student wage rate not yet
+// established"), never estimated.
+
+const { terms } = require("../../../netlify/lib/grant-factory/strategy-evidence");
+const SA = require("./strategy-attribution").make(options);
+
+const WORD_NUMBERS = {
+  one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10,
+  eleven: 11, twelve: 12, thirteen: 13, fourteen: 14, fifteen: 15, sixteen: 16, seventeen: 17, eighteen: 18, nineteen: 19,
+  twenty: 20, thirty: 30, forty: 40, fifty: 50, sixty: 60, seventy: 70, eighty: 80, ninety: 90, hundred: 100,
+  half: 0.5, "one-half": 0.5,
+};
+
+// Unit words and their kind. Strict kinds must be matched by kind in the
+// supplied data; loose (count) kinds only need the same number to appear.
+const UNITS = [
+  [/^(?:hours?|hrs?)\b/i, "hours", true],
+  [/^(?:weeks?|wks?)\b/i, "weeks", true],
+  [/^months?\b/i, "months", true],
+  [/^days?\b/i, "days", true],
+  [/^(?:years?|yrs?)(?:[- ]olds?\b|[- ]old\b)/i, "age", false],
+  [/^(?:years?|yrs?)\b/i, "years", true],
+  [/^semesters?\b/i, "semesters", true],
+  [/^(?:FTEs?|full[- ]time[- ]equivalents?)\b/i, "fte", true],
+  [/^(?:staff(?:ers)?|employees?|positions?|coordinators?|teachers?|instructors?|mentors?|counselors?|managers?|directors?|specialists?|evaluators?)\b/i, "staff", true],
+  [/^(?:students?|youths?|young people|participants?|people|persons?|alumni|graduates?|members?|families|family|households?|interns?|learners?|trainees?|children|kids|adults?|individuals?)\b/i, "people", false],
+  [/^(?:employers?|partners?|partnerships?|businesses?|enterprises?|organizations?|schools?|sites?|locations?)\b/i, "organizations", false],
+  [/^(?:internships?|jobs?|placements?|apprenticeships?|seats?|slots?)\b/i, "placements", false],
+  [/^(?:sessions?|workshops?|courses?|classes?|credits?|cohorts?|pathways?|tracks?|modules?|events?|projects?|programs?|initiatives?|productions?|lessons?)\b/i, "offerings", false],
+];
+const PER = /^\s*(?:\/|per\s+|an?\s+|each\s+)(hour|hr|week|wk|month|year|yr|day|semester|student|participant|youth|person|course|class|credit|session|enterprise|intern|FTE|position|site|school)s?\b/i;
+const PER_NORM = { hr: "hour", wk: "week", yr: "year", youth: "student", participant: "student", person: "student", intern: "student", class: "course" };
+// Words before a number that make it a label, not a quantity: "Year 2",
+// "Grade 12", "Section 3", "Tier 1", "Phase 2", "Week 3", "ages 14".
+const LABEL = /(?:\b(?:year|grades?|section|question|step|phase|tier|part|cohort|week|day|level|page|line|item|no\.?|number|chapter|round|ages?|version|v|table|figure|appendix|priority|goal|objective|outcome|strategy|option|pathway|track|link|point|rank)\s*#?)$/i;
+const APPROX = /(?:~|≈|\babout\s+|\bapproximately\s+|\bapprox\.?\s+|\broughly\s+|\baround\s+|\bnearly\s+|\balmost\s+|\bover\s+|\bmore than\s+|\bup to\s+|\bat least\s+|\bestimated\s+)\$?\s*$/i;
+const NUM = "(?:\\d{1,3}(?:,\\d{3})+|\\d+)(?:\\.\\d+)?|\\.\\d+";
+const WORDS = Object.keys(WORD_NUMBERS).sort((a, b) => b.length - a.length).join("|");
+const SCAN = new RegExp("(\\$\\s?)?(" + NUM + "|\\b(?:" + WORDS + ")\\b)", "gi");
+// How far past a range dash the second half (and its unit) is read.
+const RANGE_WINDOW = 64;
+const isYear = (v, raw) => /^\d{4}$/.test(raw) && v >= 1900 && v <= 2100;
+
+function parseNumber(raw) {
+  const w = WORD_NUMBERS[raw.toLowerCase()];
+  if (w !== undefined) return w;
+  return Number(raw.replace(/,/g, ""));
+}
+function decimals(raw) {
+  const m = /\.(\d+)$/.exec(raw.replace(/,/g, ""));
+  return m ? m[1].length : 0;
+}
+
+// Every quantitative claim in a text, with its kind and position. Numbers
+// that are part of identifiers, labels, years or dates are skipped.
+function quantities(text) {
+  const out = [];
+  const s = String(text || "");
+  let m;
+  const scan = new RegExp(SCAN.source, "gi");
+  let skipRangeEnd = -1;
+  while ((m = scan.exec(s))) {
+    const dollar = !!m[1];
+    const raw = m[2];
+    const start = m.index, end = m.index + m[0].length;
+    const before = s.slice(0, start);
+    const word = WORD_NUMBERS[raw.toLowerCase()] !== undefined;
+    // Part of an identifier or a longer token: "EM-011", "V1", "S11", "9th", "2023-24".
+    if (/[A-Za-z_]$/.test(before) || /[A-Za-z_][-.]$/.test(before) || (!word && /^[A-Za-z]/.test(s.slice(end)) && !/^(?:k|K|M|m)\b/.test(s.slice(end)))) continue;
+    if (/\d[-.:/]$/.test(before) && !dollar && start !== skipRangeEnd) {
+      // Second half of a range like "9–11" is handled with the first; a time
+      // or date like "10:30" or "9/30" is structural.
+      if (!/\d\s?[–—-]$/.test(before)) continue;
+    }
+    if (start === skipRangeEnd) continue;
+    // The end of a year span: "2023-24", "2027–28 school year".
+    const span = /(?:^|\D)(\d{4})\s?[–—-]\s?$/.exec(before);
+    if (span && isYear(Number(span[1]), span[1])) continue;
+    if (!dollar && LABEL.test(before.slice(-24))) {
+      // "Grades 9–11": skip the range end too.
+      const r = /^\s?[–—-]\s?(\d+)/.exec(s.slice(end));
+      if (r) skipRangeEnd = end + r[0].indexOf(r[1]);
+      continue;
+    }
+    let value = parseNumber(raw);
+    if (!Number.isFinite(value)) continue;
+    let rest = s.slice(end);
+    // Scale suffixes: $25k, $1.2M, $5 million.
+    let scale = 1;
+    const sc = /^\s?(k|K|thousand|M|million|billion|B)\b/.exec(rest);
+    if (sc && (dollar || /^(?:thousand|million|billion)$/i.test(sc[1]))) {
+      scale = { k: 1e3, K: 1e3, thousand: 1e3, M: 1e6, million: 1e6, billion: 1e9, B: 1e9 }[sc[1]] || 1;
+      rest = rest.slice(sc[0].length);
+    }
+    value *= scale;
+    const plus = /^\+/.test(rest);
+    if (plus) rest = rest.slice(1);
+    let kind = dollar ? "currency" : null;
+    let strict = dollar;
+    let per = null;
+    if (/^\s?(?:%|percent\b|per cent\b)/i.test(rest)) { kind = "percent"; strict = true; rest = rest.replace(/^\s?(?:%|percent|per cent)/i, ""); }
+    if (!kind) {
+      // A unit right after the number, or after up to two describing words
+      // ("50 paid-work students", "2 full-time coordinators"). A calendar
+      // year only counts with the unit immediately after it.
+      const direct = /^[\s-]?/.exec(rest)[0];
+      const tail = rest.slice(direct.length);
+      let unit = UNITS.find(([re]) => re.test(tail));
+      let used = direct.length + (unit ? tail.match(unit[0])[0].length : 0);
+      if (!unit && !isYear(value, raw) && !word) {
+        for (const n of [1, 2]) {
+          const adj = new RegExp("^((?:[A-Za-z]+(?:-[A-Za-z]+)*\\s){" + n + "})").exec(tail);
+          if (!adj || /\b(?:of|and|or|to|in|for|from|by|with|the|a|an|per|each|at|on|is|are|was|were)\s/i.test(adj[1])) break;
+          unit = UNITS.find(([re]) => re.test(tail.slice(adj[1].length)));
+          if (unit) { used = direct.length + adj[1].length + tail.slice(adj[1].length).match(unit[0])[0].length; break; }
+        }
+      }
+      if (unit) { kind = unit[1]; strict = unit[2]; rest = rest.slice(used); }
+    }
+    // A range "$25k–$55k", "0.5–1.0 FTE", "25-40 hours": the first half takes
+    // the kind of the second.
+    const range = new RegExp("^\\s?(?:–|—|-|to)\\s?(\\$\\s?)?(" + NUM + ")").exec(rest);
+    if (!kind && range) {
+      // Only the few characters after the dash are read, never the rest of the
+      // text: a full rescan per range made validation exponential in the
+      // number of ranges (about 30 seconds on production evidence).
+      const at = s.length - rest.length + range[0].length - range[2].length - (range[1] || "").length;
+      const second = quantities(s.slice(at, at + RANGE_WINDOW))[0];
+      if (second && second.start === 0) { kind = second.kind; strict = second.strict; per = second.per; }
+    }
+    if (!kind) continue;
+    if (isYear(value, raw) && kind !== "currency" && !/^[\s-]?[A-Za-z]/.test(s.slice(end))) continue;
+    const pm = PER.exec(rest);
+    if (pm && !per) { const p = pm[1].toLowerCase(); per = PER_NORM[p] || p; }
+    if (pm && kind === "currency") strict = true;
+    const approx = plus || APPROX.test(before.slice(-20));
+    const restAt = s.length - rest.length;
+    const textEnd = pm ? restAt + pm[0].length : restAt;
+    out.push({ text: s.slice(Math.max(0, start - (APPROX.exec(before.slice(-20))?.[0].length || 0)), textEnd).trim().replace(/[\s,.;:)]+$/, ""),
+      value, kind, per, strict, approx, precision: decimals(raw), scale, start, end });
+  }
+  return out;
+}
+
+// Bare numbers in a text, for loose (count) support: "700+" in a fact
+// supports "700+ youth".
+function numbers(text) {
+  const out = new Set();
+  const s = String(text || "");
+  for (const m of s.matchAll(new RegExp("(" + NUM + ")|\\b(" + WORDS + ")\\b", "gi"))) {
+    const v = parseNumber(m[1] || m[2]);
+    if (Number.isFinite(v)) out.add(v);
+  }
+  return out;
+}
+
+// Does a supplied value support a claimed value? Exact, or the claim is the
+// supplied value rounded at the claim's precision ("44%" from 43.8%), or,
+// for an approximate claim ("about", "~", "+"), within 5%.
+function matches(claim, supplied) {
+  if (Math.abs(claim.value - supplied) < 1e-9) return true;
+  // "44%" may round a supplied 43.8%; a round figure like "$300,000" never
+  // stands in for $250,000 unless it is marked approximate.
+  const step = Math.pow(10, -claim.precision) * (claim.scale > 1 && claim.precision ? claim.scale : 1);
+  if (!Number.isInteger(supplied / step) && Math.abs(Math.round(supplied / step) * step - claim.value) < step / 1e6) return true;
+  return claim.approx && Math.abs(claim.value - supplied) <= Math.abs(supplied) * 0.05;
+}
+
+// Subject words around a number, without units and generic words, so a
+// supplied "$5,000 scholarship" cannot support a "$5k facility budget".
+const GENERIC = new Set(("hour hours week weeks month months year years day days per annual annually each approximately about typically " +
+  "range ranges cost costs total amount amounts one-time depending type").split(" "));
+const subject = (text) => new Set([...terms(text)].filter((t) => !GENERIC.has(t) && !/^\d/.test(t)));
+// An organization's own history ("over ten years", "since 2016", "a 10-year
+// track record"). A years figure in the organization's history supports the
+// same years figure stated as the organization's history, even without other
+// shared subject words; "ten years" and "10-year" are the same number.
+const TENURE = /\b(?:histor(?:y|ies|ical)|track record|operat(?:ing|ed|ion|ions)|in operation|since (?:19|20)\d\d|founded|legacy|over (?:the (?:past|last) )?(?:\w+|\d+)[- ]years?|years? of (?:operation|service|programming|work|experience))\b/i;
+// Text a quantity can be supported by: field values, never field names,
+// ids, URLs, file paths or other locators. A number inside a web address
+// ("/10-years-of-developmental-relationships") is not evidence of anything.
+const LOCATOR_KEY = /^(?:id|ids|fact_id|record_id|stat_id|packet_id|rule_id|fact_key|package_version|claim_rules_hash|hash|content_hash|doi|isbn|issn|accessed|retrieved|file|files|filename|mime|storage_path)$|(?:^|_)(?:urls?|uri|links?|href|locators?|paths?)$/i;
+const URL_TEXT = /\b(?:https?:\/\/|www\.)\S+|\b[a-z0-9-]+(?:\.[a-z0-9-]+)+\/[^\s"'<>)\]]*/gi;
+function substantive(value, depth = 0) {
+  if (value == null || depth > 8) return "";
+  if (typeof value === "string") return value.replace(URL_TEXT, " ");
+  if (typeof value === "number") return String(value);
+  if (Array.isArray(value)) return value.map((v) => substantive(v, depth + 1)).join(" | ");
+  if (typeof value === "object") return Object.entries(value).filter(([k]) => !LOCATOR_KEY.test(k)).map(([, v]) => substantive(v, depth + 1)).join(" | ");
+  return "";
+}
+// Built once per request: every supplied quantity grouped by kind, and every
+// supplied number, so each claim is checked against a small candidate list.
+function supportIndex(texts, { context = false } = {}) {
+  const q = [], n = new Set(), byKind = new Map();
+  for (const t of texts) {
+    for (const x of quantities(t)) {
+      const around = context ? t.slice(Math.max(0, x.start - 120), x.end + 120) : "";
+      const item = context ? { ...x, ctx: subject(around), tenure: x.kind === "years" && TENURE.test(around) } : x;
+      q.push(item);
+      if (!byKind.has(x.kind)) byKind.set(x.kind, []);
+      byKind.get(x.kind).push(item);
+    }
+    for (const v of numbers(t)) n.add(v);
+  }
+  return { q, n, values: [...n], byKind, context };
+}
+// `ctx` is the subject words near the claim. Organization and application
+// support for a strict claim must share at least one of them.
+function supportedBy(claim, index, ctx) {
+  if (!index) return false;
+  if (!claim.strict) return index.n.has(claim.value) || index.values.some((v) => matches(claim, v)) || index.q.some((s) => matches(claim, s.value));
+  return (index.byKind.get(claim.kind) || []).some((s) => (claim.kind !== "currency" || !s.per || !claim.per || s.per === claim.per) &&
+    (claim.kind === "currency" || !claim.per || !s.per || s.per === claim.per) && matches(claim, s.value) &&
+    (!index.context || !ctx || [...s.ctx].some((w) => ctx.has(w)) || (claim.tenure && s.tenure)));
+}
+
+// What was supplied to strategy, split into organization/application
+// support and one entry per selected research record. Instructions (claim
+// rules, methodology, the planning framework) and selection reasons are not
+// support.
+function suppliedSupport(request) {
+  const org = [];
+  for (const f of request.facts || []) if (!f.research) org.push(substantive(f));
+  org.push(substantive(request.application || {}), substantive(request.program || {}), substantive(request.questions || []));
+  const research = new Map();
+  const records = new Map();
+  const packages = new Set();
+  for (const f of request.facts || []) if (f.research) {
+    const { selection, ...rest } = f;
+    research.set(f.research.record_id, supportIndex([substantive(rest)]));
+    records.set(f.research.record_id, SA.recordSupport(rest));
+    if (f.research.package_version) packages.add(f.research.package_version);
+  }
+  const orgText = org.join(" ").toLowerCase();
+  return { org: supportIndex(org, { context: true }), research, records, packages, orgText, sources: sourceNames(request, orgText) };
+}
+
+// Names of the organizations and authors behind the selected research
+// ("Search Institute", "NACE"), so a finding attributed to one of them by
+// name is recognized as research. Names that also appear in the supplied
+// organization facts or application (a partner, a school district) are left
+// out, so ordinary mentions of them are not treated as research.
+function sourceNames(request, orgText) {
+  const names = new Set();
+  const add = (v) => {
+    if (typeof v !== "string") return;
+    for (const part of v.split(/[;,|]|\s\/\s|\s+and\s+/)) {
+      const name = part.replace(/\(.*?\)/g, "").replace(/[.,:\s]+$/, "").trim();
+      if (name.length >= 4 && /^[A-Z]/.test(name) && !/\d/.test(name) && name.split(/\s+/).length <= 8) names.add(name);
+      for (const a of part.match(/\b[A-Z][A-Z&]{2,9}\b/g) || []) names.add(a);
+    }
+  };
+  // "Burch, G. F.; Giambatista, R." -> surnames.
+  const addAuthors = (v) => {
+    for (const a of [].concat(v || [])) if (typeof a === "string")
+      for (const one of a.split(";")) { const surname = one.split(",")[0].replace(/\bet al\.?/i, "").trim(); if (surname.length >= 4 && /^[A-Z][a-z]/.test(surname)) names.add(surname); }
+  };
+  for (const f of request.facts || []) if (f.research) {
+    const r = f.research;
+    add(r.source_org); add(r.publisher); addAuthors(r.source_authors); addAuthors(r.authors); addAuthors(r.author);
+    for (const x of r.sources || []) if (x && typeof x === "object") { add(x.org); add(x.organization); add(x.author); add(x.publisher); }
+  }
+  return [...names].filter((n) => !orgText.includes(n.toLowerCase()) && !/^(?:THE|USA|U\.S)$/.test(n))
+    .map((n) => new RegExp("(?<![\\w-])" + n.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "(?![\\w-])"));
+}
+
+// Wording that presents a statement as a research finding. Such a sentence
+// must carry the selected record id it comes from.
+const RESEARCH_CUE = new RegExp([
+  "\\bmeta-?analys[ie]s\\b", "\\bet al\\b", "\\bRCTs?\\b", "\\brandomi[sz]ed(?: controlled)? (?:trials?|evaluations?|stud(?:y|ies))\\b",
+  "\\bsystematic reviews?\\b", "\\b\\d+[- ](?:study|studies|RCTs?|trials?|evaluations?)\\b",
+  "\\b(?:research|studies|a study|the study|trials?)\\s+(?:show|shows|showed|shown|find|finds|found|indicate|indicates|indicated|suggest|suggests|suggested|demonstrate|demonstrates|demonstrated|report|reports|reported)\\b",
+  "\\baccording to (?:research|studies|a study|the study)\\b",
+].join("|"), "i");
+const RESEARCH_CUE_ALL = new RegExp(RESEARCH_CUE.source, "gi");
+// A source name counts as an attribution when it is cited like one: in
+// parentheses or brackets, after "according to", "per", "by" or "from", or
+// followed by a year or "reports", "found", "data", "survey" and similar.
+function namesSource(sentence, sources, skip = () => false) {
+  for (const re of sources) {
+    for (const m of sentence.matchAll(new RegExp(re.source, "g"))) {
+      if (skip(m.index)) continue;
+      const before = sentence.slice(0, m.index), after = sentence.slice(m.index + m[0].length);
+      const open = Math.max(before.lastIndexOf("("), before.lastIndexOf("["));
+      const inParens = open >= 0 && open > Math.max(before.lastIndexOf(")"), before.lastIndexOf("]"));
+      if (inParens || /\b(?:according to|per|by|from|reported by|cited by|source:?)\s*(?:the\s+)?$/i.test(before.slice(-30)) ||
+        /^\W{0,3}(?:\(?(?:19|20)\d\d\)?|reports?|reported|found|finds|shows?|showed|data|survey|study|research|analysis)\b/i.test(after.slice(0, 30)))
+        return m[0];
+    }
+  }
+  return null;
+}
+
+const SECTION_SPLIT = options.segmentation
+  ? /\n+|(?<=[.!?](?:\*\*|\*)?)\s+(?=[A-Z0-9*(\-•\["“])/ // CANDIDATE
+  : /\n+|(?<=[.!?])\s+(?=[A-Z0-9*(\-•\[])/;
+// Clauses of a sentence joined by semicolons. A semicolon does not end the
+// sentence for citations: a clause with no record id of its own is tied to
+// the next citation in the same sentence ("17% ...; Florida requires ...
+// [CFSC-942, CFSC-937]"), never to a citation in another sentence.
+const CLAUSE_SPLIT = options.segmentation ? /(?<=;)\s+/ /* CANDIDATE */ : /(?<=;)\s+(?=[A-Z0-9*(\-•\[])/;
+const TOKEN = /[A-Za-z0-9]+(?:[-_.][A-Za-z0-9]+)*/g;
+// Sentences of a section. "et al." or "e.g." does not end a sentence, and a
+// citation left on its own after a full stop ("... 84% agree. [EP-018]")
+// stays with the sentence before it.
+const ABBREVIATION = /(?:\bet al|\be\.g|\bi\.e|\bvs|\betc|\bNo|\bDr|\bSt|\bU\.S|\bInc|\bCo|\bapprox|\bFig)\.$/i;
+function sentences(text, isId) {
+  const out = [];
+  for (const part of String(text || "").split(SECTION_SPLIT)) {
+    const tokens = part.match(TOKEN) || [];
+    const citationOnly = tokens.length > 0 && tokens.every((t) => isId(t) || /_V\d/.test(t)) && !/[a-z]{4,}\s+[a-z]{4,}/.test(part.replace(TOKEN, ""));
+    if (out.length && (ABBREVIATION.test(out[out.length - 1].trimEnd()) || citationOnly)) out[out.length - 1] += " " + part;
+    else out.push(part);
+  }
+  return out;
+}
+const BARE_DECIMAL = /(?<![\w.$/-])(\d*\.\d+)(?![\w./%])/g;
+const APPLICANT_KINDS = new Set(["currency", "fte", "staff", "hours", "weeks", "months", "days", "semesters"]);
+
+// Evaluate a simple left-to-right calculation with * and / before + and -.
+function evaluate(values, ops) {
+  const terms = [values[0]];
+  const add = [];
+  for (let i = 0; i < ops.length; i++) {
+    const o = ops[i], v = values[i + 1];
+    if (o === "*") terms[terms.length - 1] *= v;
+    else if (o === "/") terms[terms.length - 1] /= v;
+    else { add.push(o); terms.push(v); }
+  }
+  return terms.slice(1).reduce((s, t, i) => (add[i] === "-" ? s - t : s + t), terms[0]);
+}
+
+// One pass over every section of a strategy. `request` is the exact request
+// sent to the model; `bundle` is the research library (for recognizing ids).
+// Returns
+//   unsupported: applicant-specific quantities nothing supplied supports;
+//   uncited: research-derived findings without their selected record id in
+//     the same sentence (a research-only number, a sentence that attributes a
+//     claim to research, or an evidence chain with no record ids at all), and
+//     cited claims their records do not support.
+function analyze(strategy, request, bundle) {
+  const support = suppliedSupport(request);
+  const selectedIds = new Set(support.research.keys());
+  const libraryIds = new Set([...(bundle?.records || []).map((r) => r.record_id), ...(bundle?.aliases || []).map((a) => a.legacy_record_id)]);
+  const isId = (t) => selectedIds.has(t) || libraryIds.has(t);
+  const problems = [];
+  const uncited = [];
+  const derived = [];
+  const chainCites = new Set();
+  let researchUsed = false;
+  const snippet = (t) => t.trim().slice(0, 140);
+  const sections = Object.entries(strategy || {}).filter(([, v]) => typeof v === "string");
+  // Pass 1: calculations. Pass 2: every other quantity.
+  const pending = [];
+  for (const [section, text] of sections) {
+    for (const whole of sentences(text, isId)) {
+    const clauses = whole.split(CLAUSE_SPLIT);
+    const clauseCites = clauses.map((c) => [...new Set((c.match(TOKEN) || []).filter((t) => selectedIds.has(t)))]);
+    for (let ci = 0; ci < clauses.length; ci++) {
+      const sentence = clauses[ci];
+      const own = clauseCites[ci];
+      const cites = own.length ? own : clauseCites.slice(ci + 1).find((c) => c.length) || (options.segmentation ? [...clauseCites.slice(0, ci)].reverse().find((c) => c.length) : null) || []; // CANDIDATE: else the citation before
+      if (cites.length) researchUsed = true;
+      if (section === "evidence_chain") for (const c of cites) chainCites.add(c);
+      // Wording that attributes a claim to research ("research shows",
+      // "national surveys document", a named source): it must carry a
+      // selected record id in the same sentence.
+      // Plans, recommendations, instructions ("Do not turn national research
+      // findings (... meta-analyses ...) into local estimates"), questions and
+      // statements of absent evidence are not research claims, for every cue.
+      const skip = (at) => SA.instructionOrGap(sentence, at);
+      const cue = [...sentence.matchAll(RESEARCH_CUE_ALL)].find((m) => !skip(m.index))?.[0] || namesSource(sentence, support.sources, skip) || SA.attribution(sentence, support.orgText);
+      if (cue) {
+        researchUsed = true;
+        if (!cites.length) uncited.push({ section, text: snippet(sentence), reason: "research finding (\"" + cue + "\") without its selected record id in the same sentence" });
+      }
+      // Every cited claim must be one its cited records actually report.
+      if (cites.length) for (const claim of SA.claims(sentence, (t) => selectedIds.has(t), (t) => support.packages.has(t))) {
+        const anchored = quantities(claim.text).some((q) => !APPLICANT_KINDS.has(q.kind) && claim.ids.some((c) => supportedBy(q, support.research.get(c))));
+        const why = SA.unsupportedClaim(claim, support.records, anchored);
+        if (why) uncited.push({ section, text: snippet(claim.text), reason: why });
+      }
+      // A research claim in a clause that relies on the sentence's next
+      // citation must be one that citation's records report.
+      if (cue && !own.length && cites.length) {
+        const anchored = quantities(sentence).some((q) => !APPLICANT_KINDS.has(q.kind) && cites.some((c) => supportedBy(q, support.research.get(c))));
+        const why = SA.unsupportedClaim({ ids: cites, text: sentence }, support.records, anchored);
+        if (why) uncited.push({ section, text: snippet(sentence), reason: why });
+      }
+      // Subject words near a figure (not the whole sentence, which may run
+      // across several budget lines).
+      const near = (q) => subject(sentence.slice(Math.max(0, q.start - 80), q.end + 80));
+      const qs = quantities(sentence);
+      const bare = [...sentence.matchAll(new RegExp("(\\$\\s?)?(" + NUM + ")", "g"))];
+      const inCalc = new Set();
+      // Each "=" closes a calculation over the numbers since the previous "=".
+      let from = 0, carry = null;
+      for (const eq of sentence.matchAll(/=/g)) {
+        if (options.calcGuard && /(?:^|[\s(,;:])[A-Za-z]\s?$/.test(sentence.slice(0, eq.index))) continue; // CANDIDATE: "n=49", "d = .37"
+        const span = sentence.slice(from, eq.index);
+        const operandMatches = bare.filter((b) => b.index >= from && b.index < eq.index && !/[A-Za-z_][-.]?$/.test(sentence.slice(0, b.index)));
+        const resultQ = qs.find((q) => q.start > eq.index) || null;
+        const resultBare = bare.find((b) => b.index > eq.index);
+        // A calculation needs an operator, or continues the previous one
+        // ("= 20,000 hours, at $15/hour = $300,000").
+        const isCalc = /[×*]|\sx\s|\btimes\b/.test(span) || /\d\s*[+÷/]\s*[$\d]/.test(span) || (carry && operandMatches.length);
+        if (!isCalc && !carry && operandMatches.length) {
+          // Total first: "$810,000 = 150 students × 10 hours/week × ...".
+          const next = sentence.indexOf("=", eq.index + 1);
+          const tail = sentence.slice(eq.index + 1, next < 0 ? sentence.length : next);
+          if (/[×*]|\sx\s|\btimes\b/.test(tail)) {
+            const last = operandMatches[operandMatches.length - 1];
+            const total = qs.find((x) => x.start <= last.index && x.end >= last.index + last[0].length) ||
+              { text: last[0], value: parseNumber(last[2]), kind: last[1] ? "currency" : null, approx: false, precision: decimals(last[2]), scale: 1, start: last.index, end: last.index + last[0].length };
+            const tailStart = eq.index + 1;
+            const ops = [], vals = [], opnds = [];
+            for (const b of bare.filter((x) => x.index >= tailStart && x.index < tailStart + tail.length && !/[A-Za-z_][-.]?$/.test(sentence.slice(0, x.index)))) {
+              const q = qs.find((x) => x.start <= b.index && x.end >= b.index + b[0].length) ||
+                { text: b[0], value: parseNumber(b[2]), kind: b[1] ? "currency" : null, strict: !!b[1], per: null, approx: false, precision: decimals(b[2]), scale: 1, start: b.index, end: b.index + b[0].length };
+              if (opnds.some((o) => o.start === q.start)) continue;
+              if (opnds.length) { const gap = sentence.slice(opnds[opnds.length - 1].end, q.start); ops.push(/[×*]|\sx\s|\btimes\b/.test(gap) ? "*" : /÷|\//.test(gap) ? "/" : /\+|\bplus\b/.test(gap) ? "+" : "*"); }
+              opnds.push(q); vals.push(q.value);
+            }
+            const bad = opnds.filter((o) => !(o.kind ? supportedBy(o, support.org, near(o)) || cites.some((c) => supportedBy(o, support.research.get(c))) : support.org.n.has(o.value)));
+            for (const o of opnds) inCalc.add(o.start);
+            inCalc.add(total.start);
+            if (bad.length) {
+              for (const o of bad) problems.push({ section, text: o.text, reason: "calculation input is not supported by the supplied facts or application" });
+              problems.push({ section, text: total.text, reason: "calculated from unsupported inputs" });
+            } else {
+              const expected = evaluate(vals, ops);
+              if (!(Math.abs(expected - total.value) <= Math.abs(expected) * (total.approx ? 0.05 : 0.01) + 1e-9))
+                problems.push({ section, text: total.text, reason: "arithmetic does not match its inputs (expected about " + Math.round(expected * 100) / 100 + ")" });
+              else derived.push({ ...total, derived: true });
+            }
+            from = next < 0 ? sentence.length : next;
+            continue;
+          }
+        }
+        if (!resultBare || (!operandMatches.length && !carry) || !isCalc) { from = eq.index + 1; carry = null; continue; }
+        const operands = [];
+        if (carry) operands.push(carry);
+        for (const b of operandMatches) {
+          const q = qs.find((x) => x.start <= b.index && x.end >= b.index + b[0].length) ||
+            { text: b[0], value: parseNumber(b[2]) * (b[1] ? 1 : 1), kind: b[1] ? "currency" : null, strict: !!b[1], per: null, approx: false, precision: decimals(b[2]), scale: 1, start: b.index, end: b.index + b[0].length };
+          if (operands.some((o) => o.start === q.start)) continue;
+          operands.push(q);
+        }
+        // Operators between consecutive operands.
+        const ops = [];
+        for (let i = 1; i < operands.length; i++) {
+          const gap = sentence.slice(operands[i - 1].end, operands[i].start);
+          ops.push(/[×*]|\sx\s|\btimes\b/.test(gap) ? "*" : /÷|\//.test(gap) ? "/" : /\+|\bplus\b/.test(gap) ? "+" : /\s-\s|−/.test(gap) ? "-" : "*");
+        }
+        const bad = operands.filter((o) => !(o.derived || derived.some((d) => d.kind === o.kind && matches(o, d.value)) ||
+          (o.kind ? supportedBy(o, support.org, near(o)) || cites.some((c) => supportedBy(o, support.research.get(c))) : support.org.n.has(o.value))));
+        for (const o of operands) inCalc.add(o.start);
+        const result = resultQ && resultQ.start >= resultBare.index ? resultQ :
+          { text: resultBare[0], value: parseNumber(resultBare[2]), kind: resultBare[1] ? "currency" : null, strict: false, approx: APPROX.test(sentence.slice(0, resultBare.index).slice(-20)), precision: decimals(resultBare[2]), scale: 1, start: resultBare.index, end: resultBare.index + resultBare[0].length };
+        inCalc.add(result.start);
+        if (bad.length) {
+          for (const o of bad) problems.push({ section, text: o.text, reason: "calculation input is not supported by the supplied facts or application" });
+          problems.push({ section, text: result.text, reason: "calculated from unsupported inputs" });
+        } else {
+          const expected = evaluate(operands.map((o) => o.value), ops);
+          const tol = result.approx ? 0.05 : 0.01;
+          if (!(Math.abs(expected - result.value) <= Math.abs(expected) * tol + 1e-9))
+            problems.push({ section, text: result.text, reason: "arithmetic does not match its inputs (expected about " + Math.round(expected * 100) / 100 + ")" });
+          else derived.push({ ...result, derived: true });
+        }
+        carry = { ...result, derived: !bad.length };
+        from = result.end;
+      }
+      for (const q of qs) if (!inCalc.has(q.start)) {
+        if (q.kind === "years") q.tenure = TENURE.test(sentence.slice(Math.max(0, q.start - 80), q.end + 80));
+        pending.push({ section, q, cites, ctx: near(q) });
+      }
+      // Unitless research values ("effects 0.27-0.43", "d = .37") found only
+      // in research must carry the record that contains them.
+      for (const m of sentence.matchAll(BARE_DECIMAL)) {
+        if (qs.some((q) => q.start <= m.index && q.end >= m.index + m[1].length)) continue;
+        const v = Number(m[1]);
+        if (support.org.n.has(v)) continue;
+        const holders = [...support.research].filter(([, ix]) => ix.n.has(v)).map(([id]) => id);
+        if (!holders.length) continue;
+        researchUsed = true;
+        if (!cites.some((c) => holders.includes(c)))
+          uncited.push({ section, text: m[1], reason: (cites.length ? "the cited record does not contain this value" : "research value without its selected record id in the same sentence") + " (found in " + holders.slice(0, 3).join(", ") + ")" });
+      }
+    }
+  }
+  }
+  for (const { section, q, cites, ctx } of pending) {
+    if (supportedBy(q, support.org, ctx)) continue;
+    if (cites.some((c) => supportedBy(q, support.research.get(c)))) continue;
+    if (derived.some((d) => d.kind === q.kind && matches(q, d.value))) continue;
+    // A research statistic (a percent or a count) that only research
+    // supports: it must cite the selected record that contains it, in the
+    // same sentence. Amounts, rates, staffing and durations are never taken
+    // from uncited research: without a citation they are assumptions.
+    const holders = APPLICANT_KINDS.has(q.kind) || q.per ? [] : [...support.research].filter(([, ix]) => supportedBy(q, ix)).map(([id]) => id);
+    if (holders.length) {
+      researchUsed = true;
+      uncited.push({ section, text: q.text, reason: (cites.length ? "the cited record does not contain this number" : "research number without its selected record id in the same sentence") + " (found in " + holders.slice(0, 3).join(", ") + ")" });
+      continue;
+    }
+    problems.push({ section, text: q.text, reason: "not supported by the supplied facts, application or cited selected research" });
+  }
+  // A strategy that uses research must cite it in the evidence chain.
+  if (researchUsed && selectedIds.size && !chainCites.size)
+    uncited.push({ section: "evidence_chain", text: "(no record ids)", reason: "the strategy uses research but the evidence chain cites no selected record id" });
+  // One entry per distinct problem.
+  const unique = (list) => { const seen = new Set(); return list.filter((p) => { const k = p.section + "|" + p.text + "|" + p.reason; if (seen.has(k)) return false; seen.add(k); return true; }); };
+  return { unsupported: unique(problems), uncited: unique(uncited), cited: [...chainCites].sort() };
+}
+
+// Unsupported applicant-specific quantities (the PR #30 check).
+const unsupportedQuantities = (strategy, request, bundle) => analyze(strategy, request, bundle).unsupported;
+
+return { quantities, analyze, unsupportedQuantities, suppliedSupport, SA, options };
+
+}
+module.exports = { make };
