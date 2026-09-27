@@ -204,9 +204,24 @@ function attribution(sentence, orgText = "") {
 
 // ---- substantive support ------------------------------------------------------
 
-// Claims in a sentence: the text before each group of citations ("... [A] ...
-// [B, C] ..."). Text after the last group belongs to it only when the group
-// had no subject words of its own ("[EP-018] reports that ...").
+// A heading before the first citation, up to 60 characters ending in a colon
+// ("Relevant research:", "- **Research base**:"): not a claim.
+const LABEL_PREFIX = /^[\s\-•*\d.)(]*(?:\*\*)?[^:()\[\]]{1,60}?(?:\*\*)?:\s*/;
+// Claims in a sentence and the records each one is charged to.
+//   "... [A] ... [B, C] ..."   the text before each group of citations is that
+//                             group's claim; a heading before the first
+//                             citation is not part of it;
+//   "CFSC-942: 17% ..." or     citation-first: nothing but a heading before the
+//   "[EP-018] reports that"    id, so the claim is the text after it, up to the
+//                             next citation;
+//   "Label (CFSC-937: ...)"    a label with subject words of its own stays the
+//                             claim, as before; the text after the colon is
+//                             not read in its place;
+//   "... [A] and national      a group with no subject words of its own, after
+//   research [B] finds ..."    an earlier claim, attaches to the claim before
+//                             it and to the claim after it, so text between
+//                             two citations passes when either record reports
+//                             it.
 function claims(sentence, isSelected, isPackage = () => false) {
   const cites = [];
   for (const m of sentence.matchAll(/[A-Za-z0-9]+(?:[-_.][A-Za-z0-9]+)*/g)) if (isSelected(m[0])) cites.push({ id: m[0], start: m.index, end: m.index + m[0].length });
@@ -220,12 +235,23 @@ function claims(sentence, isSelected, isPackage = () => false) {
   }
   const out = [];
   let from = 0;
+  let pending = [];
   groups.forEach((g, i) => {
     let text = between(from, g.start);
-    let after = false;
-    if (!contentStems(text).size) { text += " " + between(g.end, groups[i + 1] ? groups[i + 1].start : sentence.length); after = true; }
-    out.push({ ids: [...new Set(g.ids)], text, after });
+    if (i === 0) text = text.replace(LABEL_PREFIX, "");
+    const next = groups[i + 1];
+    const citationFirst = !contentStems(text).size && (/^\s*:/.test(sentence.slice(g.end)) || (!out.length && !pending.length));
     from = g.end;
+    if (citationFirst) {
+      const following = between(g.end, next ? next.start : sentence.length).replace(/^\s*:\s*/, "");
+      out.push({ ids: [...new Set([...pending, ...g.ids])], text: (text + " " + following).trim(), after: true });
+      pending = [];
+      from = next ? next.start : sentence.length;
+      return;
+    }
+    if (contentStems(text).size) { out.push({ ids: [...new Set([...pending, ...g.ids])], text, after: false }); pending = []; return; }
+    if (out.length) out[out.length - 1].ids = [...new Set([...out[out.length - 1].ids, ...g.ids])];
+    if (next) pending.push(...g.ids);
   });
   return out;
 }
