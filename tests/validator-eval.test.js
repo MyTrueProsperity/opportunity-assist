@@ -19,9 +19,10 @@ const current = require("./validator-eval/validators/current");
 // adding one is a regression that needs Bill's approval.
 const KNOWN_SAFETY_MISSES = new Set(["wr-03"]);
 // Production false positives and false negatives on the public corpus as of
-// Step 1 (shared segmentation, citation ownership, calculation guard). Counts
-// may go down; they may not go up. History: PR #36 baseline FP 8, FN 7.
-const BASELINE = { FP: 3, FN: 5 };
+// Step 1.5 (the support layer: support scorer, content ownership, label rule,
+// list ownership, source acronyms). Counts may go down; they may not go up.
+// History: PR #36 baseline FP 8, FN 7; Step 1 FP 3, FN 5.
+const BASELINE = { FP: 1, FN: 5 };
 
 test("the production validator catches every safety-critical case in the public corpus except the documented misses", () => {
   const corpus = H.loadCorpus(path.join(__dirname, "validator-eval", "public-cases.js"));
@@ -50,8 +51,15 @@ test("the corpus is well formed", () => {
   for (const word of ["bright minds", "seminole", "navarro", "mytrueprosperity", "sanford"]) assert.ok(!text.includes(word), "public corpus mentions " + word);
 });
 
-test("the private corpus, when present, keeps its safety-critical catches", { skip: !fs.existsSync(path.join(__dirname, "validator-eval", "private", "institute-corpus.json")) }, () => {
+// The private corpus as of Step 1.5: FP 2, FN 7 (all segments), every whole
+// stored generation rejected.
+const PRIVATE_BASELINE = { FP: 2, FN: 7 };
+test("the private corpus, when present, keeps its safety-critical catches and its counts", { skip: !fs.existsSync(path.join(__dirname, "validator-eval", "private", "institute-corpus.json")) }, () => {
   const corpus = H.loadCorpus(path.join(__dirname, "validator-eval", "private", "institute-corpus.json"));
-  const m = H.metrics(H.runSegments(current, corpus));
+  const rows = H.runSegments(current, corpus);
+  const m = H.metrics(rows);
   for (const [kind, s] of Object.entries(m.safety)) assert.deepEqual(s.missed, [], kind + " missed: " + s.missed.join(", "));
+  assert.ok(m.FP <= PRIVATE_BASELINE.FP, "false positives grew: " + m.FP + " > " + PRIVATE_BASELINE.FP + "\n" + rows.filter((r) => r.outcome === "FP").map((r) => r.id).join(", "));
+  assert.ok(m.FN <= PRIVATE_BASELINE.FN, "false negatives grew: " + m.FN + " > " + PRIVATE_BASELINE.FN + "\n" + rows.filter((r) => r.outcome === "FN").map((r) => r.id).join(", "));
+  for (const g of H.runGenerations(current, corpus)) assert.equal(g.predicted, g.expected, "generation " + g.id);
 });
