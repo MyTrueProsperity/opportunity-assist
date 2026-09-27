@@ -409,7 +409,17 @@ function analyze(strategy, request, bundle) {
         if (!cites.length) uncited.push({ section, text: snippet(sentence), reason: "research finding (\"" + cue + "\") without its selected record id in the same sentence" });
       }
       // Every cited claim must be one its cited records actually report.
-      if (cites.length) for (const claim of SA.claims(sentence, (t) => selectedIds.has(t), (t) => support.packages.has(t))) {
+      // CANDIDATE listOwnership: "Claim (A: ...; B: ...; C: ...)": while the
+      // parenthesis opened in this clause stays open, the citation-first groups
+      // of the following clauses also own the text before it.
+      let listIds = [];
+      if (options.listOwnership && (sentence.match(/\(/g) || []).length > (sentence.match(/\)/g) || []).length) {
+        for (let cj = ci + 1; cj < clauses.length; cj++) {
+          if (/^\s*[A-Za-z0-9]+(?:[-_.][A-Za-z0-9]+)*\s*:/.test(clauses[cj]) && clauseCites[cj].length) listIds.push(...clauseCites[cj]);
+          if ((clauses[cj].match(/\)/g) || []).length > (clauses[cj].match(/\(/g) || []).length) break;
+        }
+      }
+      if (cites.length) for (const claim of SA.claims(sentence, (t) => selectedIds.has(t), (t) => support.packages.has(t), listIds)) {
         const anchored = quantities(claim.text).some((q) => !APPLICANT_KINDS.has(q.kind) && claim.ids.some((c) => supportedBy(q, support.research.get(c))));
         const why = SA.unsupportedClaim(claim, support.records, anchored);
         if (why) uncited.push({ section, text: snippet(claim.text), reason: why });
