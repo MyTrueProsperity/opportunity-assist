@@ -3,10 +3,13 @@
 // Never loaded by production code. It exists so the candidate attribution
 // module (tests/validator-eval/candidate/strategy-attribution.js) can be run
 // through the production analysis; the options object is passed through to
-// it. Everything else is byte-for-byte the production module (segmentation,
-// citation ownership and the calculation guard became production in Step 1).
+// it. Its own switches are marked CANDIDATE: listOwnership (on by default)
+// and numberGuard (off by default). Everything else is byte-for-byte the
+// production module.
+const { DEFAULTS } = require("./strategy-attribution");
 
-function make(options = { support: true }) {
+function make(options = DEFAULTS) {
+options = { ...DEFAULTS, ...options };
 // Quantitative grounding for strategy.
 //
 // Strategy may state an applicant-specific amount, rate, quantity, staffing
@@ -177,6 +180,14 @@ function numbers(text) {
   const out = new Set();
   const s = String(text || "");
   for (const m of s.matchAll(new RegExp("(" + NUM + ")|\\b(" + WORDS + ")\\b", "gi"))) {
+    // CANDIDATE numberGuard: digits inside an identifier ("CFSC-937", "V1",
+    // "S11") and a number word inside a hyphenated compound ("one-to-one",
+    // "two-year") are not supplied numbers.
+    if (options.numberGuard) {
+      const before = s.slice(0, m.index), after = s.slice(m.index + m[0].length);
+      if (m[1] && (/[A-Za-z_]$/.test(before) || /[A-Za-z_][-._]$/.test(before) || /^[A-Za-z_]/.test(after))) continue;
+      if (m[2] && (/-$/.test(before) || /^-[A-Za-z]/.test(after))) continue;
+    }
     const v = parseNumber(m[1] || m[2]);
     if (Number.isFinite(v)) out.add(v);
   }
@@ -409,7 +420,18 @@ function analyze(strategy, request, bundle) {
         if (!cites.length) uncited.push({ section, text: snippet(sentence), reason: "research finding (\"" + cue + "\") without its selected record id in the same sentence" });
       }
       // Every cited claim must be one its cited records actually report.
-      if (cites.length) for (const claim of SA.claims(sentence, (t) => selectedIds.has(t), (t) => support.packages.has(t))) {
+      // "Claim (A: ...; B: ...; C: ...)": while the parenthesis opened in this
+      // clause stays open, the citation-first groups of the following clauses
+      // also own the text before it.
+      const listIds = [];
+      // CANDIDATE listOwnership
+      if (options.listOwnership && (sentence.match(/\(/g) || []).length > (sentence.match(/\)/g) || []).length) {
+        for (let cj = ci + 1; cj < clauses.length; cj++) {
+          if (/^\s*[A-Za-z0-9]+(?:[-_.][A-Za-z0-9]+)*\s*:/.test(clauses[cj]) && clauseCites[cj].length) listIds.push(...clauseCites[cj]);
+          if ((clauses[cj].match(/\)/g) || []).length > (clauses[cj].match(/\(/g) || []).length) break;
+        }
+      }
+      if (cites.length) for (const claim of SA.claims(sentence, (t) => selectedIds.has(t), (t) => support.packages.has(t), listIds)) {
         const anchored = quantities(claim.text).some((q) => !APPLICANT_KINDS.has(q.kind) && claim.ids.some((c) => supportedBy(q, support.research.get(c))));
         const why = SA.unsupportedClaim(claim, support.records, anchored);
         if (why) uncited.push({ section, text: snippet(claim.text), reason: why });
