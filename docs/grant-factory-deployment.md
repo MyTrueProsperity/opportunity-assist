@@ -31,8 +31,11 @@ Apply these additive files to the existing Supabase project in order:
 6. `supabase/grant-factory/20260924000002_workspace_framework.sql`
 7. `supabase/grant-factory/20260926004842_strategy_jobs.sql`
 8. `supabase/grant-factory/20260927000001_strategy_rejections.sql`
+9. `supabase/grant-factory/20260927000002_strategy_retry_rejections.sql`
 
 The eighth migration keeps the strategy output that validation rejected on the FAILED job (never on the application) and adds the server-only `gf_strategy_job_rejection` lookup behind the `strategy_rejection` action. An application keeps at most one rejected output: finishing a later job removes the text from earlier jobs. It is additive and safe to apply before the matching function code.
+
+The ninth migration supports the single automatic regeneration: every rejected generation is kept in `result.rejected_attempts` (a job can complete after a rejected first generation, or fail after two), finishing a later job removes rejected output from earlier jobs, and the lookup returns the latest job with rejected output. It is additive and safe to apply before the matching function code.
 
 The sixth migration adds a nullable `framework` column to `gf_workspaces` for each workspace's private planning framework: program funding alignment, a logic model framework and a quarantine list of unverified claims. It is maintained by trusted administration, shown read-only in the Research Library, and passed to strategy generation as planning material only. It is never evidence and quarantined claims are never draft-eligible. Organization-neutral grant methodology rules live in `netlify/lib/grant-factory/methodology.js` and apply to every strategy, draft and audit call.
 
