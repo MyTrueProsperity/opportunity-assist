@@ -41,6 +41,8 @@ const VERB_NOUN = new RegExp("\\b(?:(documented|shown|found|demonstrated|reporte
 // Words just before the evidence noun that make it the organization's own or
 // the applicant's material, not external research.
 const OWN = /\b(?:our|its|their|organi[sz]ation(?:'s|’s|al)?|institute(?:'s|’s)?|program(?:'s|’s|matic)?|internal|alumni|participants?(?:'|’)?|enrollment|attendance|administrative|intake|applicant(?:'s|’s)?|application(?:'s|’s)?|opportunity(?:'s|’s)?|funder(?:'s|’s)?|rfp|solicitation|school(?:'s|’s)?|academy(?:'s|’s)?|own|historical|tracking|cohort|baseline|planned|proposed|future|pilot)\b[\sA-Za-z'’-]{0,24}$/i;
+// Evidence nouns that can describe the organization's own records.
+const OWN_NOUN = /^(?:data|findings|analys[ie]s)$/i;
 // Plans, recommendations, gaps, questions and instructions.
 const PLAN_START = /^\s*(?:[-*•\d.)\s]*)(?:(?:gaps?|missing|decisions?(?: and actions)?|actions?|next steps?|recommendations?|questions?|to do|needs?)\s*:|no\b|none\b|not yet\b|missing\b|without\b|lack|if\b|whether\b|do not\b|don['’]t\b|never\b|avoid\b|confirm|develop|conduct|collect|gather|design|build|create|identify|define|track|measure|plan|seek|obtain|request|clarify|flag|consider|commission|prepare|draft|secure|verify|assess|evaluate|monitor|pilot|determine|specify|recommend|propose)\b/i;
 // A plan or recommendation just before the evidence noun ("will collect
@@ -141,9 +143,9 @@ function attribution(sentence, orgText = "") {
   if (/\?\s*$/.test(sentence)) return null;
   const hits = [];
   NOUN_VERB.lastIndex = 0;
-  for (const m of sentence.matchAll(NOUN_VERB)) hits.push({ at: m.index, text: m[0], nounAt: m.index, verbAt: m.index + m[0].length - m[3].length });
+  for (const m of sentence.matchAll(NOUN_VERB)) hits.push({ at: m.index, text: m[0], noun: m[1], nounAt: m.index, verbAt: m.index + m[0].length - m[3].length });
   VERB_NOUN.lastIndex = 0;
-  for (const m of sentence.matchAll(VERB_NOUN)) hits.push({ at: m.index, text: m[0], nounAt: m.index + m[0].length - m[3].length, verbAt: m.index });
+  for (const m of sentence.matchAll(VERB_NOUN)) hits.push({ at: m.index, text: m[0], noun: m[3], nounAt: m.index + m[0].length - m[3].length, verbAt: m.index });
   hits.sort((a, b) => a.at - b.at);
   for (const h of hits) {
     const clause = clauseBefore(sentence, h.at);
@@ -152,11 +154,15 @@ function attribution(sentence, orgText = "") {
     // A gap or limitation ("... are not documented in supplied evidence").
     const clauseStart = h.at - clause.length;
     if (NEGATED.test(sentence.slice(Math.max(clauseStart, Math.min(h.at, h.nounAt) - 50), Math.min(h.at, h.nounAt)))) continue;
-    // The organization's or applicant's own data.
+    // The organization's or applicant's own data ("our alumni data show").
+    // Only data-type nouns qualify: research, studies, literature, evidence,
+    // surveys, evaluations and empirical findings are always external, so
+    // "Historical research supports ..." still needs its record id.
     const beforeNoun = sentence.slice(Math.max(0, h.nounAt - 60), h.nounAt);
-    if (OWN.test(beforeNoun)) continue;
+    const external = !OWN_NOUN.test(h.noun) || /\b(?:empirical|research|study|studies|evaluation|survey|trial)\s+$/i.test(beforeNoun);
+    if (!external && OWN.test(beforeNoun)) continue;
     const lead = beforeNoun.match(/((?:[A-Z][\w'’-]*\s+){1,4})$/);
-    if (lead && orgText) {
+    if (!external && lead && orgText) {
       const name = lead[1].trim().split(/\s+/).filter((w) => !GENERIC_LEAD.has(w.toLowerCase())).join(" ").toLowerCase();
       if (name.length >= 4 && orgText.includes(name)) continue;
     }
