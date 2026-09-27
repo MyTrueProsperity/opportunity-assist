@@ -7,12 +7,12 @@ Evaluation tooling for the strategy validator (`netlify/lib/grant-factory/strate
 | File | Purpose |
 |---|---|
 | `harness.js` | Runs a validator against a labeled corpus and reports TP/FP/TN/FN, precision, recall, F1, failures by category, whether each safety-critical kind was caught, and whole-generation outcomes. `node tests/validator-eval/harness.js --validator=both <corpus...>` |
-| `ablation.js` | Same, for every single-change variant of the candidate, one summary line each. |
-| `segment.js` | Splits a section into the sentences the production validator checks (mirrors `sentences()` in strategy-quantities.js). |
+| `ablation.js` | Same, for every switchable variant of the candidate, one summary line each. Segmentation, citation ownership and the calculation guard were ablated this way before they became production in Step 1; that table is in the Step 0 report. |
+| `segment.js` | Splits a section into corpus segments. Fixed at the Step 0 (PR #36) sentence splitting so segment ids stay stable; the validator applies its own segmentation to each segment it is given. |
 | `build-corpus.js` | Turns a fixture of whole generations into a corpus: segments every section, proposes labels from surface features and the production validator's own flags, and applies hand adjudications from a labels file. |
 | `validators/current.js` | Adapter over the production validator, unchanged. |
 | `validators/candidate.js` | Adapter over the evaluation-only fork in `candidate/`; `make(options)` switches each proposed change on or off. |
-| `candidate/` | Forks of the two production modules with the proposed segmentation, ownership, support and calculation-guard changes marked `CANDIDATE`. |
+| `candidate/` | Forks of the two production modules with the proposed support-scorer change marked `CANDIDATE` (the only difference from production since Step 1). When the production modules change, regenerate the forks from them and keep the `CANDIDATE` blocks. |
 | `public-cases.js` | The public corpus: sanitized, structurally equivalent versions of every production true and false positive from PRs #29 to #36, plus synthetic cases for each safety-critical kind. Fictional organization, figures, ids and sources. |
 | `private/` (git-ignored) | The private corpus with the real Institute wording: `institute-fixture.json` (facts, selected research records, library index, seven whole generations), `institute-labels.json` (hand adjudications), `institute-corpus.json` (built). Never commit. |
 
