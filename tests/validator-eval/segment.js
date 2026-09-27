@@ -1,10 +1,11 @@
 "use strict";
-// Segments a strategy section into the units the production validator
-// checks: sentences, with "et al." and "e.g." kept whole and a citation left
-// on its own after a full stop ("... 84% agree. [EP-018]") kept with the
-// sentence before it. This mirrors sentences() in strategy-quantities.js so
-// corpus segments line up with what the validator sees; it is evaluation
-// code and never runs in production.
+// Segments a strategy section into corpus units: sentences, with "et al." and
+// "e.g." kept whole and a citation left on its own after a full stop ("...
+// 84% agree. [EP-018]") kept with the sentence before it. This is the Step 0
+// splitting (production sentences() as of PR #36) and is kept fixed so corpus
+// segment ids stay stable across validator changes; the validator applies its
+// own, current segmentation to each segment it is given. Evaluation code,
+// never run in production.
 
 const SECTION_SPLIT = /\n+|(?<=[.!?])\s+(?=[A-Z0-9*(\-•\[])/;
 const TOKEN = /[A-Za-z0-9]+(?:[-_.][A-Za-z0-9]+)*/g;

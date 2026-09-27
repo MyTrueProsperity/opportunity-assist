@@ -13,13 +13,15 @@ const path = require("node:path");
 const H = require("./validator-eval/harness");
 const current = require("./validator-eval/validators/current");
 
-// Safety-critical cases the production validator is known to miss today.
-// Removing an id from this list is a guarded improvement; adding one is a
-// regression that needs Bill's approval.
-const KNOWN_SAFETY_MISSES = new Set(["wr-03", "wr-04"]);
+// Safety-critical cases the production validator is known to miss today
+// (wr-03: a correct subject with an invented outcome; the claim detector
+// cannot see it). Removing an id from this list is a guarded improvement;
+// adding one is a regression that needs Bill's approval.
+const KNOWN_SAFETY_MISSES = new Set(["wr-03"]);
 // Production false positives and false negatives on the public corpus as of
-// PR #36. Counts may go down; they may not go up.
-const BASELINE = { FP: 8, FN: 7 };
+// Step 1 (shared segmentation, citation ownership, calculation guard). Counts
+// may go down; they may not go up. History: PR #36 baseline FP 8, FN 7.
+const BASELINE = { FP: 3, FN: 5 };
 
 test("the production validator catches every safety-critical case in the public corpus except the documented misses", () => {
   const corpus = H.loadCorpus(path.join(__dirname, "validator-eval", "public-cases.js"));

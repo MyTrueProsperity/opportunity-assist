@@ -2,16 +2,14 @@
 // EVALUATION-ONLY fork of netlify/lib/grant-factory/strategy-attribution.js.
 // Never loaded by production code. Differences from production are marked
 // CANDIDATE and switched by the options object passed to make():
-//   ownership  a citation group with no subject words of its own shares its
-//              ids with the claim before it and the claim after it (text
-//              between two citations passes if either record reports it);
-//              the after-borrow applies only when there is no other group
 //   support    a cited claim is supported by at least one distinctive shared
-//              term (one found in few of the selected records) or two shared
-//              terms of any kind; no 25% ratio, no phraseBefore
-// Everything else is byte-for-byte the production module.
+//              term (a whole word the record uses, found in few of the
+//              selected records) or two shared terms of any kind; no 25%
+//              ratio, no phraseBefore
+// Everything else is byte-for-byte the production module (segmentation,
+// citation ownership and the calculation guard became production in Step 1).
 
-function make(options = { ownership: true, support: true }) {
+function make(options = { support: true }) {
 // Research attribution for strategy.
 //
 // A sentence that explicitly attributes a factual claim to external evidence
@@ -236,9 +234,24 @@ function attribution(sentence, orgText = "") {
 
 // ---- substantive support ------------------------------------------------------
 
-// Claims in a sentence: the text before each group of citations ("... [A] ...
-// [B, C] ..."). Text after the last group belongs to it only when the group
-// had no subject words of its own ("[EP-018] reports that ...").
+// A heading before the first citation, up to 60 characters ending in a colon
+// ("Relevant research:", "- **Research base**:"): not a claim.
+const LABEL_PREFIX = /^[\s\-•*\d.)(]*(?:\*\*)?[^:()\[\]]{1,60}?(?:\*\*)?:\s*/;
+// Claims in a sentence and the records each one is charged to.
+//   "... [A] ... [B, C] ..."   the text before each group of citations is that
+//                             group's claim; a heading before the first
+//                             citation is not part of it;
+//   "CFSC-942: 17% ..." or     citation-first: nothing but a heading before the
+//   "[EP-018] reports that"    id, so the claim is the text after it, up to the
+//                             next citation;
+//   "Label (CFSC-937: ...)"    a label with subject words of its own stays the
+//                             claim, as before; the text after the colon is
+//                             not read in its place;
+//   "... [A] and national      a group with no subject words of its own, after
+//   research [B] finds ..."    an earlier claim, attaches to the claim before
+//                             it and to the claim after it, so text between
+//                             two citations passes when either record reports
+//                             it.
 function claims(sentence, isSelected, isPackage = () => false) {
   const cites = [];
   for (const m of sentence.matchAll(/[A-Za-z0-9]+(?:[-_.][A-Za-z0-9]+)*/g)) if (isSelected(m[0])) cites.push({ id: m[0], start: m.index, end: m.index + m[0].length });
@@ -252,29 +265,12 @@ function claims(sentence, isSelected, isPackage = () => false) {
   }
   const out = [];
   let from = 0;
-  if (!options.ownership) {
-    groups.forEach((g, i) => {
-      let text = between(from, g.start);
-      let after = false;
-      if (!contentStems(text).size) { text += " " + between(g.end, groups[i + 1] ? groups[i + 1].start : sentence.length); after = true; }
-      out.push({ ids: [...new Set(g.ids)], text, after });
-      from = g.end;
-    });
-    return out;
-  }
-  // CANDIDATE ownership: a group with no subject words before it ("and
-  // national research [B]", "[A] reports that ...") attaches to its
-  // neighbours instead of claiming the text after it as its own.
   let pending = [];
   groups.forEach((g, i) => {
     let text = between(from, g.start);
-    // A short label before the first citation ("Relevant research:",
-    // "**Research base**:") is a heading, not a claim.
     if (i === 0) text = text.replace(LABEL_PREFIX, "");
     const next = groups[i + 1];
-    // Citation-first: "CFSC-942: 17% of students ..." or "[EP-018] reports
-    // that ...": the claim is the text after the id, up to the next citation.
-    const citationFirst = /^\s*:/.test(sentence.slice(g.end)) || (!contentStems(text).size && !out.length && !pending.length);
+    const citationFirst = !contentStems(text).size && (/^\s*:/.test(sentence.slice(g.end)) || (!out.length && !pending.length));
     from = g.end;
     if (citationFirst) {
       const following = between(g.end, next ? next.start : sentence.length).replace(/^\s*:\s*/, "");
@@ -347,8 +343,6 @@ function unsupportedClaim(claim, records, anchored = false) {
 }
 // CANDIDATE: how many selected records contain each stem, cached per record
 // map. A stem is distinctive when at most a quarter of the records have it.
-// CANDIDATE: a heading before the first citation, up to 60 characters ending in a colon.
-const LABEL_PREFIX = /^[\s\-•*\d.)(]*(?:\*\*)?[^:()\[\]]{1,60}?(?:\*\*)?:\s*/;
 const DF = new WeakMap();
 function documentFrequency(records) {
   let df = DF.get(records);

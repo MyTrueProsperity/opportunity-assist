@@ -313,12 +313,18 @@ function namesSource(sentence, sources, skip = () => false) {
   return null;
 }
 
-const SECTION_SPLIT = /\n+|(?<=[.!?])\s+(?=[A-Z0-9*(\-•\[])/;
-// Clauses of a sentence joined by semicolons. A semicolon does not end the
+// A sentence ends at ".", "!" or "?", also when bold markup closes right
+// after it ("**Missing: ...**. National data ...") and also before an opening
+// quotation mark ("... identified. \"Every student ...\"").
+const SECTION_SPLIT = /\n+|(?<=[.!?](?:\*\*|\*)?)\s+(?=[A-Z0-9*(\-•\["“])/;
+// Clauses of a sentence joined by semicolons, whatever follows the semicolon
+// ("...; Raposa 2019)" is a clause too). A semicolon does not end the
 // sentence for citations: a clause with no record id of its own is tied to
 // the next citation in the same sentence ("17% ...; Florida requires ...
-// [CFSC-942, CFSC-937]"), never to a citation in another sentence.
-const CLAUSE_SPLIT = /(?<=;)\s+(?=[A-Z0-9*(\-•\[])/;
+// [CFSC-942, CFSC-937]"), else to the citation before it ("(RS-108: ...;
+// modest improvements; Raposa 2019)"), never to a citation in another
+// sentence.
+const CLAUSE_SPLIT = /(?<=;)\s+/;
 const TOKEN = /[A-Za-z0-9]+(?:[-_.][A-Za-z0-9]+)*/g;
 // Sentences of a section. "et al." or "e.g." does not end a sentence, and a
 // citation left on its own after a full stop ("... 84% agree. [EP-018]")
@@ -379,7 +385,7 @@ function analyze(strategy, request, bundle) {
     for (let ci = 0; ci < clauses.length; ci++) {
       const sentence = clauses[ci];
       const own = clauseCites[ci];
-      const cites = own.length ? own : clauseCites.slice(ci + 1).find((c) => c.length) || [];
+      const cites = own.length ? own : clauseCites.slice(ci + 1).find((c) => c.length) || [...clauseCites.slice(0, ci)].reverse().find((c) => c.length) || [];
       if (cites.length) researchUsed = true;
       if (section === "evidence_chain") for (const c of cites) chainCites.add(c);
       // Wording that attributes a claim to research ("research shows",
@@ -416,6 +422,9 @@ function analyze(strategy, request, bundle) {
       // Each "=" closes a calculation over the numbers since the previous "=".
       let from = 0, carry = null;
       for (const eq of sentence.matchAll(/=/g)) {
+        // A single-letter symbol before "=" ("n=47 studies", "d = .37") is a
+        // statistic, not a calculation.
+        if (/(?:^|[\s(,;:])[A-Za-z]\s?$/.test(sentence.slice(0, eq.index))) continue;
         const span = sentence.slice(from, eq.index);
         const operandMatches = bare.filter((b) => b.index >= from && b.index < eq.index && !/[A-Za-z_][-.]?$/.test(sentence.slice(0, b.index)));
         const resultQ = qs.find((q) => q.start > eq.index) || null;
