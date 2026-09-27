@@ -6,6 +6,10 @@
 //              term (a whole word the record uses, found in few of the
 //              selected records) or two shared terms of any kind; no 25%
 //              ratio, no phraseBefore
+//   contentOwnership  "Label (ID: content)": the content after the colon is
+//              the substantive claim (the Step 0 candidate's reading)
+//   labelCheck  with contentOwnership: the label is checked on its own
+//              against the record (labelMin, labelLenient tune it)
 // Everything else is byte-for-byte the production module (segmentation,
 // citation ownership and the calculation guard became production in Step 1).
 
@@ -252,7 +256,7 @@ const LABEL_PREFIX = /^[\s\-•*\d.)(]*(?:\*\*)?[^:()\[\]]{1,60}?(?:\*\*)?:\s*/;
 //                             it and to the claim after it, so text between
 //                             two citations passes when either record reports
 //                             it.
-function claims(sentence, isSelected, isPackage = () => false) {
+function claims(sentence, isSelected, isPackage = () => false, listIds = []) {
   const cites = [];
   for (const m of sentence.matchAll(/[A-Za-z0-9]+(?:[-_.][A-Za-z0-9]+)*/g)) if (isSelected(m[0])) cites.push({ id: m[0], start: m.index, end: m.index + m[0].length });
   // Package versions next to a record id are part of its citation.
@@ -272,6 +276,20 @@ function claims(sentence, isSelected, isPackage = () => false) {
     const next = groups[i + 1];
     const citationFirst = !contentStems(text).size && (/^\s*:/.test(sentence.slice(g.end)) || (!out.length && !pending.length));
     from = g.end;
+    // CANDIDATE contentOwnership: "Label (ID: content)": the substantive claim
+    // is the content after the colon; with labelCheck the label is checked on
+    // its own, as a separate claim marked `label`.
+    if (options.contentOwnership && !citationFirst && contentStems(text).size && /^\s*:/.test(sentence.slice(g.end))) {
+      const following = between(g.end, next ? next.start : sentence.length).replace(/^\s*:\s*/, "");
+      const ids = [...new Set([...pending, ...g.ids, ...(next ? [] : listIds)])];
+      if (options.labelCheck) out.push({ ids, text: text.replace(/[\s(\[]+$/, ""), after: false, label: true });
+      // Content that is little more than a figure ("0.41 vs. 0.05 effect
+      // size") is judged together with its label, as before.
+      out.push(contentStems(following).size >= 2 ? { ids, text: following.trim(), after: true } : { ids, text: (text + " " + following).trim(), after: true });
+      pending = [];
+      from = next ? next.start : sentence.length;
+      return;
+    }
     if (citationFirst) {
       const following = between(g.end, next ? next.start : sentence.length).replace(/^\s*:\s*/, "");
       out.push({ ids: [...new Set([...pending, ...g.ids])], text: (text + " " + following).trim(), after: true });
@@ -292,6 +310,22 @@ const NEGATION = /\b(?:not|no|did not|didn['’]t|without|neither|nor|unchanged|
 // which already ties the claim to that record's finding.
 function unsupportedClaim(claim, records, anchored = false) {
   const text = claim.text;
+  // CANDIDATE labelCheck: a descriptive label before a citation-first group
+  // must describe the cited record. Labels are short, so a label of fewer
+  // than `labelMin` subject terms (default 2) is not judged; a longer one is
+  // held to the production thresholds (one shared term for two, two shared
+  // terms and a quarter for three or more), on stems, whole words counting
+  // as stems too.
+  if (claim.label) {
+    const own = contentStems(text);
+    if (own.size < (options.labelMin || 2)) return null;
+    const union = new Set();
+    for (const id of claim.ids) for (const s of records.get(id)?.stems || []) union.add(s);
+    const matched = [...own].filter((s) => union.has(s)).length;
+    const enough = options.labelLenient ? matched >= 1 : (own.size <= 2 ? matched >= 1 : matched >= 2 && matched / own.size >= 0.25);
+    if (enough) return null;
+    return "the cited record" + (claim.ids.length > 1 ? "s do" : " does") + " not report this label (" + matched + " of " + own.size + " subject terms match)";
+  }
   // An effect a cited record reports as absent, stated as present.
   for (const id of claim.ids) {
     const rec = records.get(id);
