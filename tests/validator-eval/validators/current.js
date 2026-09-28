@@ -20,7 +20,8 @@ function kindOf(problem, list) {
   if (/reports no improvement/.test(r)) return "denied_outcome";
   if (/does not contain this (?:number|value)/.test(r)) return "misattributed_number";
   if (/research (?:number|value) without its selected record id/.test(r)) return "uncited_number";
-  if (/does not report this claim/.test(r)) return "wrong_record";
+  if (/(?:does|do) not report this claim/.test(r)) return "wrong_record";
+  if (/not report this label/.test(r)) return "wrong_record"; // evaluation: label mismatch counts as a wrong-record catch
   if (/research finding \(/.test(r)) return "uncited_attribution";
   return "other";
 }

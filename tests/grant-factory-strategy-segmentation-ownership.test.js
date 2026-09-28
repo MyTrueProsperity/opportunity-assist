@@ -22,6 +22,7 @@ const EM039 = { topic: "Career academies and long-term earnings", finding: "Annu
 const CB007 = { topic: "Service-learning meta-analysis", finding: "A meta-analysis of 62 studies found significant benefits across five outcome domains, with mean effects between 0.27 and 0.43.", supports: ["Well-designed service-learning can contribute to civic, social, academic and self-related development."] };
 const CFSC918 = { topic: "Financial education effects", finding: "Financial education improved financial knowledge and behavior on average.", supports: ["Financial instruction can change measured behavior, not only knowledge."] };
 const YM001 = { topic: "Youth mentoring meta-analysis", finding: "Mentoring produced statistically significant, generally modest average improvements across youth outcomes.", supports: ["Caring-adult relationships can contribute to development when delivered through organized programs."], sample_size: "70 studies; 25,000 young people", source_org: "Journal of Youth Studies", source_authors: "Raposa, E. B., et al." };
+const CTE004 = { topic: "Pathway dual enrollment", finding: "By the end of four years, 41% of pathway students had dual-enrolled in college compared with 19% of comparison students.", supports: ["Purposeful dual enrollment embedded inside an integrated career pathway."], source_org: "MDRC" };
 const EP017 = { topic: "Career readiness competency framework", finding: "Communication, critical thinking, professionalism, teamwork and career self-development are separate competencies illustrated through observable behaviors.", supports: ["A common vocabulary for expectations and assessment."], source_org: "National Association of Colleges and Employers" };
 
 const REQUEST = {
@@ -31,7 +32,7 @@ const REQUEST = {
   facts: [
     fact("history", "Historical Bright Minds programming operated 2016-2026 with 123+ documented alumni outcomes and 274 participants documented across seven formal cohorts (2018-2025)."),
     fact("enrollment", "Approximately 160 students in grades 9 through 11 at launch."),
-    research("CFSC-942", CFSC942), research("CFSC-937", CFSC937), research("EM-039", EM039), research("CB-007", CB007), research("CFSC-918", CFSC918), research("YM-001", YM001), research("EP-017", EP017),
+    research("CFSC-942", CFSC942), research("CFSC-937", CFSC937), research("EM-039", EM039), research("CB-007", CB007), research("CFSC-918", CFSC918), research("YM-001", YM001), research("EP-017", EP017), research("CTE-004", CTE004),
   ],
 };
 const SELECTED = REQUEST.facts.filter((f) => f.research);
@@ -99,7 +100,8 @@ test("text between two citations passes when either record reports it; a claim n
 
 test("a label with subject words of its own is still checked against its record", () => {
   // The exact production shape (PR #30 era): a right record under a wrong label stays rejected.
-  rejected(withSection("evidence_chain", "Dual-enrollment policy (CFSC-937: Florida requirement creates alignment opportunity, but a mandate is not evidence of delivery quality or mastery)."), /does not report this claim/);
+  // Since Step 1.5 the label is checked on its own (tests/grant-factory-strategy-support-layer.test.js).
+  rejected(withSection("evidence_chain", "Dual-enrollment policy (CFSC-937: Florida requirement creates alignment opportunity, but a mandate is not evidence of delivery quality or mastery)."), /does not report this label/);
   ok(withSection("evidence_chain", "Financial literacy graduation requirement (CFSC-937: Florida requirement creates alignment opportunity, but a mandate is not evidence of delivery quality or mastery)."));
 });
 
@@ -128,5 +130,19 @@ test("claims() charges each claim to the records the sentence attaches it to", (
     { ids: ["A-1", "B-2"], text: "Mentoring gains [", after: false },
     { ids: ["B-2", "C-3"], text: "] and service learning [", after: false },
   ]);
-  assert.deepEqual(SA.claims("Dual-enrollment policy (A-1: content of the record).", isSelected), [{ ids: ["A-1"], text: "Dual-enrollment policy (", after: false }]);
+  // "Label (ID: content)": the label is its own claim, the content is the substantive one.
+  assert.deepEqual(SA.claims("Dual-enrollment policy (A-1: the requirement includes one-half credit in personal financial literacy).", isSelected), [
+    { ids: ["A-1"], text: "Dual-enrollment policy", after: false, label: true },
+    { ids: ["A-1"], text: "the requirement includes one-half credit in personal financial literacy).", after: true },
+  ]);
+  // Content that is little more than a figure is judged together with its label.
+  assert.deepEqual(SA.claims("Mentoring effects (A-1: 0.27 to 0.43).", isSelected), [
+    { ids: ["A-1"], text: "Mentoring effects", after: false, label: true },
+    { ids: ["A-1"], text: "Mentoring effects ( 0.27 to 0.43).", after: true },
+  ]);
+  // A parenthetical list: the later items' ids (from the clauses after this one) own the label too.
+  assert.deepEqual(SA.claims("Research supports mentoring and service learning (A-1: 41% of pathway students had dual-enrolled in college;", isSelected, () => false, ["B-2", "C-3"]), [
+    { ids: ["A-1", "B-2", "C-3"], text: "Research supports mentoring and service learning", after: false, label: true },
+    { ids: ["A-1", "B-2", "C-3"], text: "41% of pathway students had dual-enrolled in college;", after: true },
+  ]);
 });

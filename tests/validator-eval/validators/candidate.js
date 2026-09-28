@@ -1,11 +1,12 @@
 "use strict";
 // Adapter over the evaluation-only candidate fork (tests/validator-eval/candidate).
 // The allowlist check (strategy-evidence.researchCitations) is the production
-// one, unchanged: the candidate proposes no change to it. Since Step 1 the
-// fork differs from production only in the support scorer (option `support`).
+// one, unchanged: the candidate proposes no change to it. Every switch of the
+// fork is on by default (the production behavior since Step 1.5) except
+// `numberGuard`; `make({ support: false })` and so on turn one off.
 const SE = require("../../../netlify/lib/grant-factory/strategy-evidence");
 const { kindOf } = require("./current");
-const ALL = { support: true };
+const ALL = require("../candidate/strategy-attribution").DEFAULTS;
 
 function make(options = ALL, name = "candidate") {
   const SQ = require("../candidate/strategy-quantities").make({ ...ALL, ...options });
