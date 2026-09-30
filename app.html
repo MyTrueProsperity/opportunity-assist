@@ -1052,7 +1052,15 @@ window.OA_CONFIG = {
     if (screen.status === "INELIGIBLE") return { ineligible: true, headline: null, rec: "Not eligible", reasons: screen.reasons, factors: [] };
     return computeFit(state.org, o);
   }
-  function localDate(d) { return new Date(String(d).slice(0, 10) + "T00:00:00").toLocaleDateString(); }
+  // Deadlines are calendar dates. Read them as local midnight so the count
+  // matches the date shown; new Date("YYYY-MM-DD") is UTC midnight, which
+  // in US time zones flips the countdown a day early in the evening.
+  function localMidnight(d) { return new Date(String(d).slice(0, 10) + "T00:00:00"); }
+  function localDate(d) { return localMidnight(d).toLocaleDateString(); }
+  function localDaysUntil(d) {
+    var today = new Date(); today.setHours(0, 0, 0, 0);
+    return Math.round((localMidnight(d) - today) / 86400000);
+  }
 
   function renderPipelineItemDetail(main) {
     var p = state.currentPipelineItem;
@@ -1069,9 +1077,10 @@ window.OA_CONFIG = {
     // Known barriers (inactive source, passed deadline, geography) matter at
     // every stage, so they are shown whether or not the card is in review.
     var barriers = o.id ? window.OAMatching.eligibility(state.org, o).reasons : [];
-    var d = daysUntil(o.deadline);
+    var d = o.deadline ? localDaysUntil(o.deadline) : null;
     var deadlineText = !o.id ? "" : !o.deadline ? "Deadline not stated"
-      : d < 0 ? "Closed " + localDate(o.deadline) : "Due " + localDate(o.deadline) + " (" + d + (d === 1 ? " day)" : " days)");
+      : d < 0 ? "Closed " + localDate(o.deadline)
+      : "Due " + localDate(o.deadline) + (d === 0 ? " (today)" : " (" + d + (d === 1 ? " day)" : " days)"));
     var facts = [o.category, o.geography, o.funding_amount_label || (o.funding_amount != null ? money(o.funding_amount) : ""), deadlineText, o.source].filter(Boolean);
     var qa = summaryQa(o);
     var sourceFacts = [["Description", o.summary], ["Stated requirements", o.requirements]].filter(function (x) { return x[1]; });
