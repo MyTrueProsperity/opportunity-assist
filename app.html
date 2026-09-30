@@ -53,6 +53,8 @@ label{display:block;font-weight:600;font-size:.85rem;margin:0 0 .3rem;color:var(
 .auth-or{display:flex;align-items:center;text-align:center;color:var(--muted);font-size:.8rem;margin:.9rem 0}
 .auth-or::before,.auth-or::after{content:"";flex:1;height:1px;background:var(--line)}
 .auth-or span{padding:0 .7rem}
+.auth-help{text-align:right;margin:-.45rem 0 1rem;font-size:.88rem}
+.auth-back{display:block;margin-top:1rem;text-align:center;font-size:.88rem}
 
 /* LAYOUT */
 .layout{display:grid;grid-template-columns:240px 1fr;min-height:100vh}
@@ -432,6 +434,7 @@ window.OA_CONFIG = {
       '<form id="authForm">' +
       '<div class="field"><label>Email</label><input type="email" id="email" required autocomplete="email" /></div>' +
       '<div class="field"><label>Password</label><input type="password" id="password" required minlength="6" autocomplete="current-password" /></div>' +
+      '<p class="auth-help"><a href="#" id="forgotPassword">Forgot password?</a></p>' +
       '<div id="authMsg"></div>' +
       '<button class="btn btn-primary" style="width:100%" type="submit" id="authBtn">Continue</button>' +
       '</form>' +
@@ -447,12 +450,18 @@ window.OA_CONFIG = {
       card.querySelectorAll(".auth-tabs button").forEach(function (b) { b.classList.toggle("active", b.dataset.m === m); });
       card.querySelector("#authBtn").textContent = m === "signup" ? "Create account" : "Log in";
       card.querySelector("#password").setAttribute("autocomplete", m === "signup" ? "new-password" : "current-password");
+      card.querySelector(".auth-help").hidden = m !== "login";
       card.querySelector("#authMsg").innerHTML = "";
     }
     card.querySelectorAll(".auth-tabs button").forEach(function (b) {
       b.addEventListener("click", function () { setMode(b.dataset.m); });
     });
     setMode(mode);
+
+    card.querySelector("#forgotPassword").addEventListener("click", function (e) {
+      e.preventDefault();
+      renderForgotPassword(card.querySelector("#email").value.trim());
+    });
 
     card.querySelector("#authForm").addEventListener("submit", function (e) {
       e.preventDefault();
@@ -506,6 +515,49 @@ window.OA_CONFIG = {
         });
       }).catch(function (err) {
         guestBtn.disabled = false; msg.innerHTML = '<p class="error">' + esc(err.message || "Something went wrong") + "</p>";
+      });
+    });
+  }
+
+  function renderForgotPassword(email) {
+    root.innerHTML = "";
+    var card = el(
+      '<div class="auth-wrap"><div class="auth-card">' +
+      '<div class="auth-brand"><span class="brand-mark">OA</span><div><strong>Opportunity Assist</strong><small>A My True Prosperity product</small></div></div>' +
+      '<h1 style="font-size:1.35rem">Reset your password</h1>' +
+      '<p class="hint" style="margin:0 0 1.2rem">Enter your account email and we’ll send you a reset link.</p>' +
+      '<form id="recoveryForm">' +
+      '<div class="field"><label for="recoveryEmail">Email</label><input type="email" id="recoveryEmail" required autocomplete="email" /></div>' +
+      '<div id="recoveryMsg" role="status" aria-live="polite"></div>' +
+      '<button class="btn btn-primary" style="width:100%" type="submit" id="recoveryBtn">Send reset link</button>' +
+      '</form>' +
+      '<a class="auth-back" href="/app.html" id="backToLogin">Back to sign in</a>' +
+      '</div></div>'
+    );
+    root.appendChild(card);
+    card.querySelector("#recoveryEmail").value = email || "";
+    card.querySelector("#backToLogin").addEventListener("click", function (e) {
+      e.preventDefault();
+      renderAuth("login");
+    });
+    card.querySelector("#recoveryForm").addEventListener("submit", function (e) {
+      e.preventDefault();
+      var btn = card.querySelector("#recoveryBtn");
+      var msg = card.querySelector("#recoveryMsg");
+      btn.disabled = true;
+      msg.textContent = "";
+      sb.auth.resetPasswordForEmail(card.querySelector("#recoveryEmail").value.trim(), {
+        redirectTo: "https://opportunityassist.com/reset-password.html"
+      }).then(function (res) {
+        btn.disabled = false;
+        if (res.error) {
+          msg.innerHTML = '<p class="error">' + esc(res.error.message) + '</p>';
+          return;
+        }
+        msg.innerHTML = '<div class="notice">If an account exists for that email, you’ll receive a password reset link shortly. Check your spam folder too.</div>';
+      }).catch(function () {
+        btn.disabled = false;
+        msg.innerHTML = '<p class="error">We couldn’t send the link right now. Please try again.</p>';
       });
     });
   }
