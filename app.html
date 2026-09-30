@@ -121,8 +121,14 @@ label{display:block;font-weight:600;font-size:.85rem;margin:0 0 .3rem;color:var(
 .col{background:#eef3f4;border-radius:12px;padding:10px;min-height:160px}
 .col h3{font-size:.82rem;text-transform:uppercase;letter-spacing:.04em;color:var(--muted);margin:0 0 10px;padding:0 4px}
 .col-count{background:#fff;border-radius:999px;padding:0 .4rem;font-size:.72rem;margin-left:.3rem}
-.pcard{background:#fff;border:1px solid var(--line);border-radius:9px;padding:10px;margin-bottom:8px;cursor:grab;font-size:.86rem}
+.pcard{background:#fff;border:1px solid var(--line);border-radius:9px;padding:10px;margin-bottom:8px;cursor:pointer;font-size:.86rem;transition:border-color .15s,box-shadow .15s}
+.pcard:hover{border-color:var(--teal);box-shadow:0 2px 8px rgba(0,0,0,.06)}
 .pcard.drag{opacity:.5}
+.stack{display:grid;gap:18px;min-width:0;align-content:start}
+.stage-pick{display:flex;align-items:center;gap:8px}
+.stage-pick label{margin:0}
+.stage-pick select{width:auto;min-width:160px}
+.warn-note{background:#fff6e6;border:1px solid #f1d9a8;color:#6b4a00;border-radius:9px;padding:.65rem .9rem;font-size:.9rem;margin:0 0 18px}
 .pcard .pt{font-weight:600;color:var(--navy);display:block;margin-bottom:.2rem}
 .pcard .pm{color:var(--muted);font-size:.76rem}
 .col.over{outline:2px dashed var(--teal);outline-offset:-4px}
@@ -191,7 +197,9 @@ window.OA_CONFIG = {
     requirements: [],   // all requirement rows for this org's pipeline items
     pursueDecisions: {},// opportunity_id -> latest {decision, system_recommendation, decided_at, reason}
     currentPipelineItem: null,
-    pipelineActivity: [] // activity rows for the currently-open pipeline item, loaded on demand
+    pipelineActivity: [], // activity rows for the currently-open pipeline item, loaded on demand
+    pipelineOpps: {},     // opportunity_id -> record for pipeline cards Funding Radar no longer lists
+    notesDraft: {}        // pipeline_item_id -> unsaved notes text, kept across repaints
   };
 
   // Stripe Payment Links -- fill these in once created in the Stripe Dashboard.
@@ -638,6 +646,7 @@ window.OA_CONFIG = {
       // Drop everything loaded for the previous organization before reloading.
       state.org = null; state.fit = {}; state.opps = []; state.pipeline = []; state.contracts = []; state.alertRules = [];
       state.requirements = []; state.pursueDecisions = {}; state.currentOpp = null; state.currentPipelineItem = null;
+      state.pipelineOpps = {}; state.notesDraft = {};
       state.chat = []; state.subscription = null; state.view = "dashboard";
       boot();
     });
@@ -901,27 +910,21 @@ window.OA_CONFIG = {
   }
 
   /* ---------- opportunity detail ---------- */
-  function renderOppDetail(main) {
-    var o = state.currentOpp;
-    var f = state.fit[o.id] || computeFit(state.org, o);
+  // Shared by the opportunity detail page and the Capture Pipeline review
+  // page, so both always show the same summary and the same fit reasoning.
+  function summaryQa(o) {
     var a = o.ai_summary || {};
-    var inPipeline = state.pipeline.some(function (p) { return p.opportunity_id === o.id; });
-    var qa = [
+    return [
       ["What is this?", a.what], ["Who can apply?", a.who], ["How much?", a.amount],
       ["Key deadlines", a.deadlines], ["Required documents", a.documents],
       ["Evaluation criteria", a.criteria], ["Key deliverables", a.deliverables], ["Hidden risks", a.risks]
     ].filter(function (x) { return x[1]; });
-
-    main.innerHTML =
-      '<span class="back" id="back">← Back to Funding Radar</span>' +
-      '<div class="topbar"><div><h1>' + esc(o.title) + '</h1><p class="sub">' + esc(o.source || "") + " · " + esc(o.geography || "") + " · " + esc(o.funding_amount_label || money(o.funding_amount)) + "</p></div></div>" +
-      '<div class="detail-grid">' +
-      '<div class="card"><h2>AI Opportunity Summary</h2><div class="qa">' +
-      qa.map(function (x) { return '<div><div class="q">' + esc(x[0]) + '</div><div class="a">' + esc(x[1]) + "</div></div>"; }).join("") +
-      (o.source_url ? '<div><a href="' + esc(o.source_url) + '" target="_blank" rel="noopener">View source ↗</a></div>' : "") +
-      "</div></div>" +
-      '<div class="card score-side"><h2>AI Fit Score</h2>' +
-      '<div class="score-badge ' + (f.ineligible || f.headline == null ? "s-low" : scoreClass(f.headline)) + '" style="margin:6px 0 4px"><div class="score-num" style="font-size:2.4rem">' + scoreNum(f) + '</div><div class="score-rec">' + esc(f.paywalled ? "Estimate only" : scoreLabel(f)) + "</div></div>" +
+  }
+  function summaryQaHtml(qa) {
+    return qa.map(function (x) { return '<div><div class="q">' + esc(x[0]) + '</div><div class="a">' + esc(x[1]) + "</div></div>"; }).join("");
+  }
+  function fitDetailHtml(f) {
+    return '<div class="score-badge ' + (f.ineligible || f.headline == null ? "s-low" : scoreClass(f.headline)) + '" style="margin:6px 0 4px"><div class="score-num" style="font-size:2.4rem">' + scoreNum(f) + '</div><div class="score-rec">' + esc(f.paywalled ? "Estimate only" : scoreLabel(f)) + "</div></div>" +
       (f.confidence != null && !f.ineligible ? '<p class="hint">Confidence ' + Math.round(f.confidence * 100) + "% — share of the rubric the available information could judge.</p>" : "") +
       ((f.reasons || []).length ? '<ul class="hint" style="padding-left:18px">' + f.reasons.map(function (r) { return "<li>" + esc(r) + "</li>"; }).join("") + "</ul>" : "") +
       '<ul class="factors" style="padding:0">' +
@@ -929,7 +932,24 @@ window.OA_CONFIG = {
         if (fc.val == null) return "<li>" + esc(fc.label) + " — Unknown" + (fc.required ? " (required)" : "") + (fc.reason ? '<br><span class="hint">' + esc(fc.reason) + "</span>" : "") + "</li>";
         return "<li>" + esc(fc.label) + " — " + fc.val + "%" + (fc.state ? " · " + esc(fc.state.toLowerCase()) : "") + '<i class="bar"><b style="width:' + fc.val + '%"></b></i>' + (fc.reason ? '<span class="hint">' + esc(fc.reason) + "</span>" : "") + "</li>";
       }).join("") +
-      "</ul>" +
+      "</ul>";
+  }
+  function renderOppDetail(main) {
+    var o = state.currentOpp;
+    var f = state.fit[o.id] || computeFit(state.org, o);
+    var inPipeline = state.pipeline.some(function (p) { return p.opportunity_id === o.id; });
+    var qa = summaryQa(o);
+
+    main.innerHTML =
+      '<span class="back" id="back">← Back to Funding Radar</span>' +
+      '<div class="topbar"><div><h1>' + esc(o.title) + '</h1><p class="sub">' + esc(o.source || "") + " · " + esc(o.geography || "") + " · " + esc(o.funding_amount_label || money(o.funding_amount)) + "</p></div></div>" +
+      '<div class="detail-grid">' +
+      '<div class="card"><h2>AI Opportunity Summary</h2><div class="qa">' +
+      summaryQaHtml(qa) +
+      (o.source_url ? '<div><a href="' + esc(o.source_url) + '" target="_blank" rel="noopener">View source ↗</a></div>' : "") +
+      "</div></div>" +
+      '<div class="card score-side"><h2>AI Fit Score</h2>' +
+      fitDetailHtml(f) +
       '<button class="btn ' + (inPipeline ? "btn-ghost" : "btn-primary") + '" style="width:100%" id="addPipe"' + (inPipeline ? " disabled" : "") + ">" + (inPipeline ? "Already in pipeline" : "Add to Capture Pipeline") + "</button>" +
       (f.paywalled
         ? '<p class="hint" style="margin-top:.6rem">This is a free estimate. <a href="#" data-nav="profile">Upgrade your plan</a> for the full AI Fit Score and Opportunity Summary.</p>'
@@ -953,7 +973,7 @@ window.OA_CONFIG = {
   /* ---------- capture pipeline (kanban) ---------- */
   function renderPipeline(main) {
     main.innerHTML =
-      '<div class="topbar"><div><h1>Capture Pipeline</h1><p class="sub">Drag cards between stages</p></div></div>' +
+      '<div class="topbar"><div><h1>Capture Pipeline</h1><p class="sub">Click a card to review it. Drag cards between stages.</p></div></div>' +
       (state.pipeline.length ? '<div class="board" id="board"></div>' : '<div class="empty">Your pipeline is empty. Add opportunities from the Funding Radar.</div>');
     if (!state.pipeline.length) return;
     var board = main.querySelector("#board");
@@ -964,7 +984,9 @@ window.OA_CONFIG = {
         var amt = p.opportunities && p.opportunities.funding_amount_label ? p.opportunities.funding_amount_label : "";
         var reqs = state.requirements.filter(function (rq) { return rq.pipeline_item_id === p.id; });
         var reqBadge = reqs.length ? '<span class="pm" style="float:right">' + reqs.filter(function (rq) { return rq.status === "Complete"; }).length + "/" + reqs.length + "</span>" : "";
-        var c = el('<div class="pcard" draggable="true" data-id="' + p.id + '"><span class="pt">' + esc(p.title) + "</span>" + reqBadge + '<span class="pm">' + esc(amt) + "</span></div>");
+        var fit = state.fit[p.opportunity_id];
+        var fitText = fit && !fit.estimate && !fit.pending && !fit.ineligible && fit.headline != null ? fit.headline + "% fit" : "";
+        var c = el('<div class="pcard" draggable="true" data-id="' + p.id + '" title="Open to review"><span class="pt">' + esc(p.title) + "</span>" + reqBadge + '<span class="pm">' + [amt, fitText].filter(Boolean).map(esc).join(" · ") + "</span></div>");
         c.addEventListener("dragstart", function (e) { e.dataTransfer.setData("text/plain", p.id); c.classList.add("drag"); });
         c.addEventListener("dragend", function () { c.classList.remove("drag"); });
         c.addEventListener("click", function (e) { if (c.classList.contains("drag")) return; state.currentPipelineItem = p; paint(); });
@@ -987,7 +1009,8 @@ window.OA_CONFIG = {
     item.stage = stage;
     paint();
     sb.from("pipeline_items").update({ stage: stage, updated_at: new Date().toISOString() }).eq("id", id).then(function (r) {
-      if (r.error) { alert(r.error.message); return; }
+      // The move was shown optimistically; put the card back if it did not save.
+      if (r.error) { item.stage = oldStage; paint(); alert(r.error.message); return; }
       logActivity({
         opportunity_id: item.opportunity_id, pipeline_item_id: id, action: "stage_changed",
         detail: oldStage + " \u2192 " + stage, old_value: { stage: oldStage }, new_value: { stage: stage }
@@ -995,40 +1018,141 @@ window.OA_CONFIG = {
     });
   }
 
-  /* ---------- pipeline item detail: requirements + activity timeline ---------- */
+  /* ---------- pipeline item detail: review, requirements, notes, activity ---------- */
   function statusClass(s) { return s === "Complete" ? "s-good" : s === "In Progress" ? "s-mid" : "s-low"; }
   var NEXT_STATUS = { "Missing": "In Progress", "In Progress": "Complete", "Complete": "Missing", "Not Applicable": "Missing" };
+  // Cards in these stages are still being reviewed: the page leads with the
+  // qualify/pass decision instead of leaving the reviewer to hunt for it.
+  var REVIEW_STAGES = ["Ideas", "Reviewing"];
+
+  // The opportunity behind a pipeline card. Funding Radar only loads
+  // opportunities whose source is still active, but a card can outlive that,
+  // so a missing record is fetched on demand and cached. Returns null while
+  // that fetch is in flight and {} when there is no record to show.
+  function pipelineOpp(p) {
+    if (!p.opportunity_id) return {};
+    var id = p.opportunity_id;
+    var o = state.opps.filter(function (x) { return x.id === id; })[0] || state.pipelineOpps[id];
+    if (o) return o;
+    if (!(id in state.pipelineOpps)) {
+      state.pipelineOpps[id] = null;
+      sb.from("opportunities").select("*").eq("id", id).maybeSingle().then(function (r) {
+        state.pipelineOpps[id] = r.data || {};
+        if (state.currentPipelineItem && state.currentPipelineItem.opportunity_id === id) paint();
+      });
+    }
+    return null;
+  }
+  // Same fallback order as Funding Radar: the stored AI score, else a known
+  // eligibility barrier, else the local estimate (labelled as an estimate).
+  function pipelineFit(o) {
+    if (!o || !o.id) return null;
+    if (state.fit[o.id]) return state.fit[o.id];
+    var screen = window.OAMatching.eligibility(state.org, o);
+    if (screen.status === "INELIGIBLE") return { ineligible: true, headline: null, rec: "Not eligible", reasons: screen.reasons, factors: [] };
+    return computeFit(state.org, o);
+  }
+  function localDate(d) { return new Date(String(d).slice(0, 10) + "T00:00:00").toLocaleDateString(); }
 
   function renderPipelineItemDetail(main) {
     var p = state.currentPipelineItem;
-    var o = state.opps.filter(function (x) { return x.id === p.opportunity_id; })[0] || {};
+    var o = pipelineOpp(p);
+    var loadingOpp = o === null;
+    o = o || {};
+    var f = pipelineFit(o);
     var decision = state.pursueDecisions[p.opportunity_id];
     var reqs = state.requirements.filter(function (rq) { return rq.pipeline_item_id === p.id; });
     var applicable = reqs.filter(function (rq) { return rq.status !== "Not Applicable"; });
     var complete = applicable.filter(function (rq) { return rq.status === "Complete"; }).length;
     var readiness = applicable.length ? Math.round(100 * complete / applicable.length) : null;
+    var inReview = REVIEW_STAGES.indexOf(p.stage) !== -1;
+    // Known barriers (inactive source, passed deadline, geography) matter at
+    // every stage, so they are shown whether or not the card is in review.
+    var barriers = o.id ? window.OAMatching.eligibility(state.org, o).reasons : [];
+    var d = daysUntil(o.deadline);
+    var deadlineText = !o.id ? "" : !o.deadline ? "Deadline not stated"
+      : d < 0 ? "Closed " + localDate(o.deadline) : "Due " + localDate(o.deadline) + " (" + d + (d === 1 ? " day)" : " days)");
+    var facts = [o.category, o.geography, o.funding_amount_label || (o.funding_amount != null ? money(o.funding_amount) : ""), deadlineText, o.source].filter(Boolean);
+    var qa = summaryQa(o);
+    var sourceFacts = [["Description", o.summary], ["Stated requirements", o.requirements]].filter(function (x) { return x[1]; });
+    var sourceLink = o.source_url ? '<div><a href="' + esc(o.source_url) + '" target="_blank" rel="noopener">View original source \u2197</a></div>' : "";
+    var draft = state.notesDraft[p.id];
+
+    var summaryCard =
+      '<div class="card"><h2>' + (qa.length ? "AI Opportunity Summary" : "Opportunity") + "</h2>" +
+      (loadingOpp ? '<p class="hint">Loading opportunity\u2026</p>'
+        : !o.id ? '<p class="hint">The opportunity record behind this card is no longer available.</p>'
+        : '<div class="qa">' +
+          (qa.length ? summaryQaHtml(qa)
+            : summaryQaHtml(sourceFacts) +
+              '<p class="hint" style="margin:0">' + (sourceFacts.length ? "No AI summary has been generated for this opportunity yet. This is the description from the source." : "The source did not include a description. Open the original source to review it.") + "</p>") +
+          sourceLink + "</div>") +
+      "</div>";
+
+    var reviewCard = !inReview ? "" :
+      '<div class="card"><h2>Review decision</h2>' +
+      '<p class="hint" style="margin:0 0 .8rem">Read the summary and the fit reasoning, then qualify this for planning or pass on it.</p>' +
+      '<div class="row" style="gap:8px"><button class="btn btn-primary btn-sm" id="qualifyItem">Qualify: move to Qualified</button>' +
+      '<button class="btn btn-ghost btn-sm" id="passItem">Pass: remove from pipeline</button></div>' +
+      "</div>";
+
+    var decisionLine = decision
+      ? '<p class="hint" style="margin-top:.8rem">Decision: <strong>' + esc(decision.decision) + "</strong> on " + esc(new Date(decision.decided_at).toLocaleDateString()) +
+        (decision.system_recommendation ? " \u2014 system recommended \u201c" + esc(decision.system_recommendation) + "\u201d" + (decision.system_confidence != null ? " at " + esc(decision.system_confidence) + "%" : "") : "") + "</p>"
+      : "";
 
     main.innerHTML =
       '<span class="back" id="back">\u2190 Back to Capture Pipeline</span>' +
-      '<div class="topbar"><div><h1>' + esc(p.title) + '</h1><p class="sub">' +
-        esc(o.category || "") + (o.geography ? " \u00b7 " + esc(o.geography) : "") +
-        (o.funding_amount_label || o.funding_amount ? " \u00b7 " + esc(o.funding_amount_label || money(o.funding_amount)) : "") +
-      '</p></div>' +
-      '<select id="stageSel" class="btn btn-ghost">' + STAGES.map(function (s) { return '<option value="' + esc(s) + '"' + (s === p.stage ? " selected" : "") + ">" + esc(s) + "</option>"; }).join("") + "</select>" +
+      '<div class="topbar"><div><h1>' + esc(p.title) + '</h1><p class="sub">' + facts.map(esc).join(" \u00b7 ") + "</p></div>" +
+      '<div class="stage-pick"><label for="stageSel">Stage</label><select id="stageSel">' + STAGES.map(function (s) { return '<option value="' + esc(s) + '"' + (s === p.stage ? " selected" : "") + ">" + esc(s) + "</option>"; }).join("") + "</select></div>" +
       "</div>" +
+      (barriers.length ? '<div class="warn-note"><strong>Check before investing time:</strong> ' + barriers.map(esc).join(" ") + "</div>" : "") +
       '<div class="detail-grid">' +
+      '<div class="stack">' +
+      reviewCard +
+      summaryCard +
       '<div class="card"><h2>Requirements' + (readiness != null ? ' <span class="tag">' + readiness + '% ready</span>' : "") + '</h2>' +
-      (decision ? '<p class="hint">Decision: <strong>' + esc(decision.decision) + "</strong> on " + esc(new Date(decision.decided_at).toLocaleDateString()) +
-        (decision.system_recommendation ? " \u2014 system recommended \u201c" + esc(decision.system_recommendation) + "\u201d at " + esc(decision.system_confidence) + "%" : "") + "</p>" : "") +
       '<div id="reqList" style="margin-top:10px"></div>' +
       '<div class="row" style="margin-top:10px;gap:8px"><input id="newReq" placeholder="Add a requirement\u2026" style="flex:1" /><button class="btn btn-primary btn-sm" id="addReq">Add</button></div>' +
-      (o.source_url ? '<p class="hint" style="margin-top:.8rem"><a href="' + esc(o.source_url) + '" target="_blank" rel="noopener">View original source \u2197</a></p>' : "") +
+      "</div>" +
+      '<div class="card"><h2>Notes</h2>' +
+      '<textarea id="notes" rows="4" placeholder="Contacts, open questions, what it would take to apply\u2026">' + esc(draft != null ? draft : (p.notes || "")) + "</textarea>" +
+      '<div class="row" style="margin-top:8px;align-items:center"><button class="btn btn-ghost btn-sm" id="saveNotes">Save notes</button><span class="hint" id="notesMsg" style="margin:0"></span></div>' +
+      "</div>" +
+      "</div>" +
+      '<div class="stack">' +
+      '<div class="card score-side"><h2>AI Fit Score</h2>' +
+      (f ? fitDetailHtml(f) : '<p class="hint">' + (loadingOpp ? "Loading\u2026" : "No fit score is available for this card.") + "</p>") +
+      decisionLine +
       "</div>" +
       '<div class="card"><h2>Activity</h2><div id="activityList"><p class="hint">Loading\u2026</p></div></div>' +
+      "</div>" +
       "</div>";
 
     main.querySelector("#back").addEventListener("click", function () { state.currentPipelineItem = null; paint(); });
     main.querySelector("#stageSel").addEventListener("change", function (e) { moveCard(p.id, e.target.value); state.currentPipelineItem = state.pipeline.filter(function (x) { return x.id === p.id; })[0]; });
+    if (inReview) {
+      main.querySelector("#qualifyItem").addEventListener("click", function () { moveCard(p.id, "Qualified"); });
+      main.querySelector("#passItem").addEventListener("click", function () { passPipelineItem(p, f, this); });
+    }
+
+    var notesEl = main.querySelector("#notes");
+    notesEl.addEventListener("input", function () { state.notesDraft[p.id] = notesEl.value; });
+    main.querySelector("#saveNotes").addEventListener("click", function () {
+      var btn = this, msg = main.querySelector("#notesMsg");
+      var text = notesEl.value.trim();
+      if (text === (p.notes || "")) { delete state.notesDraft[p.id]; msg.textContent = "No changes to save."; return; }
+      btn.disabled = true;
+      sb.from("pipeline_items").update({ notes: text || null, updated_at: new Date().toISOString() }).eq("id", p.id).then(function (r) {
+        btn.disabled = false;
+        if (r.error) { alert("Could not save notes: " + r.error.message); return; }
+        p.notes = text || null;
+        delete state.notesDraft[p.id];
+        msg.textContent = "Saved.";
+        logActivity({ opportunity_id: p.opportunity_id, pipeline_item_id: p.id, action: "notes_updated", detail: "Updated notes" })
+          .then(function () { loadPipelineActivity(p.id); });
+      });
+    });
 
     var reqList = main.querySelector("#reqList");
     if (!reqs.length) {
@@ -1059,6 +1183,41 @@ window.OA_CONFIG = {
     });
 
     loadPipelineActivity(p.id);
+  }
+
+  // Passing during review takes the card off the board without losing the
+  // record: the pass joins the append-only pursue_decisions log, the card's
+  // timeline is re-homed to the opportunity first (deleting the card would
+  // otherwise cascade it away), and the opportunity stays reconsiderable
+  // from Funding Radar, the same as a Pass on the dashboard.
+  function passPipelineItem(p, f, btn) {
+    if (!window.confirm("Pass on “" + p.title + "”?\n\nIt will leave the Capture Pipeline. The decision and its history are kept, and you can add it back from Funding Radar later.")) return;
+    btn.disabled = true;
+    f = f || {};
+    sb.from("pursue_decisions").insert({
+      org_id: state.org.id, opportunity_id: p.opportunity_id, pipeline_item_id: p.id,
+      system_recommendation: f.rec || null, system_confidence: f.headline || null,
+      decision: "pass", decided_by: state.user.id
+    }).select().single().then(function (r) {
+      if (r.error) throw r.error;
+      if (p.opportunity_id) state.pursueDecisions[p.opportunity_id] = r.data;
+      return sb.from("opportunity_activity").update({ pipeline_item_id: null }).eq("pipeline_item_id", p.id);
+    }).then(function (r) {
+      if (r.error) throw r.error;
+      return sb.from("pipeline_items").delete().eq("id", p.id);
+    }).then(function (r) {
+      if (r.error) throw r.error;
+      state.pipeline = state.pipeline.filter(function (x) { return x.id !== p.id; });
+      state.requirements = state.requirements.filter(function (rq) { return rq.pipeline_item_id !== p.id; });
+      delete state.notesDraft[p.id];
+      if (state.currentPipelineItem && state.currentPipelineItem.id === p.id) state.currentPipelineItem = null;
+      state.view = "pipeline";
+      paint();
+      return logActivity({ opportunity_id: p.opportunity_id, action: "pursue_decision", detail: "Passed during review: removed from Capture Pipeline" });
+    }).catch(function (err) {
+      btn.disabled = false;
+      alert("Could not pass on this opportunity: " + (err && err.message ? err.message : err));
+    });
   }
 
   function cycleRequirement(rq) {
