@@ -128,6 +128,8 @@ label{display:block;font-weight:600;font-size:.85rem;margin:0 0 .3rem;color:var(
 .stage-pick{display:flex;align-items:center;gap:8px}
 .stage-pick label{margin:0}
 .stage-pick select{width:auto;min-width:160px}
+.toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);background:var(--navy);color:#fff;padding:.7rem 1.1rem;border-radius:10px;max-width:min(560px,92vw);font-size:.9rem;z-index:9999;box-shadow:0 6px 24px rgba(0,0,0,.25)}
+.toast.err{background:#7a1f1f}
 .warn-note{background:#fff6e6;border:1px solid #f1d9a8;color:#6b4a00;border-radius:9px;padding:.65rem .9rem;font-size:.9rem;margin:0 0 18px}
 .pcard .pt{font-weight:600;color:var(--navy);display:block;margin-bottom:.2rem}
 .pcard .pm{color:var(--muted);font-size:.76rem}
@@ -154,6 +156,7 @@ label{display:block;font-weight:600;font-size:.85rem;margin:0 0 .3rem;color:var(
   <div id="app"><div class="boot">Loading Opportunity Assist…</div></div>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <script src="/assets/source-intelligence.js?v=20260908"></script>
+  <script src="/assets/fincap-review.js?v=20261001"></script>
   <link rel="stylesheet" href="/assets/grant-factory.css?v=20260923">
   <script src="/assets/grant-factory-limits.js?v=20260917"></script>
   <script src="/assets/grant-factory-reading.js?v=20260923"></script>
@@ -199,7 +202,8 @@ window.OA_CONFIG = {
     currentPipelineItem: null,
     pipelineActivity: [], // activity rows for the currently-open pipeline item, loaded on demand
     pipelineOpps: {},     // opportunity_id -> record for pipeline cards Funding Radar no longer lists
-    notesDraft: {}        // pipeline_item_id -> unsaved notes text, kept across repaints
+    notesDraft: {},       // pipeline_item_id -> unsaved notes text, kept across repaints
+    fincapShares: {}      // opportunity_id -> {status, needs_review}: this org's Pass & Share requests
   };
 
   // Stripe Payment Links -- fill these in once created in the Stripe Dashboard.
@@ -646,7 +650,7 @@ window.OA_CONFIG = {
       // Drop everything loaded for the previous organization before reloading.
       state.org = null; state.fit = {}; state.opps = []; state.pipeline = []; state.contracts = []; state.alertRules = [];
       state.requirements = []; state.pursueDecisions = {}; state.currentOpp = null; state.currentPipelineItem = null;
-      state.pipelineOpps = {}; state.notesDraft = {};
+      state.pipelineOpps = {}; state.notesDraft = {}; state.fincapShares = {};
       state.chat = []; state.subscription = null; state.view = "dashboard";
       boot();
     });
@@ -666,8 +670,9 @@ window.OA_CONFIG = {
     ];
     if (state.isAdmin) nav.push(["admin", "🛠️", "Admin"]);
     if (state.isAdmin) nav.push(["sources", "🔎", "Source Intelligence"]);
+    if (state.isAdmin) nav.push(["fincap", "📣", "FinCap Review"]);
     // Source administration is account-wide and does not require a customer organization.
-    if (!state.org && state.isAdmin) nav = [["sources", "🔎", "Source Intelligence"], ["admin", "🛠️", "Admin"], ["setup", "🏢", "Set up organization"]];
+    if (!state.org && state.isAdmin) nav = [["sources", "🔎", "Source Intelligence"], ["fincap", "📣", "FinCap Review"], ["admin", "🛠️", "Admin"], ["setup", "🏢", "Set up organization"]];
     var shell = el(
       '<div class="layout">' +
       '<aside class="sidebar">' +
@@ -715,6 +720,7 @@ window.OA_CONFIG = {
     if (state.view === "profile") return renderProfile(main);
     if (state.view === "admin" && state.isAdmin) return renderAdmin(main);
     if (state.view === "sources" && state.isAdmin) return window.OASourceIntelligence.mount(main, sb);
+    if (state.view === "fincap" && state.isAdmin) return window.OAFinCapReview.mount(main, sb);
   }
 
   /* ---------- dashboard ---------- */
@@ -787,6 +793,7 @@ window.OA_CONFIG = {
       '<div class="row" style="grid-column:1/-1;margin-top:10px;gap:8px">' +
       '<button class="btn btn-primary btn-sm" data-act="pursue">Pursue</button>' +
       '<button class="btn btn-ghost btn-sm" data-act="pass">Pass</button>' +
+      '<button class="btn btn-ghost btn-sm" data-act="share" title="Pass for your organization and offer it to FinCap editors for review. Nothing is published automatically.">Pass &amp; Share with FinCap</button>' +
       "</div>"
     );
     row.appendChild(actions);
@@ -797,6 +804,10 @@ window.OA_CONFIG = {
     actions.querySelector('[data-act="pass"]').addEventListener("click", function (e) {
       e.stopPropagation();
       recordDecision(o, f, "pass", { addToPipeline: false });
+    });
+    actions.querySelector('[data-act="share"]').addEventListener("click", function (e) {
+      e.stopPropagation();
+      passAndShare(o, f, {}, this);
     });
     return row;
   }
@@ -834,6 +845,71 @@ window.OA_CONFIG = {
     }
     chain.then(function () { if (onDone) onDone(); else paint(); });
   }
+  /* ---------- Pass & Share with FinCap ---------- */
+  // Declining an opportunity for this organization is not a verdict on its
+  // value to other practitioners. This records the private Pass and offers a
+  // neutral listing to FinCap's editors in ONE server-side transaction
+  // (fincap_pass_and_share); nothing is published until an editor approves.
+  var SHARE_TEXT = {
+    pending_review: "Offered to FinCap. Pending editorial review.",
+    approved: "Published on NationalFinCap.org.",
+    rejected: "FinCap editors did not accept this one.",
+    withdrawn: "Was published, then withdrawn by FinCap editors."
+  };
+  var sharing = {};
+  function toast(msg, isError) {
+    var t = el('<div class="toast' + (isError ? " err" : "") + '" role="status">' + esc(msg) + "</div>");
+    document.body.appendChild(t);
+    setTimeout(function () { if (t.parentNode) t.parentNode.removeChild(t); }, isError ? 8000 : 5000);
+  }
+  function loadFincapShares() {
+    if (!state.org) { state.fincapShares = {}; return Promise.resolve(); }
+    var orgId = state.org.id;
+    return sb.rpc("fincap_my_shares", { p_org: orgId }).then(function (r) {
+      if (!state.org || state.org.id !== orgId) return;
+      var m = {};
+      (r.data || []).forEach(function (x) { m[x.opportunity_id] = { status: x.status, needs_review: x.needs_review }; });
+      state.fincapShares = r.error ? {} : m;
+    }).catch(function () { state.fincapShares = {}; });
+  }
+  function shareLine(oppId) {
+    var sh = state.fincapShares[oppId];
+    return sh ? '<p class="hint" style="margin-top:.5rem"><strong>FinCap:</strong> ' + esc(SHARE_TEXT[sh.status] || sh.status) + "</p>" : "";
+  }
+  // opts.pipelineItem: remove this Capture Pipeline card in the same transaction.
+  function passAndShare(o, f, opts, btn) {
+    opts = opts || {};
+    f = f || {};
+    var orgId = state.org.id, key = orgId + ":" + o.id;
+    if (sharing[key]) return Promise.resolve();   // a second click while the first is in flight
+    sharing[key] = true;
+    if (btn) btn.disabled = true;
+    return sb.rpc("fincap_pass_and_share", {
+      p_org: orgId, p_opportunity: o.id,
+      p_system_recommendation: f.rec || null, p_system_confidence: f.headline != null ? f.headline : null,
+      p_pipeline_item: opts.pipelineItem || null
+    }).then(function (r) {
+      if (r.error) throw r.error;
+      var res = r.data || {};
+      if (state.org && state.org.id === orgId) {          // the user may have switched organization meanwhile
+        state.fincapShares[o.id] = { status: res.submission_status, needs_review: !!res.needs_review };
+        state.pursueDecisions[o.id] = { decision: "pass", decided_at: new Date().toISOString(), system_recommendation: f.rec || null, system_confidence: f.headline != null ? f.headline : null };
+        if (opts.pipelineItem) {
+          state.pipeline = state.pipeline.filter(function (x) { return x.id !== opts.pipelineItem; });
+          state.requirements = state.requirements.filter(function (rq) { return rq.pipeline_item_id !== opts.pipelineItem; });
+          delete state.notesDraft[opts.pipelineItem];
+          state.currentPipelineItem = null;
+          state.view = "pipeline";
+        }
+        paint();
+      }
+      toast("Passed for " + (state.orgs.filter(function (x) { return x.id === orgId; })[0] || state.org).name + ". " + (res.already_submitted ? "Already submitted to FinCap. " : "") + (SHARE_TEXT[res.submission_status] || ""));
+    }).catch(function (err) {
+      if (btn) btn.disabled = false;
+      toast("Could not complete Pass & Share. Nothing was shared and your decision was not recorded. " + (err && err.message ? err.message : ""), true);
+    }).then(function () { delete sharing[key]; });
+  }
+
   function tile(num, lbl) { return '<div class="tile"><div class="num">' + esc(num) + '</div><div class="lbl">' + esc(lbl) + "</div></div>"; }
 
   /* ---------- funding radar ---------- */
@@ -897,6 +973,7 @@ window.OA_CONFIG = {
       '<div class="opp">' +
       '<div><h3>' + esc(o.title) + "</h3>" +
       '<div class="meta"><span class="tag">' + esc(o.category || "Opportunity") + '</span>' +
+      (state.fincapShares[o.id] ? '<span class="tag">FinCap: ' + esc({ pending_review: "pending review", approved: "published", rejected: "not accepted", withdrawn: "withdrawn" }[state.fincapShares[o.id].status] || state.fincapShares[o.id].status) + "</span>" : "") +
       "<span>" + esc(o.funding_amount_label || money(o.funding_amount)) + "</span>" +
       "<span>" + esc(o.geography || "") + "</span>" +
       (d != null ? "<span>" + (d < 0 ? "Closed" : "Due in " + d + " days") + "</span>" : "") +
@@ -1102,13 +1179,16 @@ window.OA_CONFIG = {
       '<div class="card"><h2>Review decision</h2>' +
       '<p class="hint" style="margin:0 0 .8rem">Read the summary and the fit reasoning, then qualify this for planning or pass on it.</p>' +
       '<div class="row" style="gap:8px"><button class="btn btn-primary btn-sm" id="qualifyItem">Qualify: move to Qualified</button>' +
-      '<button class="btn btn-ghost btn-sm" id="passItem">Pass: remove from pipeline</button></div>' +
+      '<button class="btn btn-ghost btn-sm" id="passItem">Pass: remove from pipeline</button>' +
+      '<button class="btn btn-ghost btn-sm" id="shareItem" title="Pass for your organization and offer it to FinCap editors for review. Nothing is published automatically.">Pass &amp; Share with FinCap</button></div>' +
+      '<p class="hint" style="margin:.7rem 0 0">Pass stays private to your organization. Pass &amp; Share also offers a neutral listing to FinCap editors, who review it before anything is published. You are declining it for your organization, not saying it has no value to others.</p>' +
       "</div>";
 
     var decisionLine = decision
       ? '<p class="hint" style="margin-top:.8rem">Decision: <strong>' + esc(decision.decision) + "</strong> on " + esc(new Date(decision.decided_at).toLocaleDateString()) +
         (decision.system_recommendation ? " \u2014 system recommended \u201c" + esc(decision.system_recommendation) + "\u201d" + (decision.system_confidence != null ? " at " + esc(decision.system_confidence) + "%" : "") : "") + "</p>"
       : "";
+    decisionLine += shareLine(p.opportunity_id);
 
     main.innerHTML =
       '<span class="back" id="back">\u2190 Back to Capture Pipeline</span>' +
@@ -1143,6 +1223,10 @@ window.OA_CONFIG = {
     if (inReview) {
       main.querySelector("#qualifyItem").addEventListener("click", function () { moveCard(p.id, "Qualified"); });
       main.querySelector("#passItem").addEventListener("click", function () { passPipelineItem(p, f, this); });
+      main.querySelector("#shareItem").addEventListener("click", function () {
+        if (!window.confirm("Pass on “" + p.title + "” for your organization and offer it to FinCap editors?\n\nIt leaves your Capture Pipeline and your decision is kept. FinCap reviews it before anything is published. Only neutral facts about the grant are shared, never your notes or reasons.")) return;
+        passAndShare(o, f, { pipelineItem: p.id }, this);
+      });
     }
 
     var notesEl = main.querySelector("#notes");
@@ -1638,7 +1722,7 @@ window.OA_CONFIG = {
         return sb.from("organizations").select("*").eq("id", state.profile.org_id).single().then(function (orgR) {
           if (orgR.error || !orgR.data) { renderOnboarding(); return; }
           state.org = orgR.data;
-          return Promise.all([loadOpps(), loadFitScores(), loadPipeline(), loadSubscription(), loadContracts(), loadAlertRules(), loadFoundationLeads(), loadAdminStatus(), loadRequirements(), loadPursueDecisions()]).then(function () {
+          return Promise.all([loadOpps(), loadFitScores(), loadPipeline(), loadSubscription(), loadContracts(), loadAlertRules(), loadFoundationLeads(), loadAdminStatus(), loadRequirements(), loadPursueDecisions(), loadFincapShares()]).then(function () {
             var missingIds = applyLocalFitEstimates();
             renderShell();
             fetchRealFitScores(missingIds);
