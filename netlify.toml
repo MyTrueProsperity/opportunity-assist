@@ -34,3 +34,14 @@
   for = "/assets/*"
   [headers.values]
     Cache-Control = "public, max-age=3600, must-revalidate"
+
+# FinCap funding-opportunity feed (public, read-only, CDN-cached)
+[[redirects]]
+  from = "/api/fincap/opportunities"
+  to = "/.netlify/functions/fincap-feed?view=opportunities"
+  status = 200
+
+[[redirects]]
+  from = "/api/fincap/newsletter"
+  to = "/.netlify/functions/fincap-feed?view=newsletter"
+  status = 200
