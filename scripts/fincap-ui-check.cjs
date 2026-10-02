@@ -102,7 +102,7 @@ const RPC = `window.__rpc = {
     const errors = []; page.on('pageerror', (e) => errors.push(e.message));
     await page.route('**/*', (route) => {
       const url = route.request().url();
-      if (url.includes('/.netlify/functions/fincap-draft-summary')) return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ summary: DRAFT }) });
+      if (url.includes('/.netlify/functions/fincap-draft-summary')) return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ summary: DRAFT, eligible_applicants: '501(c)(3) nonprofits', geography: 'Statewide (should not replace Florida)' }) });
       if (url.includes('/.netlify/functions/score-opportunities') && opts.dropFit) return new Promise((r) => setTimeout(r, 1500)).then(() => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ results: [] }) }));
       if (url.startsWith(base)) return url.includes('/.netlify/') ? route.fulfill({ status: 200, body: '{}' }) : route.continue();
       const fx = fixtures(!!opts.admin); if (opts.dropFit) fx.fit_scores = fx.fit_scores.slice(0, 2);
@@ -207,12 +207,14 @@ const RPC = `window.__rpc = {
     await page.waitForFunction((t) => document.querySelector('[data-f="summary"]').value === t, DRAFT);
     let c = await calls(page);
     const auto = c.find((x) => x.rpc === 'fincap_admin_edit');
-    assert.deepEqual(Object.keys(auto.args.p_fields), ['summary'], 'the automatic draft saves only the summary');
+    assert.deepEqual(Object.keys(auto.args.p_fields).sort(), ['eligible_applicants', 'summary'], 'only empty fields are drafted; the existing geography is kept');
     assert.equal(auto.args.p_version, 1);
-    assert.match(await page.textContent('#fc-list'), /Drafted automatically/);
+    assert.equal(await page.inputValue('[data-f="eligible_applicants"]'), '501(c)(3) nonprofits');
+    assert.equal(await page.inputValue('[data-f="geography"]'), 'Florida');
+    assert.match(await page.textContent('#fc-list'), /Filled in automatically: summary, who can apply/);
     assert.match(await page.textContent('#fc-list'), /Ready to publish/);
     assert.equal(await page.inputValue('[data-f="last_verified_on"]'), '2026-09-30', 'an existing verified date is kept');
-    ok('admin review: an empty summary is drafted and saved automatically');
+    ok('admin review: empty summary and who-can-apply are drafted and saved; filled fields are kept');
     if (shots) await page.screenshot({ path: path.join(shots, '04-admin-review.png'), fullPage: true });
     await page.click('[data-a="approve"]'); await page.waitForTimeout(300);
     c = await calls(page);
