@@ -156,7 +156,7 @@ label{display:block;font-weight:600;font-size:.85rem;margin:0 0 .3rem;color:var(
   <div id="app"><div class="boot">Loading Opportunity Assist…</div></div>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <script src="/assets/source-intelligence.js?v=20260908"></script>
-  <script src="/assets/fincap-review.js?v=20261002"></script>
+  <script src="/assets/fincap-review.js?v=20261003"></script>
   <link rel="stylesheet" href="/assets/grant-factory.css?v=20260923">
   <script src="/assets/grant-factory-limits.js?v=20260917"></script>
   <script src="/assets/grant-factory-reading.js?v=20260923"></script>
@@ -397,6 +397,13 @@ window.OA_CONFIG = {
   }
 
 
+  // Background scoring finishes in batches while the user may be typing on
+  // another screen. Only redraw screens that show fit scores; repainting a form
+  // such as FinCap Review would wipe what is being typed.
+  function paintScores() {
+    if (state.currentOpp || state.currentPipelineItem || ["dashboard", "radar", "pipeline"].indexOf(state.view) !== -1) paint();
+  }
+
   function scoreChunk(ids, token) {
     return fetch("/.netlify/functions/score-opportunities", {
       method: "POST",
@@ -405,7 +412,7 @@ window.OA_CONFIG = {
     }).then(function (r) {
       if (r.status === 402) {
         ids.forEach(function (id) { if (state.fit[id]) { state.fit[id].pending = false; state.fit[id].paywalled = true; } });
-        paint();
+        paintScores();
         return null;
       }
       return r.json();
@@ -418,7 +425,7 @@ window.OA_CONFIG = {
           if (o) o.ai_summary = res.ai_summary;
         }
       });
-      paint();
+      paintScores();
     }).catch(function (err) {
       console.error("AI scoring failed:", err);
       ids.forEach(function (id) { if (state.fit[id]) state.fit[id].pending = false; });

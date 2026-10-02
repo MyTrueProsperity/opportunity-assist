@@ -22,7 +22,47 @@
       if (r.error) { root.querySelector('#fc-list').innerHTML = '<p class="error">' + esc(r.error.message) + '</p>'; return; }
       items = (r.data || []).filter(function (s) { return tab !== 'closed' || s.status === 'rejected' || s.status === 'withdrawn'; });
       drawList();
+      autoDraft(items.filter(function (s) { return s.status === 'pending_review' && !(s.draft && s.draft.summary); }));
     });
+  }
+
+  // Ask the server to draft the public summary. Returns the text; saving is separate.
+  function draftSummary(s) {
+    return sb.auth.getSession().then(function (r) {
+      var token = r.data.session && r.data.session.access_token;
+      return fetch('/.netlify/functions/fincap-draft-summary', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token }, body: JSON.stringify({ submission_id: s.id }) });
+    }).then(function (r) { return r.json().catch(function () { return {}; }).then(function (b) { if (!r.ok || !b.summary) throw new Error(b.error || 'Could not draft a summary.'); return b.summary; }); });
+  }
+
+  // Draft and save summaries one at a time for cards that have none, so the
+  // editor only has to read and approve. Never overwrites anything typed.
+  function autoDraft(list) {
+    list.reduce(function (p, s) {
+      return p.then(function () {
+        var el = s._el; if (!el || !el.isConnected) return;
+        var box = el.querySelector('[data-f="summary"]'), hint = el.querySelector('[data-sum-hint]');
+        if (box.value.trim()) return;
+        hint.textContent = 'Drafting a summary…';
+        return draftSummary(s).then(function (text) {
+          if (!el.isConnected || box.value.trim()) return;
+          return sb.rpc('fincap_admin_edit', { p_id: s.id, p_fields: { summary: text }, p_version: s.version }).then(function (r) {
+            if (r.error) throw r.error;
+            s.version = r.data.version; s.problem = r.data.problem; s.draft.summary = text;
+            if (!box.value.trim()) box.value = text;
+            hint.textContent = 'Drafted automatically. Read it before approving; edit anything that is not right.';
+            showProblem(s, el);
+          });
+        }).catch(function (err) { hint.textContent = (err.message || String(err)) + ' You can use "Draft summary" to try again.'; });
+      });
+    }, Promise.resolve());
+  }
+
+  // The last-verified date is filled in with today on screen when the source
+  // has none, so that check is not a blocker once the field has a value.
+  function showProblem(s, el) {
+    var p = s.problem, dated = el.querySelector('[data-f="last_verified_on"]').value;
+    if (p === 'A last-verified date is required.' && dated) p = null;
+    el.querySelector('[data-problem]').innerHTML = p ? '<strong>Before this can be published:</strong> ' + esc(p) : 'Ready to publish.';
   }
 
   function drawList() {
@@ -34,7 +74,8 @@
 
   function card(s) {
     var d = s.draft || {}, el = document.createElement('div');
-    el.className = 'card'; el.style.marginBottom = '14px';
+    el.className = 'card'; el.style.marginBottom = '14px'; s._el = el;
+    var editable = s.status === 'pending_review' || s.status === 'approved';
     var live = s.status === 'approved';
     el.innerHTML =
       '<div class="row" style="justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px"><h2 style="margin:0">' + esc(d.title || 'Untitled') + '</h2>' +
@@ -52,18 +93,20 @@
       ['fixed', 'rolling', 'unknown'].map(function (k) { return '<option value="' + k + '"' + (d.deadline_kind === k ? ' selected' : '') + '>' + { fixed: 'Fixed date', rolling: 'Rolling (no fixed deadline)', unknown: 'Not confirmed' }[k] + '</option>'; }).join('') + '</select></div>' +
       inp('Deadline date', 'deadline', d.deadline || '', 'date') + inp('Deadline time zone', 'deadline_tz', d.deadline_tz) +
       '<div class="field" style="margin:0"><label>&nbsp;</label><label style="font-weight:400"><input type="checkbox" style="width:auto;margin-right:6px" data-f="deadline_verified" ' + (d.deadline_verified ? 'checked' : '') + ' /> Deadline verified at the funder</label></div>' +
-      inp('Last verified', 'last_verified_on', d.last_verified_on || '', 'date') +
+      inp('Last verified', 'last_verified_on', d.last_verified_on || (editable ? new Date().toLocaleDateString('en-CA') : ''), 'date') +
       inp('Geography or restrictions', 'geography', d.geography) + inp('Program areas (comma separated)', 'program_areas', (d.program_areas || []).join(', ')) +
       '</div>' +
       '<div class="field" style="margin-top:10px"><label for="fc-elig">Who can apply</label><textarea id="fc-elig" data-f="eligible_applicants" rows="2">' + esc(d.eligible_applicants || '') + '</textarea></div>' +
-      '<div class="field"><label for="fc-sum">Original, organization-neutral summary (2 to 4 sentences; do not copy the funder text or any private fit analysis)</label>' +
-      '<textarea id="fc-sum" data-f="summary" rows="4">' + esc(d.summary || '') + '</textarea></div>' +
-      (s.problem ? '<p class="hint"><strong>Before this can be published:</strong> ' + esc(s.problem) + '</p>' : '<p class="hint">Ready to publish.</p>') +
+      '<div class="field"><label for="fc-sum">Public summary (2 to 4 sentences, organization-neutral; drafted automatically when empty)</label>' +
+      '<textarea id="fc-sum" data-f="summary" rows="4">' + esc(d.summary || '') + '</textarea>' +
+      (editable ? '<p class="hint"><button class="btn btn-ghost btn-sm" data-a="draft">Draft summary</button> <span data-sum-hint>Writes a fresh draft from the funder\'s listing. Nothing is published until you approve.</span></p>' : '') + '</div>' +
+      '<p class="hint" data-problem></p>' +
       '<div class="row" style="gap:8px;margin-top:10px;flex-wrap:wrap">' +
       (s.status === 'pending_review' || live ? '<button class="btn btn-ghost btn-sm" data-a="save">Save edits</button><button class="btn btn-primary btn-sm" data-a="approve">' + (live ? 'Save and re-approve' : 'Save and approve') + '</button>' : '') +
       (s.status === 'pending_review' ? '<button class="btn btn-ghost btn-sm" data-a="reject">Reject</button>' : '') +
       (live ? '<button class="btn btn-ghost btn-sm" data-a="withdraw">Withdraw</button>' : '') +
       (s.status === 'rejected' || s.status === 'withdrawn' ? '<button class="btn btn-ghost btn-sm" data-a="reopen">Reopen</button>' : '') + '</div>';
+    showProblem(s, el);
     el.addEventListener('click', function (e) {
       var a = e.target && e.target.getAttribute && e.target.getAttribute('data-a'); if (!a) return;
       run(s, el, a, e.target);
@@ -82,6 +125,15 @@
   }
 
   function run(s, c, a, btn) {
+    if (a === 'draft') {
+      var box = c.querySelector('[data-f="summary"]');
+      if (box.value.trim() && !window.confirm('Replace the current summary with a new draft?')) return;
+      btn.disabled = true; btn.textContent = 'Drafting…';
+      draftSummary(s).then(function (text) { box.value = text; notice('New draft added. Read it, then save or approve.'); })
+        .catch(function (err) { notice(err.message || String(err), true); })
+        .then(function () { btn.disabled = false; btn.textContent = 'Draft summary'; });
+      return;
+    }
     var reason = null;
     if (a === 'reject' || a === 'withdraw') {
       reason = window.prompt(a === 'reject' ? 'Why is this being rejected? (kept in the private audit trail)' : 'Why is this being withdrawn? (it leaves the public page and feed immediately)');

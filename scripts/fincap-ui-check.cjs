@@ -65,6 +65,7 @@ function fixtures(admin) {
     admins: admin ? [{ profile_id: 'u1' }] : [], fit_scores: ['o1', 'o2', 'o3'].map((id, i) => ({ opportunity_id: id, headline_score: 85 - i * 5, recommendation: 'Strongly pursue', factors: [], confidence: 0.8, rubric_version: '2026-09-25.1', eligibility_status: 'ELIGIBLE', eligibility_reasons: [], source_stale: false })), pursue_decisions: [], requirements: [], contracts: [], alert_rules: [], foundation_scan_hits: [], funder_watchlist: []
   };
 }
+const DRAFT = 'Example Funder supports nonprofits in Florida that teach practical money skills to young adults through coaching and workshops.';
 const RPC = `window.__rpc = {
   my_organizations: function () { return { data: window.__fixtures.organizations.map(function (o) { return { id: o.id, name: o.name }; }), error: null }; },
   set_active_org: function (a) { window.__fixtures.profiles[0].org_id = a.p_org; return { data: null, error: null }; },
@@ -101,8 +102,11 @@ const RPC = `window.__rpc = {
     const errors = []; page.on('pageerror', (e) => errors.push(e.message));
     await page.route('**/*', (route) => {
       const url = route.request().url();
+      if (url.includes('/.netlify/functions/fincap-draft-summary')) return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ summary: DRAFT }) });
+      if (url.includes('/.netlify/functions/score-opportunities') && opts.dropFit) return new Promise((r) => setTimeout(r, 1500)).then(() => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ results: [] }) }));
       if (url.startsWith(base)) return url.includes('/.netlify/') ? route.fulfill({ status: 200, body: '{}' }) : route.continue();
-      if (url.includes('supabase-js')) return route.fulfill({ contentType: 'text/javascript', body: `window.__fixtures=${JSON.stringify(fixtures(!!opts.admin))};${RPC}${FAKE_SDK}` });
+      const fx = fixtures(!!opts.admin); if (opts.dropFit) fx.fit_scores = fx.fit_scores.slice(0, 2);
+      if (url.includes('supabase-js')) return route.fulfill({ contentType: 'text/javascript', body: `window.__fixtures=${JSON.stringify(fx)};${RPC}${FAKE_SDK}` });
       return route.abort();
     });
     await page.addInitScript('window.__cfg = ' + JSON.stringify(opts.cfg || {}) + ';');
@@ -200,18 +204,36 @@ const RPC = `window.__rpc = {
   {
     const { page, ctx, errors } = await open({ admin: true });
     await page.click('[data-v="fincap"]'); await page.waitForSelector('[data-a="approve"]');
-    assert.match(await page.textContent('#fc-list'), /Write an original summary/);
-    await page.fill('[data-f="summary"]', 'A statewide grant for nonprofits teaching practical money skills to young adults.');
+    await page.waitForFunction((t) => document.querySelector('[data-f="summary"]').value === t, DRAFT);
+    let c = await calls(page);
+    const auto = c.find((x) => x.rpc === 'fincap_admin_edit');
+    assert.deepEqual(Object.keys(auto.args.p_fields), ['summary'], 'the automatic draft saves only the summary');
+    assert.equal(auto.args.p_version, 1);
+    assert.match(await page.textContent('#fc-list'), /Drafted automatically/);
+    assert.match(await page.textContent('#fc-list'), /Ready to publish/);
+    assert.equal(await page.inputValue('[data-f="last_verified_on"]'), '2026-09-30', 'an existing verified date is kept');
+    ok('admin review: an empty summary is drafted and saved automatically');
     if (shots) await page.screenshot({ path: path.join(shots, '04-admin-review.png'), fullPage: true });
     await page.click('[data-a="approve"]'); await page.waitForTimeout(300);
-    const c = await calls(page);
-    const edit = c.find((x) => x.rpc === 'fincap_admin_edit'), dec = c.find((x) => x.rpc === 'fincap_admin_decide');
-    assert.equal(edit.args.p_version, 1); assert.equal(dec.args.p_version, 2, 'decision uses the version returned by the edit');
+    c = await calls(page);
+    const edit = c.find((x) => x.rpc === 'fincap_admin_edit' && 'title' in x.args.p_fields), dec = c.find((x) => x.rpc === 'fincap_admin_decide');
+    assert.equal(edit.args.p_version, 2, 'approval uses the version from the automatic draft'); assert.equal(dec.args.p_version, 2, 'decision uses the version returned by the edit');
+    assert.equal(edit.args.p_fields.summary, DRAFT);
     assert.equal(dec.args.p_action, 'approve'); assert.ok(!('org_id' in edit.args.p_fields));
     ok('admin review: edit then approve use optimistic versions');
     await page.click('[data-t="newsletter"]'); await page.waitForSelector('#fc-prev');
     assert.match(await page.inputValue('#fc-issue'), /^\d{4}-\d{2}-10$/);
     ok('newsletter tab defaults to the next 10th');
+    await ctx.close(); assert.deepEqual(errors, []);
+  }
+  // Background fit scoring must not redraw the review screen while an editor types.
+  {
+    const { page, ctx, errors } = await open({ admin: true, dropFit: true });
+    await page.click('[data-v="fincap"]'); await page.waitForSelector('[data-f="eligible_applicants"]');
+    await page.fill('[data-f="eligible_applicants"]', 'Typed while scoring runs');
+    await page.waitForTimeout(2500);
+    assert.equal(await page.inputValue('[data-f="eligible_applicants"]'), 'Typed while scoring runs');
+    ok('background scoring does not wipe what an editor is typing');
     await ctx.close(); assert.deepEqual(errors, []);
   }
   // 7. Mobile layout of the new controls.
