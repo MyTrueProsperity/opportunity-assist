@@ -3,10 +3,12 @@
 // Public, read-only feed of EDITORIALLY APPROVED funding opportunities for
 // NationalFinCap.org, plus a newsletter-ready export for Claude.
 //
-//   GET /api/fincap/opportunities                    JSON for the website
-//   GET /api/fincap/newsletter?issue=YYYY-MM-DD      JSON for an issue date
-//   GET /api/fincap/newsletter?issue=...&format=md   readable export
+//   GET /.netlify/functions/fincap-feed?view=opportunities                JSON for the website
+//   GET /.netlify/functions/fincap-feed?view=newsletter&issue=YYYY-MM-DD  JSON for an issue date
+//        add &format=md for a readable export
 //        optional: &repeat_within_days=14  also include deliberate deadline reminders
+// netlify.toml also maps /api/fincap/opportunities and /api/fincap/newsletter
+// here, but callers use the function path, which does not depend on redirects.
 //
 // Privacy boundary: this function never reads a private table. It calls two
 // service_role-only database functions that read the approved snapshot, and it

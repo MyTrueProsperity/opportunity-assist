@@ -121,9 +121,10 @@
     list.querySelector('#fc-prev').addEventListener('click', function () {
       var issue = list.querySelector('#fc-issue').value, rep = list.querySelector('#fc-rep').value;
       if (!issue) return;
-      var q = '?issue=' + encodeURIComponent(issue) + (rep !== '' ? '&repeat_within_days=' + encodeURIComponent(rep) : '');
+      // Call the function directly: the /api/fincap/* redirect aliases are not applied on every deploy.
+      var q = '/.netlify/functions/fincap-feed?view=newsletter&issue=' + encodeURIComponent(issue) + (rep !== '' ? '&repeat_within_days=' + encodeURIComponent(rep) : '');
       var out = list.querySelector('#fc-out'); out.innerHTML = '<p class="hint">Loading…</p>';
-      Promise.all([fetch('/api/fincap/newsletter' + q).then(function (r) { return r.json(); }), fetch('/api/fincap/newsletter' + q + '&format=md').then(function (r) { return r.text(); })]).then(function (x) {
+      Promise.all([fetch(q).then(function (r) { return r.json(); }), fetch(q + '&format=md').then(function (r) { return r.text(); })]).then(function (x) {
         preview = { issue: issue, json: x[0], md: x[1] };
         out.innerHTML =
           '<p class="hint">' + x[0].items.length + ' item(s) for the issue dated ' + esc(issue) + '. ' + (x[0].held_for_recheck.length ? x[0].held_for_recheck.length + ' held for re-verification. ' : '') + (x[0].previously_included_count || 0) + ' already ran in an earlier issue.</p>' +

@@ -7,7 +7,7 @@ A grant that is a poor fit for one organization can still help another financial
 1. **Pass & Share with FinCap** (Dashboard decision row and Capture Pipeline review page) calls `fincap_pass_and_share`. One transaction records the private decision, removes the pipeline card when there is one (history re-homed, as in the review-page Pass), creates or joins the submission, records private attribution, and logs activity. A failure rolls everything back and the user is told nothing was shared.
 2. The submission is `pending_review`. The Funding Radar tag, review page and a short notice show its state: pending review, published, not accepted, or withdrawn. A repeat click or a second organization passing the same grant reports "already submitted".
 3. An administrator opens **FinCap Review**, edits the allowlisted fields, writes an original summary, and approves, rejects, or withdraws. Approval writes the public snapshot (`published`).
-4. The public site reads only that snapshot through `/api/fincap/opportunities`. The newsletter export reads the same snapshot through `/api/fincap/newsletter?issue=YYYY-MM-DD` (add `&format=md` for a readable version).
+4. The public site reads only that snapshot through `/.netlify/functions/fincap-feed?view=opportunities`. The newsletter export reads the same snapshot through `/.netlify/functions/fincap-feed?view=newsletter&issue=YYYY-MM-DD` (add `&format=md` for a readable version). `netlify.toml` also maps `/api/fincap/opportunities` and `/api/fincap/newsletter` to these, but callers use the function path because the redirect aliases were not applied on the deploy preview.
 
 Ordinary Pass and Qualify (Pursue) are unchanged.
 
