@@ -22,40 +22,55 @@
       if (r.error) { root.querySelector('#fc-list').innerHTML = '<p class="error">' + esc(r.error.message) + '</p>'; return; }
       items = (r.data || []).filter(function (s) { return tab !== 'closed' || s.status === 'rejected' || s.status === 'withdrawn'; });
       drawList();
-      autoDraft(items.filter(function (s) { return s.status === 'pending_review' && !(s.draft && s.draft.summary); }));
+      autoDraft(items.filter(function (s) { var d = s.draft || {}; return s.status === 'pending_review' && (!d.summary || !d.eligible_applicants || !d.geography); }));
     });
   }
 
-  // Ask the server to draft the public summary. Returns the text; saving is separate.
+  var AUTO_FIELDS = ['summary', 'eligible_applicants', 'geography'];
+
+  // Ask the server to draft the public summary, who can apply and geography.
+  // Returns { summary, eligible_applicants, geography }; saving is separate.
   function draftSummary(s) {
     return sb.auth.getSession().then(function (r) {
       var token = r.data.session && r.data.session.access_token;
       return fetch('/.netlify/functions/fincap-draft-summary', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token }, body: JSON.stringify({ submission_id: s.id }) });
-    }).then(function (r) { return r.json().catch(function () { return {}; }).then(function (b) { if (!r.ok || !b.summary) throw new Error(b.error || 'Could not draft a summary.'); return b.summary; }); });
+    }).then(function (r) { return r.json().catch(function () { return {}; }).then(function (b) { if (!r.ok || !b.summary) throw new Error(b.error || 'Could not draft a summary.'); return b; }); });
   }
 
-  // Draft and save summaries one at a time for cards that have none, so the
-  // editor only has to read and approve. Never overwrites anything typed.
+  // Fields still empty on the card (nothing saved and nothing typed).
+  function emptyFields(el) {
+    return AUTO_FIELDS.filter(function (k) { return !el.querySelector('[data-f="' + k + '"]').value.trim(); });
+  }
+
+  // Draft and save the empty listing fields one card at a time, so the editor
+  // only has to read and approve. Never overwrites anything saved or typed.
   function autoDraft(list) {
     list.reduce(function (p, s) {
       return p.then(function () {
         var el = s._el; if (!el || !el.isConnected) return;
-        var box = el.querySelector('[data-f="summary"]'), hint = el.querySelector('[data-sum-hint]');
-        if (box.value.trim()) return;
-        hint.textContent = 'Drafting a summary…';
-        return draftSummary(s).then(function (text) {
-          if (!el.isConnected || box.value.trim()) return;
-          return sb.rpc('fincap_admin_edit', { p_id: s.id, p_fields: { summary: text }, p_version: s.version }).then(function (r) {
+        var hint = el.querySelector('[data-sum-hint]');
+        if (!emptyFields(el).length) return;
+        hint.textContent = 'Drafting the empty fields…';
+        return draftSummary(s).then(function (draft) {
+          if (!el.isConnected) return;
+          var fill = {};
+          emptyFields(el).forEach(function (k) { if (draft[k]) fill[k] = draft[k]; });
+          if (!Object.keys(fill).length) { hint.textContent = 'The funder\'s listing did not say; fill in the empty fields by hand.'; return; }
+          return sb.rpc('fincap_admin_edit', { p_id: s.id, p_fields: fill, p_version: s.version }).then(function (r) {
             if (r.error) throw r.error;
-            s.version = r.data.version; s.problem = r.data.problem; s.draft.summary = text;
-            if (!box.value.trim()) box.value = text;
-            hint.textContent = 'Drafted automatically. Read it before approving; edit anything that is not right.';
+            s.version = r.data.version; s.problem = r.data.problem;
+            Object.keys(fill).forEach(function (k) {
+              s.draft[k] = fill[k];
+              var f = el.querySelector('[data-f="' + k + '"]'); if (!f.value.trim()) f.value = fill[k];
+            });
+            hint.textContent = 'Filled in automatically: ' + Object.keys(fill).map(function (k) { return LABELS[k]; }).join(', ') + '. Read them before approving; edit anything that is not right.';
             showProblem(s, el);
           });
         }).catch(function (err) { hint.textContent = (err.message || String(err)) + ' You can use "Draft summary" to try again.'; });
       });
     }, Promise.resolve());
   }
+  var LABELS = { summary: 'summary', eligible_applicants: 'who can apply', geography: 'geography' };
 
   // The last-verified date is filled in with today on screen when the source
   // has none, so that check is not a blocker once the field has a value.
@@ -97,9 +112,9 @@
       inp('Geography or restrictions', 'geography', d.geography) + inp('Program areas (comma separated)', 'program_areas', (d.program_areas || []).join(', ')) +
       '</div>' +
       '<div class="field" style="margin-top:10px"><label for="fc-elig">Who can apply</label><textarea id="fc-elig" data-f="eligible_applicants" rows="2">' + esc(d.eligible_applicants || '') + '</textarea></div>' +
-      '<div class="field"><label for="fc-sum">Public summary (2 to 4 sentences, organization-neutral; drafted automatically when empty)</label>' +
+      '<div class="field"><label for="fc-sum">Public summary (2 to 4 sentences, organization-neutral)</label>' +
       '<textarea id="fc-sum" data-f="summary" rows="4">' + esc(d.summary || '') + '</textarea>' +
-      (editable ? '<p class="hint"><button class="btn btn-ghost btn-sm" data-a="draft">Draft summary</button> <span data-sum-hint>Writes a fresh draft from the funder\'s listing. Nothing is published until you approve.</span></p>' : '') + '</div>' +
+      (editable ? '<p class="hint"><button class="btn btn-ghost btn-sm" data-a="draft">Draft summary</button> <span data-sum-hint>Empty summary, who can apply and geography fields are drafted from the funder\'s listing. Nothing is published until you approve.</span></p>' : '') + '</div>' +
       '<p class="hint" data-problem></p>' +
       '<div class="row" style="gap:8px;margin-top:10px;flex-wrap:wrap">' +
       (s.status === 'pending_review' || live ? '<button class="btn btn-ghost btn-sm" data-a="save">Save edits</button><button class="btn btn-primary btn-sm" data-a="approve">' + (live ? 'Save and re-approve' : 'Save and approve') + '</button>' : '') +
@@ -129,7 +144,11 @@
       var box = c.querySelector('[data-f="summary"]');
       if (box.value.trim() && !window.confirm('Replace the current summary with a new draft?')) return;
       btn.disabled = true; btn.textContent = 'Drafting…';
-      draftSummary(s).then(function (text) { box.value = text; notice('New draft added. Read it, then save or approve.'); })
+      draftSummary(s).then(function (draft) {
+        box.value = draft.summary;
+        ['eligible_applicants', 'geography'].forEach(function (k) { var f = c.querySelector('[data-f="' + k + '"]'); if (!f.value.trim() && draft[k]) f.value = draft[k]; });
+        notice('New draft added. Read it, then save or approve.');
+      })
         .catch(function (err) { notice(err.message || String(err), true); })
         .then(function () { btn.disabled = false; btn.textContent = 'Draft summary'; });
       return;
