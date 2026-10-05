@@ -57,6 +57,17 @@ async function handle(event,db=createDb()) {
   }
   if((event.body||'').length>1000000)throw new HttpError(413,'Request too large');
   let b;try{b=JSON.parse(event.body||'{}');}catch{throw new HttpError(400,'Invalid JSON');}
+  if(['harvest_preview','harvest_queue'].includes(b.action)){
+    checkState(b.state);const rows=parseJson(b.sources);
+    if(!rows.length||rows.length>25||rows.some(r=>r.error))throw new HttpError(400,'Supply 1–25 valid source records');
+    if(b.action==='harvest_preview'){
+      const {collect}=require('../lib/source-intelligence/harvester');const results=[];
+      for(const row of rows)results.push(await collect({db,source:{...row.candidate,state:b.state},dryRun:true}));
+      return json(200,{mode:'DRY_RUN',results});
+    }
+    const jobs=[];for(const row of rows)jobs.push(await enqueue(db,{kind:'VALIDATE',state:b.state,actor,key:'harvest:'+b.state+':'+require('../lib/source-intelligence/identity').hash(row.candidate.normalized_url),payload:{url:row.candidate.source_url,name:row.candidate.source_name,source:row.candidate,depth:0}}));
+    return json(202,{mode:'QUEUE',jobs});
+  }
   if(b.action==='engine'){
     if(typeof b.enabled!=='boolean')throw new HttpError(400,'enabled must be true or false');
     const [before]=await db.select('source_engine_settings',{id:'eq.true'});

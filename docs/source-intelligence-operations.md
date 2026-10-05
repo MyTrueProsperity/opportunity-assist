@@ -1,5 +1,7 @@
 # Source Intelligence operations
 
+**October 5, 2026 update:** routine worker processing now defaults to the deterministic zero-token harvester. See [zero-token-harvester.md](zero-token-harvester.md) for current activation, review and cost behavior. The paid search/extraction and automatic processing descriptions below document the prior implementation; they do not describe the new default worker. Production harvesting requires `HARVESTER_PRODUCTION_ENABLED=true` after a reviewed dry-run. Grant Factory's separate AI features remain unchanged.
+
 Source Intelligence is part of the existing Opportunity Assist app and Netlify project. Supabase is the canonical store. The architecture audit records the production discrepancies that informed the implementation.
 
 ## Install and verify

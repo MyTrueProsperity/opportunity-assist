@@ -168,6 +168,7 @@ async function publish(db,program,state) {
   return db.rpc('source_publish_cycle',{p_program:program.id,p_state:state,p_cycle_key:p.cycle_key,p_opportunity:p.opportunity,p_evidence:program.evidence||{}});
 }
 async function automaticallyApprove(db,candidate) {
+  if(candidate.discovery_method==='ZERO_TOKEN_HARVEST'||candidate.proposed?.harvest_hash)return {outcome:'MANUAL_REVIEW_REQUIRED'};
   if(['APPROVED','UPDATED','MERGED','REJECTED'].includes(candidate.status))return {outcome:'ALREADY_DECIDED',program_id:candidate.matched_program_id};
   // Submitter-supplied evidence never auto-approves. Independent VALIDATE replaces it.
   if(candidate.proposed?.submitted_evidence)return {outcome:'AWAITING_INDEPENDENT_VERIFICATION'};

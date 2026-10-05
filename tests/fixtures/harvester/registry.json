@@ -1,0 +1,15 @@
+{"sources":[
+{"source_name":"Synthetic Federal Fixture","url":"https://example.org/federal","source_type":"GOVERNMENT_GRANT","geography":"Florida","keywords":["youth"],"fixture":"api.json"},
+{"source_name":"Synthetic Florida State Fixture","url":"https://example.org/state","source_type":"GOVERNMENT_GRANT","geography":"Florida","keywords":["education"],"fixture":"api.json"},
+{"source_name":"Synthetic Local Government Fixture","url":"https://example.org/local","source_type":"MUNICIPAL_NONPROFIT_GRANT","geography":"Florida","keywords":["community development"],"fixture":"cards.html"},
+{"source_name":"Synthetic Community Foundation Fixture","url":"https://example.org/community","source_type":"COMMUNITY_FOUNDATION_GRANT","geography":"Florida","keywords":["youth"],"fixture":"cards.html"},
+{"source_name":"Synthetic Corporate Foundation Fixture","url":"https://example.org/corporate","source_type":"CORPORATE_FOUNDATION_GRANT","geography":"Florida","keywords":["education"],"fixture":"cards.html"},
+{"source_name":"Synthetic Bank CRA Fixture","url":"https://example.org/bank","source_type":"BANK_FOUNDATION_GRANT","geography":"Florida","keywords":["CRA"],"fixture":"cards.html"},
+{"source_name":"Synthetic Workforce Fixture","url":"https://example.org/workforce","source_type":"WORKFORCE_DEVELOPMENT_GRANT","geography":"Florida","keywords":["workforce development"],"fixture":"feed.xml"},
+{"source_name":"Synthetic Static HTML Fixture","url":"https://example.org/static","source_type":"PRIVATE_FOUNDATION_GRANT","geography":"Florida","keywords":["youth"],"fixture":"cards.html"},
+{"source_name":"Synthetic RSS Fixture","url":"https://example.org/rss","source_type":"GOVERNMENT_GRANT","geography":"Florida","keywords":["education"],"fixture":"feed.xml"},
+{"source_name":"Synthetic API Fixture","url":"https://example.org/api","source_type":"GOVERNMENT_GRANT","geography":"Florida","keywords":["education"],"fixture":"api.json"},
+{"source_name":"Synthetic Pagination Fixture","url":"https://example.org/grants?page=1","source_type":"PRIVATE_FOUNDATION_GRANT","geography":"Florida","keywords":["youth"],"fixture":"cards.html"},
+{"source_name":"Synthetic PDF Link Fixture","url":"https://example.org/pdf","source_type":"PRIVATE_FOUNDATION_GRANT","geography":"Florida","keywords":["equipment"],"fixture":"pdf.html"},
+{"source_name":"Synthetic No Current Opportunity Fixture","url":"https://example.org/empty","source_type":"PRIVATE_FOUNDATION_GRANT","geography":"Florida","keywords":[],"fixture":"empty.html"}
+]}
