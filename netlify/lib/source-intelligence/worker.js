@@ -1,6 +1,6 @@
 'use strict';
 const {createDb}=require('./db');
-const {createProvider}=require('./provider');
+const {collect}=require('./harvester');
 const {fetchPage}=require('./fetch-page');
 const {STATES,queriesFor,enabledFor}=require('./config');
 const {normalizeUrl,normalizeProgram,hash}=require('./identity');
@@ -18,6 +18,16 @@ async function gate(db,job,kind) {
 async function reserve(db,job,queries,pages,cost){if(!await db.rpc('source_reserve_usage',{p_state:job.state_code,p_queries:queries,p_pages:pages,p_usd:cost}))throw new Paused('Daily state or global budget reached; resume after the UTC reset');}
 async function usage(db,job,result){await db.rpc('source_add_metrics',{p_run:job.run_id,p_metrics:{ai_calls:1,input_tokens:result.usage?.input_tokens||0,output_tokens:result.usage?.output_tokens||0,search_requests:result.usage?.server_tool_use?.web_search_requests||0},p_cost:result.cost||0});}
 async function inspect(db,provider,job,url,name,program,fetcher=fetchPage) {
+  if(!provider){
+    await gate(db,job,job.kind==='MONITOR'?'monitoring':job.kind==='DISCOVER'?'discovery':null);
+    await reserve(db,job,0,1,0);
+    const result=await collect({db,source:{...job.payload.source,...program,source_url:url,source_name:name||program?.source_name,state:job.state_code},fetcher,dryRun:false,runId:job.run_id});
+    await db.rpc('source_add_metrics',{p_run:job.run_id,p_metrics:result.report});
+    if(result.error)throw new Error(result.error);
+    // Bounded discovery through explicit links; existing active-key jobs prevent duplicates.
+    if(Number(job.payload.depth||0)<2)for(const link of result.links||[])if(normalizeUrl(link.url)!==normalizeUrl(url))await enqueue(db,{kind:'VALIDATE',state:job.state_code,runId:job.run_id,key:'harvest-link:'+job.state_code+':'+hash(normalizeUrl(link.url)),payload:{url:link.url,name:link.text,depth:Number(job.payload.depth||0)+1}});
+    return result;
+  }
   await gate(db,job,job.kind==='MONITOR'?'monitoring':job.kind==='DISCOVER'?'discovery':null);
   await reserve(db,job,0,1,0);const start=Date.now();let page,extracted,cost=0;
   const cache=(await db.select('source_page_cache',{normalized_url:'eq.'+normalizeUrl(url),limit:1}))[0];
@@ -88,6 +98,13 @@ async function inspect(db,provider,job,url,name,program,fetcher=fetchPage) {
   }
 }
 async function discover(db,provider,job,fetcher) {
+  if(!provider){
+    await gate(db,job,'discovery');
+    const urls=job.payload.urls;
+    if(!Array.isArray(urls)||!urls.length)throw new Paused('Zero-token discovery requires explicit directory/feed URLs in this job; paid web search is disabled');
+    for(const url of urls.slice(0,3))await inspect(db,null,job,url,null,null,fetcher);
+    return {partial:false};
+  }
   const settings=await gate(db,job,'discovery');const [cell]=await db.select('source_coverage',{id:'eq.'+job.payload.coverage_id,select:'*,source_geographies(name,kind)'});
   if(!cell||cell.state_code!==job.state_code||!settings.categories.includes(cell.category))throw new Paused('Coverage category is disabled');
   const queries=queriesFor({...cell,geography_name:cell.source_geographies.name,geography_kind:cell.source_geographies.kind});
@@ -109,20 +126,21 @@ async function discover(db,provider,job,fetcher) {
   if(errors)await db.patch('source_discovery_runs',{id:'eq.'+job.run_id},{errors:[errors+' search/fetch/extraction errors; inspect run history']});
   return {partial:errors>0};
 }
-async function scheduleDue(db) {
+async function scheduleDue(db,{dueLimit=2}={}) {
   const [engine]=await db.select('source_engine_settings',{id:'eq.true'});if(!engine?.engine_enabled||!engine.seed_completed_at)return;
   const states=await db.select('source_state_settings',{or:'(discovery_enabled.eq.true,monitoring_enabled.eq.true)',order:'state_code'});
   for(const s of states){if(s.state_code!=='FL'&&!engine.florida_validated_at)continue;
     if(engine.automatic_approval_enabled){
-      const candidates=await db.rpc('source_due_verifications',{p_state:s.state_code,p_limit:2});
+      const candidates=await db.rpc('source_due_verifications',{p_state:s.state_code,p_limit:dueLimit});
       for(const c of candidates){await enqueue(db,{kind:'VALIDATE',state:s.state_code,key:'validate:'+c.id,payload:{candidate_id:c.id,url:c.source_url,name:c.source_name}});await db.patch('source_candidates',{id:'eq.'+c.id},{next_verification_at:new Date(Date.now()+7*864e5).toISOString()});}
     }
     if(s.discovery_enabled&&s.categories.length){const cells=await db.select('source_coverage',{state_code:'eq.'+s.state_code,next_search_at:'lte.'+new Date().toISOString(),category:'in.('+s.categories.join(',')+')',order:'next_search_at.asc,id.asc',limit:1});for(const cell of cells)await enqueue(db,{kind:'DISCOVER',state:s.state_code,category:cell.category,geographyId:cell.geography_id,key:'coverage:'+cell.id,payload:{coverage_id:cell.id}});}
-    if(s.monitoring_enabled){const programs=await db.select('funding_programs',{search_state:'eq.'+s.state_code,superseded_by:'is.null',next_scan_at:'lte.'+new Date().toISOString(),order:'review_status.asc,next_scan_at.asc,id.asc',limit:2});for(const p of programs)await enqueue(db,{kind:'MONITOR',state:s.state_code,key:'monitor:'+p.id,payload:{program_id:p.id}});}
+    if(s.monitoring_enabled){const programs=await db.select('funding_programs',{search_state:'eq.'+s.state_code,active:'eq.true',superseded_by:'is.null',next_scan_at:'lte.'+new Date().toISOString(),order:'review_status.asc,next_scan_at.asc,id.asc',limit:dueLimit});for(const p of programs)await enqueue(db,{kind:'MONITOR',state:s.state_code,key:'monitor:'+p.id,payload:{program_id:p.id}});}
   }
 }
-async function runWorker({db=createDb(),provider=createProvider(),fetcher=fetchPage,maxJobs=8,maxMs=11*60000}={}) {
-  const start=Date.now();const automaticDecisions=await approveBacklog(db);await db.rpc('source_requeue_budget_jobs');await scheduleDue(db);let processed=0;
+async function runWorker({db=createDb(),provider=null,fetcher=fetchPage,maxJobs=provider?8:20,maxMs=11*60000}={}) {
+  if(!provider&&process.env.NETLIFY==='true'&&process.env.HARVESTER_PRODUCTION_ENABLED!=='true')return {processed:0,paused:true,reason:'Validate a production DRY_RUN before enabling HARVESTER_PRODUCTION_ENABLED',paid_llm_calls:0,paid_llm_tokens:0,estimated_ai_cost:0};
+  const start=Date.now();const automaticDecisions=provider?await approveBacklog(db):[];await db.rpc('source_requeue_budget_jobs');await scheduleDue(db,{dueLimit:provider?2:10});let processed=0;
   while(processed<maxJobs&&Date.now()-start<Math.max(1000,maxMs-600000)){const [job]=await db.rpc('source_claim_job');if(!job)break;processed++;
     try{
       let result;
@@ -135,7 +153,9 @@ async function runWorker({db=createDb(),provider=createProvider(),fetcher=fetchP
       await db.rpc('source_finish_job',{p_job:job.id,p_token:job.lease_token,p_status:'COMPLETED'});
       if(result?.partial)await db.patch('source_discovery_runs',{id:'eq.'+job.run_id},{status:'PARTIAL'});
     }catch(e){if(e.usage&&!e.usageRecorded)await usage(db,job,e);await db.rpc('source_finish_job',{p_job:job.id,p_token:job.lease_token,p_status:e instanceof Paused?'PAUSED':e.retryable&&job.attempts<3?'QUEUED':'FAILED',p_error:e.message.slice(0,500)});}
-    if(['DISCOVER','VALIDATE','MONITOR'].includes(job.kind))break;
+    // The old one-page stop protected paid model jobs. Deterministic jobs can
+    // drain the existing leased queue within the same time and page budgets.
+    if(provider&&['DISCOVER','VALIDATE','MONITOR'].includes(job.kind))break;
   }
   return {processed,automatic_decisions:automaticDecisions,duration_ms:Date.now()-start};
 }

@@ -6,6 +6,12 @@ const net=require('node:net');
 const {contentHash}=require('./quality');
 const {normalizeUrl}=require('./identity');
 const UA='OpportunityAssistSourceBot/1.0 (+https://opportunityassist.com; funding source monitoring)';
+const hostRequests=new Map();
+async function paceHost(host,now=Date.now,sleep=ms=>new Promise(r=>setTimeout(r,ms))){
+  const previous=hostRequests.get(host)||Promise.resolve();
+  const next=previous.catch(()=>{}).then(async()=>{const due=hostRequests.get(host+':time')||0;if(due>now())await sleep(due-now());hostRequests.set(host+':time',now()+1500);});
+  hostRequests.set(host,next);await next;
+}
 function publicIp(ip) {
   if(net.isIP(ip)===4){const p=ip.split('.').map(Number);return !(p[0]===0||p[0]===10||p[0]===127||p[0]>=224||(p[0]===169&&p[1]===254)||(p[0]===172&&p[1]>=16&&p[1]<=31)||(p[0]===192&&(p[1]===168||p[1]===0))||(p[0]===100&&p[1]>=64&&p[1]<=127)||(p[0]===198&&(p[1]===18||p[1]===19||p[1]===51))||(p[0]===203&&p[1]===0&&p[2]===113));}
   if(net.isIP(ip)===6){const s=ip.toLowerCase();return /^[23][0-9a-f]{3}:/.test(s)&&!s.startsWith('2001:db8:')&&!s.startsWith('2001:0:')&&!s.startsWith('2002:');}
@@ -24,6 +30,7 @@ async function validateTarget(value,resolve=dns.lookup) {
 async function requestPublic(url,{maxBytes=2*1024*1024,timeoutMs=12000,headers={},redirects=0,resolve}={}) {
   if(redirects>5)throw new Error('Too many redirects');
   const {u,address}=await validateTarget(url,resolve);
+  await paceHost(u.hostname);
   const response=await new Promise((ok,no)=>{
     // Pin the validated DNS answer to this connection (including every redirect).
     const req=(u.protocol==='https:'?https:http).request(u,{method:'GET',headers:{'User-Agent':UA,'Accept':'text/html,application/pdf,text/plain;q=0.9','Accept-Encoding':'identity',...headers},lookup:(_h,opts,cb)=>opts.all?cb(null,[address]):cb(null,address.address,address.family)},res=>{
@@ -60,7 +67,7 @@ async function fetchPage(url,cache=null,request=requestPublic) {
   // Redirected destinations must permit crawling too.
   if(new URL(r.url).origin!==origin){const rr=await request(new URL(r.url).origin+'/robots.txt',{maxBytes:256000});if(rr.status!==404 && (rr.status!==200 || !robotsAllowed(rr.bytes.toString('utf8'),r.url)))throw new Error('Redirect target robots disallows or cannot be verified');}
   else if(!robotsAllowed(robots,r.url))throw new Error('Redirect target robots disallows this path');
-  const mime=String(r.headers['content-type']||'').toLowerCase();let text,links=[];
+  const mime=String(r.headers['content-type']||'').toLowerCase();let text,links=[],raw=null;
   if(mime.includes('application/pdf')||r.bytes.subarray(0,5).toString()==='%PDF-'){
     // PDF.js requires these APIs even for text-only extraction. Explicit imports
     // let the server packager include its otherwise optional native dependency.
@@ -70,8 +77,8 @@ async function fetchPage(url,cache=null,request=requestPublic) {
     const standardFontDataUrl=require.resolve('pdfjs-dist/package.json').replace(/package\.json$/,'standard_fonts/');
     const doc=await getDocument({data:new Uint8Array(r.bytes),isEvalSupported:false,useSystemFonts:false,disableFontFace:true,standardFontDataUrl}).promise;
     try {if(doc.numPages>40)throw new Error('PDF exceeds 40-page extraction limit');const parts=[];for(let p=1;p<=doc.numPages;p++){const page=await doc.getPage(p);parts.push((await page.getTextContent()).items.map(i=>i.str||'').join(' '));}text=parts.join('\n');}finally{await doc.destroy();}
-  }else if(mime.includes('html')||mime.includes('text/plain')||!mime){const html=r.bytes.toString('utf8');text=htmlToText(html);links=extractLinks(html,r.url);}else throw new Error('Unsupported document type: '+mime.split(';')[0]);
-  if(text.length<80||/just a moment|verify you are human|enable javascript and cookies|checking your browser/i.test(text.slice(0,900)))throw new Error('Unreadable or bot-protected page; investigation required');
-  return {url:r.url,status:r.status,text:text.slice(0,40000),hash:contentHash(text),links,etag:r.headers.etag||null,last_modified:r.headers['last-modified']||null,redirected:normalizeUrl(r.url)!==normalizeUrl(url)};
+  }else if(mime.includes('html')||mime.includes('text/plain')||mime.includes('json')||mime.includes('xml')||!mime){raw=r.bytes.toString('utf8');text=mime.includes('json')||mime.includes('xml')?raw:htmlToText(raw);links=extractLinks(raw,r.url);}else throw new Error('Unsupported document type: '+mime.split(';')[0]);
+  if(!text.trim()||/just a moment|verify you are human|enable javascript and cookies|checking your browser/i.test(text.slice(0,900)))throw new Error('Unreadable or bot-protected page; investigation required');
+  return {url:r.url,status:r.status,text:text.slice(0,40000),raw,hash:contentHash(raw||text),links,etag:r.headers.etag||null,last_modified:r.headers['last-modified']||null,redirected:normalizeUrl(r.url)!==normalizeUrl(url)};
 }
-module.exports={publicIp,validateTarget,requestPublic,htmlToText,extractLinks,robotsAllowed,fetchPage,decodeHtmlEntities:decode};
+module.exports={publicIp,validateTarget,requestPublic,htmlToText,extractLinks,robotsAllowed,fetchPage,paceHost,decodeHtmlEntities:decode};

@@ -5,14 +5,13 @@
 // Page reading, quoted evidence, program tracking, state controls and conservative publication
 // now share reusable modules. No scanner path deletes historical opportunities.
 const {createDb}=require('../lib/source-intelligence/db');
-const {enqueue}=require('../lib/source-intelligence/service');
 const {runWorker}=require('../lib/source-intelligence/worker');
 exports.handler=async()=>{
   if(process.env.NETLIFY==='true'&&process.env.CONTEXT!=='production')return;
   const db=createDb();
   const [settings]=await db.select('source_engine_settings',{id:'eq.true'});
   if(!settings?.engine_enabled)return;
-  const day=new Date().toISOString().slice(0,10);
-  await enqueue(db,{kind:'SEED',key:'daily-corpus:'+day,payload:{offset:0}});
+  // Corpus reconciliation remains an explicit admin operation; daily full-table
+  // reconciliation is unnecessary for source monitoring.
   console.log(JSON.stringify({event:'foundation-source-intelligence',...await runWorker({db})}));
 };
