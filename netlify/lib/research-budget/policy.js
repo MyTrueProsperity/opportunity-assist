@@ -27,7 +27,7 @@ function prepareResearch(items){
     let url;try{url=new URL(item.sourceUrl);}catch{fail('INVALID_SOURCE_URL');}
     if(url.protocol!=='https:'||url.username||url.password||url.href.length>2000)fail('INVALID_SOURCE_URL');
     // No live URL fetching occurs here. Extract difficult documents locally first.
-    const request={model:MODEL,max_tokens:OUTPUT_BOUND,system:SYSTEM,messages:[{role:'user',content:JSON.stringify({purpose:item.purpose,question:item.question,sourceUrl:url.href,sourceText:item.sourceText})}]};
+    const request={model:MODEL,max_tokens:OUTPUT_BOUND,service_tier:'standard_only',system:SYSTEM,messages:[{role:'user',content:JSON.stringify({purpose:item.purpose,question:item.question,sourceUrl:url.href,sourceText:item.sourceText})}]};
     return {targetId:item.id,request,requestHash:digest(request),reserveMicros:RESERVATION_MICROS};
   });
   if(new Set(requests.map(r=>r.requestHash)).size!==requests.length)fail('DUPLICATE_RESEARCH_REQUEST');
@@ -37,8 +37,12 @@ function actualMicros(result){
   const u=result?.usage;
   if(result?.model!==MODEL||!u||!Number.isSafeInteger(u.input_tokens)||!Number.isSafeInteger(u.output_tokens)||u.input_tokens<0||u.input_tokens>INPUT_BOUND||u.output_tokens<0||u.output_tokens>OUTPUT_BOUND)fail('UNTRUSTED_FINAL_USAGE');
   // Unknown billing fields require review instead of silently undercounting.
-  const allowed=new Set(['input_tokens','output_tokens','cache_creation_input_tokens','cache_read_input_tokens','server_tool_use','service_tier']);
+  const allowed=new Set(['input_tokens','output_tokens','cache_creation_input_tokens','cache_read_input_tokens','server_tool_use','service_tier','cache_creation','inference_geo','output_tokens_details']);
   if(Object.keys(u).some(k=>!allowed.has(k))||u.cache_creation_input_tokens||u.cache_read_input_tokens||u.server_tool_use&&Object.values(u.server_tool_use).some(v=>v!==0)||u.service_tier&&u.service_tier!=='standard')fail('UNSUPPORTED_BILLABLE_USAGE');
+  for(const field of ['cache_creation','output_tokens_details']){
+    if(u[field]!=null&&(typeof u[field]!=='object'||Array.isArray(u[field])||Object.values(u[field]).some(v=>v!==0)))fail('UNSUPPORTED_BILLABLE_USAGE');
+  }
+  if(u.inference_geo!=null&&!['global','not_available'].includes(u.inference_geo))fail('UNSUPPORTED_BILLABLE_USAGE');
   return u.input_tokens+u.output_tokens*5;
 }
 module.exports={TRIAL_MICROS,CYCLE_MICROS,OTHER_APPS_MICROS,MODEL,INPUT_BOUND,OUTPUT_BOUND,RESERVATION_MICROS,prepareResearch,actualMicros,digest,fail};

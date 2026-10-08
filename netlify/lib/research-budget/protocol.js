@@ -1,48 +1,37 @@
 'use strict';
-// Dependency-injected protocol for offline contract tests. No live funding or
-// transport adapter ships. Production callers use index.js, which always denies.
-const {prepareResearch,actualMicros,OTHER_APPS_MICROS,fail}=require('./policy');
+const {prepareResearch,actualMicros,fail}=require('./policy');
 const MAX_REQUEST_MS=90_000;
 const EXPIRY_MARGIN_MS=300_000;
-function createResearchProtocol({ledger,authority,clock=Date.now}){
+function createResearchProtocol({ledger,provider,clock=Date.now,monotonic=()=>performance.now()}){
   let halted=false;
   return async function research({items,targetId,review,attemptId}){
     if(halted)fail('RECONCILIATION_REQUIRED');
     const plan=prepareResearch(items),item=plan.requests.find(r=>r.targetId===targetId);
-    if(!item||!review||review.planHash!==plan.planHash||typeof review.cycleId!=='string'||!review.cycleId||typeof review.reference!=='string'||!review.reference.trim())fail('REVIEWED_DRY_RUN_REQUIRED');
+    const approval=review&&{...review};
+    if(!item||!approval||approval.planHash!==plan.planHash||typeof approval.cycleId!=='string'||!approval.cycleId||
+      typeof approval.reference!=='string'||!approval.reference.trim())fail('REVIEWED_DRY_RUN_REQUIRED');
     if(typeof attemptId!=='string'||!/^[-a-zA-Z0-9_]{1,100}$/.test(attemptId))fail('INVALID_ATTEMPT');
-    const now=clock(),expires=Date.parse(review.expiresAt),pricesExpire=Date.parse(review.pricesValidUntil);
-    if(!Number.isFinite(now)||!Number.isFinite(expires)||!Number.isFinite(pricesExpire)||Math.min(expires,pricesExpire)<=now+MAX_REQUEST_MS+EXPIRY_MARGIN_MS)fail('CREDIT_OR_PRICE_EXPIRED');
-    if(!authority||typeof authority.reservePromotionOnly!=='function')fail('PROMOTIONAL_CREDIT_ISOLATION_UNAVAILABLE');
-    // A durable, atomic reservation must commit before anything billable.
-    // Lost acknowledgements stay pending; duplicates may never send again.
-    await ledger.reserve({cycleId:review.cycleId,planHash:plan.planHash,attemptId,requestHash:item.requestHash,reserveMicros:item.reserveMicros});
+    if(!provider||typeof provider.message!=='function')fail('PROVIDER_UNAVAILABLE');
+    // The DB, not caller-supplied timestamps/balances, authorizes dispatch.
+    // Commit durable maximum exposure first; lost acknowledgements stay pending.
+    const reservationStarted=monotonic();
+    const admission=await ledger.reserve({cycleId:approval.cycleId,planHash:plan.planHash,reviewReference:approval.reference,
+      attemptId,requestHash:item.requestHash,reserveMicros:item.reserveMicros});
     try{
-      // This contract requires a provider-enforced earmark that all organization
-      // usage honors through final billing, even if it finishes after expiry.
-      // A freshly polled balance or an in-process mutex does NOT implement it.
-      const hold=await authority.reservePromotionOnly({cycleId:review.cycleId,attemptId,requestHash:item.requestHash,
-        maxMicros:item.reserveMicros,minRemainingMicros:OTHER_APPS_MICROS,
-        expiresAt:review.expiresAt,deadline:now+MAX_REQUEST_MS});
-      const sendAt=clock();
-      if(!hold||hold.attemptId!==attemptId||hold.requestHash!==item.requestHash||hold.cycleId!==review.cycleId||
-        hold.maxMicros!==item.reserveMicros||hold.promotionOnly!==true||
-        !Number.isFinite(hold.validUntil)||hold.validUntil<sendAt+MAX_REQUEST_MS||
-        Math.min(expires,pricesExpire)<=sendAt+MAX_REQUEST_MS+EXPIRY_MARGIN_MS||
-        typeof hold.executeOnce!=='function'||typeof hold.reconcile!=='function')fail('INVALID_PROMOTIONAL_HOLD');
-      // Exactly one attempt. The authority owns its binding to the earmarked
-      // funds and must disable all transport/SDK retries. Timeout is not refund.
-      const result=await hold.executeOnce(item.request,{timeoutMs:MAX_REQUEST_MS,maxRetries:0});
+      const dispatchBefore=Date.parse(admission?.dispatchBefore),now=clock(),elapsed=monotonic()-reservationStarted;
+      if(admission?.allowed!==true||admission.attemptId!==attemptId||admission.requestHash!==item.requestHash||
+        admission.cycleId!==approval.cycleId||admission.reserveMicros!==item.reserveMicros||
+        admission.fallbackRiskAccepted!==true||!Number.isFinite(now)||!Number.isFinite(dispatchBefore)||now>=dispatchBefore||!Number.isFinite(elapsed)||elapsed<0||!Number.isFinite(admission.dispatchWindowMs)||elapsed>=admission.dispatchWindowMs)fail('INVALID_OR_EXPIRED_ADMISSION');
+      const result=await provider.message(item.request);
       const actual=actualMicros(result);
-      const receipt=await hold.reconcile({actualMicros:actual});
-      if(!receipt||receipt.attemptId!==attemptId||receipt.purchasedMicros!==0||receipt.actualMicros!==actual||receipt.final!==true)fail('PROMOTIONAL_RECONCILIATION_FAILED');
-      await ledger.settle({cycleId:review.cycleId,attemptId,actualMicros:actual});
-      return {proposal:result.content,requiresHumanReview:true,actualMicros:actual,reservedMicros:item.reserveMicros};
+      if(!Array.isArray(result.content)||result.content.some(b=>b.type!=='text'||typeof b.text!=='string'))fail('INVALID_RESEARCH_PROPOSAL');
+      await ledger.settle({cycleId:approval.cycleId,attemptId,actualMicros:actual,
+        proposal:result.content,usage:result.usage,requestId:result.requestId||null});
+      return {proposal:result.content,requiresHumanReview:true,actualMicros:actual,reservedMicros:item.reserveMicros,
+        fundingGuarantee:'none: promotional or purchased credit may be used'};
     }catch(error){
       halted=true;
-      // Failure to persist the fault leaves the original pending reservation,
-      // which blocks the next process too. Never release on error or timeout.
-      try{await ledger.fail({cycleId:review.cycleId,attemptId});}catch{}
+      try{await ledger.fail({cycleId:approval.cycleId,attemptId});}catch{}
       throw error;
     }
   };

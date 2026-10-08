@@ -1,161 +1,178 @@
-# Bounded research: disabled pending promotional-credit isolation
+# Bounded operator-invoked research
 
-## Release state
+## State and scope
 
-This proposal adds a dry-run planner, a fail-closed production entry point, an
-offline funding protocol, and a PostgreSQL ledger proposal with automated tests.
-It does **not** add a live provider adapter, HTTP endpoint, recurring job, migration,
-credit-cycle record, API key, environment flag, or worker integration.
-The production entry point always returns
-`PROMOTIONAL_CREDIT_ISOLATION_UNAVAILABLE`. Setting an environment variable cannot
-enable it. Routine deterministic collection and existing FinCap/product AI
-features are independent and unchanged.
+This draft implements a usable but **disabled-by-default** targeted research path.
+It caps OA research API usage at a $10 initial stage and an absolute $85 per
+explicitly verified credit cycle. It aims for near-zero out-of-pocket cost;
+it does **not** guarantee promotional-only funding.
 
-The code must remain disabled until a reviewed integration can actually prevent
-purchased-credit use. A balance screenshot, recent usage report, reserved research
-budget, or separate workspace with a spend limit is insufficient: other API keys
-and workspaces draw from the same promotional pool. The provider would need to
-atomically earmark promotion-only funds for the exact request and honor them
-through final billing, including an in-flight request at credit expiry. No such
-verified adapter is currently available to this implementation.
+Routine token-free discovery, FinCap, other product AI features and existing
+schedules are unchanged. No new HTTP endpoint, recurring job, credential, billing
+change or account linkage is added. The operator CLI uses existing server
+configuration only after the deployment and database gates below pass.
+No live paid call, production migration, enablement or production deploy has
+been performed by this work. The SQL remains a review proposal outside migrations.
 
-Official references checked during preparation:
-- [Credit application, sharing, expiry and fallback](https://platform.claude.com/docs/en/about-claude/api-credits-for-subscribers):
-  credits refresh on the billing cycle, while ordinary spend caps reset on the
-  calendar month; purchased credit can be used after promotional credit runs out.
-- [Usage and Cost API](https://platform.claude.com/docs/en/manage-claude/usage-cost-api):
-  historical reporting and reconciliation, not an atomic funding reservation.
-- [Pricing](https://platform.claude.com/docs/en/about-claude/pricing):
-  the pinned Haiku 4.5 standard rate is $1 input / $5 output per million tokens.
-  Prices and model availability must be reviewed again before a live integration.
+## Gates and accounting
 
-Do not create credentials, broaden access, change billing/auto-reload, or disable
-other applications to work around this blocker without separate authorization.
+- `OA_RESEARCH_ENABLED=true` and
+  `OA_RESEARCH_FALLBACK_RISK_ACCEPTED=true` are both required in the approved
+  execution environment. Neither flag alone enables work.
+- The DB cycle must independently be enabled, acknowledge fallback risk, have
+  verified start/expiry and price validity, and contain a matching reviewed
+  plan hash **and** review reference. No cycle or approval is seeded by the SQL.
+- A recent operator-verified promotional balance must be recorded. It is accepted
+  for at most one hour, less the dispatch safety margin. Future timestamps and
+  stale/missing snapshots fail closed. This is a risk-reduction check, not an
+  atomic guarantee against other applications spending after the observation.
+- The DB subtracts at least $15 for other apps and **all** this cycle's research
+  reservations from the balance snapshot before admitting another request.
+  If the snapshot already reflects earlier research, this double-counts those
+  reservations conservatively. Refreshing a balance never resets the dollar caps.
+- Integer microdollars are used. Default trial/stage limit $10; absolute ceiling
+  $85. A nonempty expansion review is required to raise the stage above $10.
+  All recorded cycles, even disabled ones, prevent overlapping cycle IDs from
+  manufacturing fresh headroom. No calendar-month or automatic balance reset.
+- Reserve maximum exposure durably before the provider request. A short
+  PostgreSQL mutex-row transaction allows only one pending research request
+  across workers. The provider call is outside the transaction.
+- Retain the entire reservation permanently, even when actual usage is lower.
+  Store final token usage, calculated actual cost, proposal and provider request
+  ID separately. This intentionally underuses the allowance rather than refunding
+  uncertain headroom.
+- Duplicate attempts and duplicate request hashes cannot send again. There are
+  no automatic retries or fallbacks. Timeout, HTTP error, unsupported usage,
+  crash or reconciliation failure keeps the reservation and blocks later work.
+  A lost reserve acknowledgement leaves a pending attempt; do not blindly retry.
+- DB expiry and price checks allow 90 seconds plus a five-minute margin. Dispatch
+  rechecks the returned deadline and a server-derived window against monotonic
+  elapsed time, so a slow application clock cannot extend admission.
+- The provider uses one raw `fetch`, fixed first-party endpoint, redirects
+  disabled, a 90-second timeout, standard-only tier and a 256 KiB response cap.
+  A timeout does not prove the provider stopped billing.
 
-## Budget and request protocol
+These controls govern this research entry point. They do not cap existing
+Grant Factory drafting, scoring, assistants, FinCap or direct use of the API key.
 
-- Integer microdollars avoid floating-point cap comparisons. Initial stage:
-  **$10**. Absolute ceiling: **$85 per verified promotional credit cycle**.
-  Advancing beyond the trial requires another explicit review reference.
-- The provider authority contract additionally reserves **$15 for other apps**
-  against the shared promotional pool. The local ledger cannot guarantee that
-  other apps will themselves stay within $15.
-- The planner accepts 1–10 explicit targets, each with one question and supplied
-  source text. Purposes: promising grant, eligibility, difficult document.
-  Broad discovery, caller-supplied tools/options, images and remote document
-  fetching are excluded. Difficult documents require locally extracted text.
-- Model is pinned to `claude-haiku-4-5-20251001`; output is at most 2,000 tokens.
-  At most 32,000 UTF-8 source bytes, plus bounded question/URL and fixed system
-  prompt. Reserve the full 200,000-input-token allowance at twice the reviewed
-  standard input/output rates: **$0.42 per attempt**; ten targets reserve $4.20.
-  This intentionally overstates likely cost. No cache, tool, thinking, batch,
-  priority-tier, model fallback or SDK retry charges are allowed.
-- Review binds the complete dry-run plan hash. Any target/prompt change changes
-  that hash. The database requires the exact cycle/plan to be approved.
-- Reserve durably before contacting any billable service. The PostgreSQL ledger
-  serializes admissions under a short mutex-row transaction. One outstanding
-  request is allowed across cycles/processes. No network call holds a DB lock.
-- Both caps count **all reservations permanently**, even when final measured
-  usage is lower. Actual usage is also recorded. This deliberately spends less
-  than the maximum and avoids unsafe refunds or stale reconciliation races.
-- Duplicate attempt IDs and repeat request hashes cannot send again. No automatic
-  retries. Timeout, crash, missing usage, unknown billable counters, over-limit
-  usage, bad funding receipt or failed DB reconciliation retain the reservation.
-  Pending/failed attempts block later workers. There is no expiry-based refund.
-- Credit and price expiry are checked before admission and again immediately
-  before dispatch, allowing 90 seconds plus a five-minute safety margin.
-  This margin is additional defense; only the required provider authority could
-  guarantee funding for requests completing after expiry.
-- No automatic cycle reset, monthly cron, or inferred replenishment. Exact credit
-  identity, start/end, deposited balance, prices and approvals must be verified.
-  Overlapping enabled cycle IDs are denied rather than creating fresh headroom.
+## Target and request bounds
 
-`protocol.js` is dependency-injected scaffolding exercised only with mocks.
-`reservePromotionOnly`/`executeOnce`/`reconcile` describe a required future
-provider guarantee; they are **not Anthropic API methods**. A boolean
-`promotionOnly` supplied by a caller is not independent evidence. Do not expose
-the protocol as an endpoint or wire a normal Anthropic key into this interface.
-Production consumers must use `index.js`, which denies execution.
+The planner accepts 1–10 explicit targets, each with an ID, one question, HTTPS
+source URL and supplied source text. Allowed purposes are `promising_grant`,
+`eligibility`, and `difficult_document`. Difficult documents must first be
+extracted locally. The URL is evidence metadata; the planner does not fetch it.
+Broad paid discovery is not restored.
 
-## Local dry run
+Model: `claude-haiku-4-5-20251001`; at most 2,000 output tokens and 32,000 UTF-8
+source bytes per target. Questions/URLs are bounded. Tools, cache directives,
+images, thinking, batch calls, model switching and caller-supplied API options
+are excluded. The standard-only request fixes the pricing tier.
+
+Reserve a full 200,000 input tokens and 2,000 output tokens at twice the reviewed
+$1/$5 per million standard prices: **$0.42 per attempt**, $4.20 for ten targets.
+Actual standard usage is calculated at the reviewed prices; unsupported billing
+dimensions fail closed. Pricing/model availability must be reconfirmed in rollout.
+The result is a proposal requiring human review, never automatic publication.
+
+## Commands and reviewed input
 
 ```sh
 pnpm research:dry-run tests/fixtures/research-budget-targets.json
 pnpm test:research-budget
 pnpm test
+pnpm test:research-postgres
 pnpm build
 pnpm check:functions
 ```
 
-The fixture is synthetic and yields no real grant finding. Dry-run output includes
-target identifiers, prompt hashes, per-attempt/total reservation and the current
-blocker; it excludes source text and performs zero DB/API calls. Store real target
-files privately, outside tracked fixtures. Review source excerpts and questions
-alongside the hashes, since hashes alone do not convey research quality.
+The synthetic dry run performs zero DB/API operations and includes hashes,
+identifiers and reservation amounts, excluding source text. Keep real targets
+private. Review the actual source excerpts/questions alongside the hashes.
 
-This repository currently defines no lint or TypeScript-check scripts.
-The Node test loader parses the new CommonJS modules, and the existing aggregate
-suite/build/function-packaging workflow remains the required validation.
-Test the final commit, not an earlier draft.
+After rollout approval, the operator can use:
 
-The SQL is intentionally `docs/research-budget-ledger.sql`, outside migrations.
-Tests run it in local PGlite with test-only roles. It uses a private schema, RLS,
-invoker functions, parameterized queries and service-role-only privileges.
-PGlite's concurrent admission test exercises queued concurrent calls; it is not
-a multi-connection production PostgreSQL load test. Real multi-session transaction
-and deployment verification are required before any future live adapter rollout.
+```sh
+pnpm research:execute --execute private-reviewed-job.json
+```
 
-## Production evidence and limitations
+The private job has this shape:
 
-Read-only inspection on 2026-10-08 found Netlify's current production deployment
+```json
+{
+  "items": [{"id":"selected-grant","purpose":"eligibility","question":"The reviewed question","sourceUrl":"https://example.org/grant","sourceText":"Reviewed source excerpt"}],
+  "targetId":"selected-grant",
+  "review":{"cycleId":"verified-credit-cycle-id","planHash":"hash from dry run","reference":"approved review reference"},
+  "attemptId":"unique-review-attempt"
+}
+```
+
+It executes **one** selected target. The full items list must match the approved
+dry-run hash. The CLI does not configure flags, create a cycle, approve a plan,
+read billing, generate a key, release reservations or schedule work.
+Do not run it against production before the reviewed activation.
+
+## Database and isolated validation
+
+`docs/research-budget-ledger.sql` is not a deployed migration. It defines a private
+schema with RLS and service-role-only invoker functions. Thin public invoker RPC
+wrappers use the existing Supabase REST/server configuration; the private schema
+is not exposed. No new DB credential or direct production PostgreSQL access is
+required. Final proposals remain private.
+
+The normal Node suite uses PGlite. The additional CI command creates its own
+PostgreSQL 17 container using the local Docker socket, with network=none, no
+published ports, no host volumes, and a temporary in-memory data directory.
+Independent `psql` processes verify distinct backend PIDs and observable lock
+waits. Cases cover pending-request exclusion, $10/$85 races, backend termination
+before commit, expiry after waiting, an eight-client burst, retries/stale balance/
+failed reconciliation, and public RPC privileges/evidence persistence.
+The container is removed after the test. It never accepts a database URL or
+production configuration and makes no provider calls.
+
+The command is intentionally limited to Linux GitHub Actions. The selected local
+executor still fails during setup. Local checkout guidance/memories/uncommitted
+work remain uninspected; changes are isolated on this draft's remote branch.
+Remote main has no tracked AGENTS.md/.agents instructions.
+
+There are no configured lint or TypeScript-check scripts. Node tests parse the
+CommonJS files; aggregate tests, build and all 18 function bundles remain required.
+
+## Production evidence from the initial inspection
+
+On October 8, Netlify reported production deployment
 `6ac3bbc01d650e0007c6cbf4` ready at PR46 merge commit
-`af6986f824042d9838adfa6a90847047b38c354a` (published October 5).
-That commit defaults routine Source Intelligence to deterministic collection,
-removes daily corpus reconciliation, and caps the usual invocation at 20 jobs.
-Twenty jobs is a throughput bound, not a dollar cap.
+`af6986f824042d9838adfa6a90847047b38c354a`, published October 5.
+The code defaults routine discovery to deterministic harvesting, removes daily
+whole-corpus reconciliation and caps normal invocations at 20 jobs.
+Twenty jobs is not a dollar cap.
 
-One consolidated successful database read found the engine and Florida discovery/
-monitoring enabled; today's usage was 200 pages, zero queries and $0 reserved AI
-spend. The five latest scan samples were deterministic with zero input/output
-tokens and zero estimated AI cost. This is evidence of the free finder operating,
-not proof that every API feature is free or a full audit of today's calls.
-The Functions-scoped harvester flag was not read directly, to avoid retrieving
-secrets through the broad environment-variable interface. No worker was invoked.
-An initial read had a column-name error and performed no writes; the corrected
-read used the actual schema. No corpus/table data was exported.
+One successful scoped DB query found the engine/Florida discovery and monitoring
+enabled; daily counters were 200 pages, zero queries, $0 reserved AI spend.
+Five latest scan samples were deterministic with zero input/output tokens and
+zero estimated AI cost. These are samples, not proof that every feature is free.
+The Functions environment flag was not retrieved directly. An initial read used
+the wrong timestamp column and failed without writes; the corrected query used
+the actual schema. No additional production DB reads are needed for these tests.
 
-The selected command environment failed setup and file writing. Local checkout,
-local AGENTS/skills/memory and uncommitted work could not be inspected. Remote
-main's tree contains no tracked AGENTS.md or .agents instructions. Preparation
-therefore uses a fresh isolated GitHub branch from the verified commit and never
-writes to the active local coding checkout. Existing open PR15 and the active
-local coding task were inspected as concurrency context.
+## Remaining review and activation
 
-## Review before any production rollout
+1. Review this final code and CI evidence. Resolve local guidance/concurrent
+   checkout checks when the local executor is available.
+2. Review a private set of real targets and its dry run. Confirm the existing
+   provider key is bound to the intended organization **without revealing it**.
+   Verify current promotional balance, the exact credit-cycle boundaries and
+   expiry, and pinned-model prices. Record the balance verification time.
+3. Approve the additive budget schema/RPC rollout and disabled code deployment.
+   Generate the migration through the normal Supabase workflow; do not directly
+   apply this document without review. Use the existing service configuration.
+4. Approve the exact initial trial and acknowledge that some/all of its capped
+   usage may draw purchased credit. Auto-reload cash purchases are separately
+   controlled by billing and may exceed the amount of this API usage.
+5. Record the reviewed cycle/plan, retain the $10 stage, and deliberately set both
+   deployment flags. Invoke one target, inspect its proposal and persisted usage,
+   then consider the remaining approved targets. Stop on any uncertainty.
+6. Evaluate useful verified findings per dollar before expanding. A separate
+   expansion review can raise the stage toward $85 within the same verified cycle.
+   A new cycle requires new verified evidence; no automatic recurring activation.
 
-1. Review this dormant code, tests and synthetic dry run. Confirm local project
-   guidance and any uncommitted work once the command environment is repaired.
-2. Resolve promotional-only funding through a supported, reviewed mechanism
-   without changing access or billing implicitly. Reliable balance visibility
-   alone cannot eliminate the shared-account race. If this remains unavailable,
-   stop: production paid execution remains disabled.
-3. Verify the actual promotional credit cycle and expiry, available shared
-   balance, provider account binding and current pinned-model pricing. Do not
-   assume calendar months or automatically replenish from an old screenshot.
-4. Select a private, small set of promising grants, eligibility questions and
-   difficult-document excerpts. Run the offline dry run and review its exact
-   sources, questions, hashes and conservative reservation.
-5. With separate deployment approval, generate/review a migration using the
-   repository/Supabase workflow; verify privileges and multi-session lock behavior
-   in an isolated database. Implement/test the real funding adapter, no hidden
-   retries, authorization, approved-plan persistence and proposal-only result
-   handling. No automatic publication or recurring schedule.
-6. Only after the above evidence and deployment approval: manually run one
-   reviewed target, reconcile its final usage and funding receipt, then consider
-   the remaining reviewed batch within the cumulative $10 trial. Stop on any
-   uncertain outcome. Report usefulness, unknowns and cost per useful finding.
-7. Review trial value before considering expansion; retain the $85 verified-cycle
-   ceiling and shared $15 reserve. A new credit cycle needs fresh verification
-   and approval data, never a calendar reset.
-
-No paid trial or production deployment is authorized by a passing unit test.
+See [practical controls and risk choices](research-budget-options.md).
