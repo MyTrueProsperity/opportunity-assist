@@ -56,13 +56,13 @@ async function check(name,run){await run();passed++;console.log('ok '+passed+' -
   try{
     container=docker(['run','--detach','--rm','--network','none','--memory','512m','--cpus','2',
       '--tmpfs','/var/lib/postgresql/data:rw,size=256m','--label',label+'='+nonce,
-      '--env','POSTGRES_HOST_AUTH_METHOD=trust','--env','POSTGRES_DB='+dbName,'postgres:17'],{timeout:120000}).trim();
+      '--env','POSTGRES_HOST_AUTH_METHOD=trust','--env','POSTGRES_DB='+dbName,'postgres:17@sha256:2d2b8998d31037bf721cfdf764d76ba74171b4fab3431b7f72c27c56ddbdf9e3'],{timeout:120000}).trim();
     assert.match(container,/^[a-f0-9]{64}$/);
     const info=JSON.parse(docker(['inspect',container]))[0];
     assert.equal(info.Config.Labels[label],nonce);assert.equal(info.HostConfig.NetworkMode,'none');
     assert.ok(!info.HostConfig.PortBindings||Object.keys(info.HostConfig.PortBindings).length===0);
     assert.ok(info.Mounts.every(m=>m.Type==='tmpfs'));
-    await until(async()=>{try{docker(['exec',container,'pg_isready','-U','postgres','-d',dbName]);return true;}catch{return false;}},'isolated PostgreSQL startup');
+    await until(async()=>{try{if(docker(['exec',container,'cat','/proc/1/comm']).trim()!=='postgres')return false;docker(['exec',container,'pg_isready','-U','postgres','-d',dbName]);return true;}catch{return false;}},'isolated PostgreSQL startup');
     const version=await query("select current_setting('server_version_num')||':'||current_database();");
     assert.match(version,/^17\d{4}:oa_research_budget_test$/);console.log('Isolated server '+version+'; network=none; published ports=0');
     await query('create role anon; create role authenticated; create role service_role bypassrls;');
@@ -91,7 +91,7 @@ async function check(name,run){await run();passed++;console.log('ok '+passed+' -
     });
     await check('terminated pre-commit backend rolls back; one waiting request may then reserve',async()=>{
       await reset();const a=await held(reserve('a',1)),b=await waiter(reserve('b',2));
-      await blocked('waiter');assert.equal(await query('select pg_terminate_backend('+pid(a)+');'),'t');
+      await blocked('waiter');assert.equal(await query('select pg_terminate_backend('+pid(a)+');'),'t');a.end('commit;');
       assert.notEqual((await a.done).code,0);assert.equal((await b.done).code,0);
       assert.deepEqual(await totals(),{attempts:1,reserved:420000,actual:0,blocked:null});
     });

@@ -219,3 +219,10 @@ test('monotonic elapsed time rejects stale admissions even with a slow wall cloc
   h.ledger.reserve=async r=>{const result=await original(r);elapsed=600001;return result;};
   await assert.rejects(createResearchProtocol({ledger:h.ledger,provider:h.provider,clock:()=>now-86400000,monotonic:()=>elapsed})(input),/EXPIRED_ADMISSION/);assert.equal(h.state.calls,0);
 });
+
+test('provider rejects oversized and malformed responses without a retry',async()=>{
+  for(const body of ['not-json','x'.repeat(262145)]){
+    let calls=0;const provider=createProvider({ANTHROPIC_API_KEY:'fixture'},async()=>{calls++;return new Response(body);});
+    await assert.rejects(provider.message(plan.requests[0].request),/INVALID_PROVIDER_RESPONSE|PROVIDER_RESPONSE_LIMIT/);assert.equal(calls,1);
+  }
+});
