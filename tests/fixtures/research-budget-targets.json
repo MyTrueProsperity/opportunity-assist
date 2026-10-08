@@ -1,0 +1,9 @@
+[
+  {
+    "id": "fixture-grant",
+    "purpose": "eligibility",
+    "question": "Is a nonprofit eligible?",
+    "sourceUrl": "https://example.org/grant",
+    "sourceText": "Eligible applicants are nonprofit organizations."
+  }
+]
