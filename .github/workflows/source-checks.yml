@@ -11,5 +11,8 @@ jobs:
       - uses: pnpm/action-setup@v4
       - run: pnpm install --frozen-lockfile
       - run: pnpm test
+      - name: Real PostgreSQL research budget checks
+        timeout-minutes: 4
+        run: pnpm test:research-postgres
       - run: pnpm build
       - run: pnpm check:functions

@@ -7,7 +7,11 @@
     "test": "node --test tests/*.test.js",
     "build": "node scripts/build.js",
     "check:functions": "node scripts/check-functions.mjs",
-    "seed:extract": "node scripts/extract-legacy-watchlist.js"
+    "seed:extract": "node scripts/extract-legacy-watchlist.js",
+    "test:research-budget": "node --test tests/research-budget.test.js tests/research-admin.test.js",
+    "research:dry-run": "node scripts/research-dry-run.js",
+    "test:research-postgres": "node scripts/test-research-budget-postgres.cjs",
+    "research:execute": "node scripts/run-targeted-research.js"
   },
   "engines": {
     "node": ">=22"

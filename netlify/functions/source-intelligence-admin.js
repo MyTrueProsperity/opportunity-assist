@@ -27,6 +27,11 @@ async function handle(event,db=createDb()) {
   if(event.httpMethod==='POST'&&process.env.NETLIFY==='true'&&process.env.CONTEXT!=='production')throw new HttpError(403,'Source mutations are disabled in deploy previews');
   if(event.httpMethod==='GET') {
     const q=event.queryStringParameters||{};
+    if(q.view==='research_attempt'){
+      if(typeof q.cycle_id!=='string'||!q.cycle_id||q.cycle_id.length>200||typeof q.attempt_id!=='string'||!/^[-a-zA-Z0-9_]{1,100}$/.test(q.attempt_id))throw new HttpError(400,'Cycle and valid attempt ID required');
+      const attempt=await db.rpc('research_budget_get_attempt',{p_cycle:q.cycle_id,p_attempt:q.attempt_id});
+      return json(attempt?200:404,{attempt});
+    }
     if(q.view==='import_progress'){if(q.state)checkState(q.state);return json(200,await db.rpc('source_import_progress',{p_state:q.state||null}));}
     if(q.view==='bootstrap'||!q.view){const [settings,states]=await Promise.all([db.select('source_engine_settings'),db.select('source_state_settings',{order:'state_name'})]);return json(200,{engine:settings[0],states,categories:Object.keys(CATEGORIES),source_types:SOURCE_TYPES,reasons:REASONS});}
     // Admin-facing credential management (self-service issuance/revocation of
