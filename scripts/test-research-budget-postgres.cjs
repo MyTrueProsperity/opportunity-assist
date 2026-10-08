@@ -122,9 +122,13 @@ async function check(name,run){await run();passed++;console.log('ok '+passed+' -
       await query("select public.research_budget_reserve('cycle','"+plan+"','a','"+hash(1)+"',420000,'offline review');",true);
       await query("select public.research_budget_settle('cycle','a',200,'[{\"type\":\"text\",\"text\":\"proposal\"}]','{\"input_tokens\":100,\"output_tokens\":20}','request-fixture');",true);
       assert.equal(await query("select provider_request_id from research_budget.attempts where id='a';"),'request-fixture');
+      const attempt=JSON.parse(await query("select public.research_budget_get_attempt('cycle','a');",true));
+      assert.equal(attempt.status,'settled');assert.equal(attempt.actualMicros,200);assert.equal(attempt.proposal[0].text,'proposal');
+      assert.equal(await query("select coalesce(public.research_budget_get_attempt('wrong-cycle','a')::text,'missing');",true),'missing');
       for(const role of ['anon','authenticated']){
         await assert.rejects(query('set role '+role+'; select * from research_budget.cycles;'),/permission denied/);
         await assert.rejects(query("set role "+role+"; select public.research_budget_mark_failed('cycle','a');"),/permission denied/);
+        await assert.rejects(query("set role "+role+"; select public.research_budget_get_attempt('cycle','a');"),/permission denied/);
       }
     });
     console.log(JSON.stringify({suite:'real-postgresql-research-budget',passed,failed:0,independentConnections:true,productionConnections:0,providerCalls:0}));

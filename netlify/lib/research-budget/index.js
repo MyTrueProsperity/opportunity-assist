@@ -9,8 +9,9 @@ function dryRun(items){
     totalReservedMicros:plan.totalReservedMicros,trialLimitMicros:TRIAL_MICROS,cycleLimitMicros:CYCLE_MICROS,
     otherAppsReserveMicros:OTHER_APPS_MICROS,paidCalls:0,databaseReads:0,databaseWrites:0};
 }
-async function runPaidResearch(job,{env=process.env,fetcher=fetch}={}){
-  // Operator-only entry point. No HTTP endpoint or recurring worker calls this.
+async function runPaidResearch(job,{env=process.env,fetcher=fetch,db}={}){
+  // Manual entry point for the operator CLI and existing authenticated admin runner.
+  // No scheduled worker calls this.
   // Both deployment gates and independently reviewed DB policy must allow work.
   if(env.OA_RESEARCH_ENABLED!=='true'||env.OA_RESEARCH_FALLBACK_RISK_ACCEPTED!=='true')
     throw Object.assign(new Error(BLOCKER),{code:BLOCKER});
@@ -19,7 +20,7 @@ async function runPaidResearch(job,{env=process.env,fetcher=fetch}={}){
   const {createProvider}=require('./provider');
   const {createResearchProtocol}=require('./protocol');
   const provider=createProvider(env,fetcher);
-  const ledger=createRpcLedger(createDb(env,fetcher));
+  const ledger=createRpcLedger(db||createDb(env,fetcher));
   return createResearchProtocol({ledger,provider})(job);
 }
 module.exports={dryRun,runPaidResearch,BLOCKER};

@@ -144,3 +144,16 @@ returns boolean language sql security invoker set search_path=pg_catalog as $$
 $$;
 revoke all on function public.research_budget_reserve(text,text,text,text,bigint,text),public.research_budget_settle(text,text,bigint,jsonb,jsonb,text),public.research_budget_mark_failed(text,text) from public,anon,authenticated;
 grant execute on function public.research_budget_reserve(text,text,text,text,bigint,text),public.research_budget_settle(text,text,bigint,jsonb,jsonb,text),public.research_budget_mark_failed(text,text) to service_role;
+
+-- One-attempt read for the existing authenticated administrator route. Indexed
+-- primary-key lookup only; no list/export scan and no cycle mutation surface.
+create function public.research_budget_get_attempt(p_cycle text,p_attempt text)
+returns jsonb language sql security invoker set search_path=pg_catalog as $$
+  select jsonb_build_object('id',id,'cycleId',cycle_id,'planHash',plan_hash,
+    'requestHash',request_hash,'status',status,'reservedMicros',reserved_micros,
+    'actualMicros',actual_micros,'createdAt',created_at,'settledAt',settled_at,
+    'proposal',proposal,'usage',final_usage,'providerRequestId',provider_request_id)
+  from research_budget.attempts where id=p_attempt and cycle_id=p_cycle
+$$;
+revoke all on function public.research_budget_get_attempt(text,text) from public,anon,authenticated;
+grant execute on function public.research_budget_get_attempt(text,text) to service_role;

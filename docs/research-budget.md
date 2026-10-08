@@ -9,8 +9,10 @@ it does **not** guarantee promotional-only funding.
 
 Routine token-free discovery, FinCap, other product AI features and existing
 schedules are unchanged. No new HTTP endpoint, recurring job, credential, billing
-change or account linkage is added. The operator CLI uses existing server
-configuration only after the deployment and database gates below pass.
+change or account linkage is added. An explicit research action in the existing
+administrator background function uses the existing server configuration, after
+authentication and the deployment/database gates below pass. The empty-body Run
+button still invokes the free worker. No scheduled function calls research.
 No live paid call, production migration, enablement or production deploy has
 been performed by this work. The SQL remains a review proposal outside migrations.
 
@@ -111,6 +113,25 @@ dry-run hash. The CLI does not configure flags, create a cycle, approve a plan,
 read billing, generate a key, release reservations or schedule work.
 Do not run it against production before the reviewed activation.
 
+### Existing administrator route after approved activation
+
+The existing authenticated `POST /.netlify/functions/source-intelligence-run-background`
+accepts `{"action":"research","job":<the reviewed job above>}`. Use the current
+administrator session; never copy server keys into a browser or command.
+Preview contexts, unknown/malformed actions and missing gates cannot launch research.
+The function authenticates before dispatch and executes only the selected target.
+An ordinary empty body or `{}` retains the existing free-worker behavior.
+
+Netlify background calls return an acknowledgement, **not** the proposal. After
+one manual invocation, retrieve the specific attempt with authenticated
+`GET /.netlify/functions/source-intelligence-admin?view=research_attempt&cycle_id=<cycle>&attempt_id=<attempt>`.
+This performs one indexed lookup through a service-role-only RPC. A 404 may mean
+the background invocation has not committed yet or failed before reservation;
+do not interpret it as permission to resend. Inspect bounded function status/logs
+and wait for that invocation to finish before any recovery decision.
+A pending/failed attempt requires operator review; there is no auto-resume.
+No excerpts or model proposals are logged, and results are never auto-published.
+
 ## Database and isolated validation
 
 `docs/research-budget-ledger.sql` is not a deployed migration. It defines a private
@@ -169,7 +190,9 @@ the actual schema. No additional production DB reads are needed for these tests.
    usage may draw purchased credit. Auto-reload cash purchases are separately
    controlled by billing and may exceed the amount of this API usage.
 5. Record the reviewed cycle/plan, retain the $10 stage, and deliberately set both
-   deployment flags. Invoke one target, inspect its proposal and persisted usage,
+   deployment flags. Use the existing authenticated administrator route to invoke
+   one target (or the CLI only in an already-configured secure server environment).
+   Inspect its proposal and persisted usage,
    then consider the remaining approved targets. Stop on any uncertainty.
 6. Evaluate useful verified findings per dollar before expanding. A separate
    expansion review can raise the stage toward $85 within the same verified cycle.
