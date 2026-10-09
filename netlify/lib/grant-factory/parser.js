@@ -69,6 +69,7 @@ function normalize(parsed, blocks) {
     ...parsed,
     questions,
     eligibility: grounded("eligibility"),
+    funder_requirements: grounded("funder_requirements"),
     attachments: grounded("attachments").map((a) => ({
       ...a,
       status: "MISSING",
@@ -83,91 +84,31 @@ function normalize(parsed, blocks) {
   };
 }
 function basic(blocks) {
-  const questions = [];
-  const eligibility = [];
-  const attachments = [];
-  for (const b of blocks) {
-    for (const line of b.text
-      .split(/\r?\n/)
-      .map((l) => l.trim())
-      .filter(Boolean)) {
-      if (/^\s*(?:\d+[.)]|[A-Z][.)]|Q\d+[:.)])\s+|\?/.test(line)) {
-        const m = line.match(/(\d[\d,]*)\s*(words?|characters?|pages?)/i);
-        const number = m ? Number(m[1].replace(/,/g, "")) : null;
-        let limit_type = m
-          ? /^word/i.test(m[2])
-            ? "WORDS"
-            : /^page/i.test(m[2])
-              ? "PAGES"
-              : /without|excluding\s+spaces/i.test(line)
-                ? "CHARACTERS_WITHOUT_SPACES"
-                : /with|including\s+spaces/i.test(line)
-                  ? "CHARACTERS_WITH_SPACES"
-                  : "CHARACTERS"
-          : "NONE";
-        if (/recommended|suggested|approximately/i.test(line) && m)
-          limit_type = "ADVISORY";
-        const type = /\bsign(?:ature)?\b/i.test(line)
-          ? "SIGNATURE"
-          : /certif|attest|agree to/i.test(line)
-            ? "CERTIFICATION"
-            : /attach|upload/i.test(line)
-              ? "UPLOAD"
-              : /budget/i.test(line)
-                ? "BUDGET"
-                : "NARRATIVE";
-        questions.push({
-          id: randomUUID(),
-          section: "Application",
-          question_number: String(questions.length + 1),
-          question_text: line.replace(/^\s*(?:Q)?(?:\d+|[A-Z])[.):]\s+/i, ""),
-          question_type: type,
-          required: true,
-          limit_type,
-          limit_value: number,
-          spaces_count:
-            limit_type === "CHARACTERS"
-              ? null
-              : limit_type === "CHARACTERS_WITH_SPACES",
-          source_locator: b.locator,
-          source_quote: line,
-          question_category: "",
-          status: "NEEDS_REVIEW",
-        });
-      }
-      if (
-        /eligible|eligibility|501\(c\)\(3\)|matching funds|must be|must serve/i.test(
-          line,
-        )
-      )
-        eligibility.push({
-          id: randomUUID(),
-          rule: line,
-          source_locator: b.locator,
-          source_quote: line,
-          operator: "REVIEW",
-          commitment: /match|certif|agree|commit/i.test(line),
-        });
-      if (/attach|upload|enclose/i.test(line))
-        attachments.push({
-          id: randomUUID(),
-          title: line,
-          required: true,
-          status: "MISSING",
-          source_locator: b.locator,
-          source_quote: line,
-        });
-    }
+  const rows=blocks.flatMap(b=>b.text.split(/\r?\n/).map(line=>({text:line.trim(),locator:b.locator})).filter(r=>r.text));
+  const marked=i=>/\*\s*$/.test(rows[i].text)&&rows[i].text!=='*'||rows[i+1]?.text==='*';
+  const numbered=i=>/^\s*(?:\d+[.)]|[A-Z][.)]|Q\d+[:.)])\s+/.test(rows[i].text);
+  const forms=rows.some((r,i)=>marked(i));
+  const starts=rows.map((r,i)=>i).filter(i=>rows[i].text!=='*'&&(marked(i)||numbered(i)||(!forms&&rows[i].text.includes('?'))));
+  const questions=starts.map((start,n)=>{
+    const head=rows[start],end=starts[n+1]??rows.length;
+    const context=rows.slice(start,Math.min(end,start+20)).filter(r=>r.text!=='*');
+    const text=context.map(r=>r.text).join('\n');
+    const limit=text.match(/(?:limit|max(?:imum)?|up to)?[: ]*(\d[\d,]*)\s*(words?|characters?|pages?)/i);
+    const inverted=text.match(/(?:word|character|page)\s*(?:limit|max(?:imum)?)[ :]*(\d[\d,]*)/i);
+    const number=limit?Number(limit[1].replace(/,/g,'')):inverted?Number(inverted[1].replace(/,/g,'')):null;
+    const unit=limit?.[2]||inverted?.[0]||'';
+    let limit_type=number?/^word/i.test(unit)?'WORDS':/^page/i.test(unit)?'PAGES':/without|excluding\s+spaces/i.test(text)?'CHARACTERS_WITHOUT_SPACES':/with|including\s+spaces/i.test(text)?'CHARACTERS_WITH_SPACES':'CHARACTERS':'NONE';
+    if(number&&/recommended|suggested|approximately/i.test(text))limit_type='ADVISORY';
+    let type=/\bsign(?:ature)?\b/i.test(head.text)?'SIGNATURE':/certif|attest|agree to|willing.{0,30}commit/i.test(text)?'CERTIFICATION':/attach|upload|enclose/i.test(head.text)?'UPLOAD':/format:\s*(?:integer|decimal|\$)|(?:how many|what percentage)/i.test(text)?'NUMBER':(/format:\s*(?:email|phone|url|attachment)/i.test(text)||/\b(?:email|e-mail|phone number|telephone|mailing address|employer identification|tax id|EIN)\b/i.test(head.text))?(/attachment/i.test(text)?'UPLOAD':'OTHER'):/format:\s*date/i.test(text)?'DATE':/format:\s*(?:yes.?no|boolean)|^yes\s*\nno$/im.test(text)?'YES_NO':/select (?:all|one)|choose one/i.test(text)?'MULTI_SELECT':/\bbudget\b/i.test(head.text)&&!/(describe|explain|how|why|experience)/i.test(head.text)?'BUDGET':'NARRATIVE';
+    const instructions=context.slice(1).filter(r=>!/^(?:character|word|page)\s*limit|^format:/i.test(r.text)).map(r=>r.text).join('\n').slice(0,5000);
+    return question({id:randomUUID(),section:'Application',question_number:String(n+1),question_text:head.text.replace(/^\s*(?:Q)?(?:\d+|[A-Z])[.):]\s+/i,'').replace(/\s*\*$/,'')+(instructions?'\n'+instructions:''),question_type:type,required:!/optional|if applicable/i.test(head.text),limit_type,limit_value:number,spaces_count:limit_type==='CHARACTERS'?null:limit_type==='CHARACTERS_WITH_SPACES',source_locator:head.locator,source_quote:head.text,question_category:'',status:'NEEDS_REVIEW',instruction_sources:context.slice(1).map(r=>({source_locator:r.locator,source_quote:r.text}))});
+  });
+  const eligibility=[],attachments=[],funder_requirements=[];
+  for(const r of rows){
+    if(/eligible|eligibility|501\(c\)\(3\)|matching funds|must be|must serve/i.test(r.text))eligibility.push({id:randomUUID(),rule:r.text,source_locator:r.locator,source_quote:r.text,operator:'REVIEW',commitment:/match|certif|agree|commit/i.test(r.text)});
+    if(/attach|upload|enclose/i.test(r.text))attachments.push({id:randomUUID(),title:r.text,required:true,status:'MISSING',source_locator:r.locator,source_quote:r.text});
+    if(/looking for|priorit|review criteria|out.of.scope|prohibit|allowable|may not use|must.{0,50}(?:engage|protect|provide)|youth.led|co.lead/i.test(r.text))funder_requirements.push({kind:'SOURCE_GUIDANCE',text:r.text,source_locator:r.locator,source_quote:r.text});
   }
-  return {
-    questions,
-    eligibility,
-    attachments,
-    parser_confidence: "LOW",
-    warnings: [
-      "Basic text extraction is incomplete by design. Review all questions, limits, eligibility and attachments against the original, or run AI parsing.",
-    ],
-    parser_reviewed: false,
-  };
+  return {questions,eligibility,attachments,funder_requirements:funder_requirements.slice(0,100),parser_confidence:'LOW',warnings:['Basic text extraction remains a review aid. Check every question, field format, limit, eligibility condition and attachment against all original sources.'],parser_reviewed:false};
 }
 module.exports = { question, normalize, basic, sourceGrounded, TYPES, LIMITS };

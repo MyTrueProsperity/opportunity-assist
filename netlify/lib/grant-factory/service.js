@@ -7,6 +7,8 @@ const R = require("./research");
 const SE = require("./strategy-evidence");
 const SQ = require("./strategy-quantities");
 const AI = require("./ai");
+const G = require("./grant-reading");
+const W = require("./writing");
 const { researchRules } = R;
 const { exportPackage } = require("./export");
 const { proposeBatch } = require("./intake");
@@ -91,7 +93,7 @@ function prepareParsed(app, parsed, brain) {
   app.answers = [];
   app.content = {
     ...app.content,
-    ...parsed,
+    ...Object.fromEntries(Object.entries(parsed).filter(([k,v])=>v!==null || app.content[k]==null)),
     questions: undefined,
     inputs: [],
     status: "PARSED",
@@ -114,11 +116,11 @@ function prepareParsed(app, parsed, brain) {
       });
 }
 // Strategy inputs that, if changed while a job runs, make its result stale.
-const STRATEGY_FIELDS = ["funder_name", "grant_program_name", "funding_purpose", "funder_priorities", "allowable_costs", "prohibited_costs", "match_requirement", "primary_program_id", "secondary_program_ids"];
+const STRATEGY_FIELDS = ["funder_name", "grant_program_name", "funding_purpose", "funder_priorities", "allowable_costs", "prohibited_costs", "match_requirement", "primary_program_id", "secondary_program_ids", "request_amount", "award_min", "award_max", "grant_period", "rubric_or_scoring", "eligible_applicants", "eligible_geographies", "source_document_id", "additional_source_document_ids"];
 function strategyInputHash(app, brain) {
   return C.hash({
     application: Object.fromEntries(STRATEGY_FIELDS.map((k) => [k, app.content[k] ?? null])),
-    questions: (app.questions || []).map((q) => [q.id, q.question_text, q.question_category ?? null, q.question_type ?? null]),
+    questions: (app.questions || []).map((q) => [q.id, q.question_text, q.question_category ?? null, q.question_type ?? null, q.limit_type, q.limit_value, q.required, q.rubric_text, q.source_quote]),
     brain_revision: brain.revision,
   });
 }
@@ -203,15 +205,13 @@ function service(repo, ai, { dispatch = null } = {}) {
       console.error("Strategy job dispatch failed", { job: job.id, message: e.message });
     }
   }
-  function strategyRequest(brain, app) {
-    const facts = C.authorizedFacts(brain, app.id).filter(
-      (f) =>
-        !f.program_id ||
-        f.program_id === app.content.primary_program_id ||
-        (app.content.secondary_program_ids || []).includes(f.program_id),
-    );
+  async function strategyRequest(ctx, brain, app) {
+    const reading = await G.load(repo, ctx, brain, app);
+    const authorized=C.authorizedFacts(brain,app.id);
+    const related=new Set(app.questions.filter(q=>['past_results','capacity','scalability'].includes(W.kind(q))).flatMap(q=>W.select(q,brain,app,authorized).selection.filter(x=>x.scope==='RELATED_PROGRAM_HISTORY').map(x=>x.id)));
+    const facts=authorized.filter(f=>!f.program_id || f.program_id===app.content.primary_program_id || (app.content.secondary_program_ids||[]).includes(f.program_id) || related.has(f.id));
     const application = Object.fromEntries(
-      ["funder_name", "grant_program_name", "funding_purpose", "funder_priorities", "allowable_costs", "prohibited_costs", "match_requirement"]
+      ["funder_name", "grant_program_name", "funding_purpose", "funder_priorities", "allowable_costs", "prohibited_costs", "match_requirement", "request_amount", "award_min", "award_max", "grant_period", "rubric_or_scoring", "eligible_applicants", "eligible_geographies"]
         .map((k) => [k, app.content[k]]),
     );
     // Strategy gets the authorized organization facts plus a bounded,
@@ -223,6 +223,9 @@ function service(repo, ai, { dispatch = null } = {}) {
       program: brain.programs.find((p) => p.id === app.content.primary_program_id),
       methodology_rules: METHODOLOGY.rules,
       organization_framework: strategyFramework(brain.framework, [app.content.primary_program_id, ...(app.content.secondary_program_ids || [])]),
+      funder_reading: reading,
+      writing_voice: brain.voice,
+      reviewer_preparation: {self_questions:W.QUESTIONS,question_map:app.questions.map(q=>({id:q.id,purpose:W.kind(q),question:q.question_text})),funding:W.fundingOptions(brain,app,reading),related_program_history_ids:[...related],history_scope:'These IDs document related-program delivery history. Attribute the actual delivering program and legal entity; never count them as the selected solution results.'},
     }, SE.strategyRules, { overhead: AI.requestChars("strategy", null) });
   }
   // Run one strategy job (called by the background function). Nothing is
@@ -249,7 +252,7 @@ function service(repo, ai, { dispatch = null } = {}) {
         return await fail("STALE_INPUTS", "The application's program, funder details, questions or approved facts changed after strategy generation was requested. Nothing was saved; generate again.");
       if (["SUBMITTED", "ARCHIVED"].includes(app.content.status))
         return await fail("LOCKED", "Submitted applications are immutable.");
-      const built = strategyRequest(brain, app);
+      const built = await strategyRequest(ctx, brain, app);
       Object.assign(result, {
         research_eligible: built.eligible, research_ranked: built.ranked, research_selected: built.selected.length,
         skipped_for_size: built.skipped_for_size, request_chars: built.chars,
@@ -391,6 +394,10 @@ function service(repo, ai, { dispatch = null } = {}) {
     const evidence = answerEvidence(a, brain, app.id);
     checkEvidenceIds(a.evidence_ids || [], C.authorizedFacts(brain, app.id));
     if (!a.draft_text?.trim()) C.fail("Write an answer before auditing.");
+    const reading = await G.load(repo,ctx,brain,app);
+    const programs=new Set([app.content.primary_program_id,...(app.content.secondary_program_ids||[])]);
+    const selected = {evidence,purpose:W.kind(q),selection:evidence.map(f=>({id:f.id,scope:!f.program_id?"ORGANIZATION":programs.has(f.program_id)?"SELECTED_PROGRAM":"RELATED_PROGRAM_HISTORY"}))};
+    const questionPlan = W.plan(q,selected,app);
     const result = await call(ctx, "audit", {
       question: q,
       answer: a.draft_text,
@@ -398,6 +405,8 @@ function service(repo, ai, { dispatch = null } = {}) {
       claim_rules: researchRules(brain, evidence),
       methodology_rules: METHODOLOGY.rules,
       commitment_review: a.commitment_review || null,
+      funder_reading: G.forQuestion(reading,q),
+      question_plan: questionPlan,
     });
     for (const claim of result.claims) {
       checkEvidenceIds(claim.evidence_ids, evidence);
@@ -416,6 +425,7 @@ function service(repo, ai, { dispatch = null } = {}) {
     a.audit = {
       status: "COMPLETE",
       text_hash: C.hash(a.draft_text),
+      requirements_signature: reading.requirements_signature,
       evidence_hash: C.hash(evidence),
       brain_revision: brain.revision,
       checked_at: C.now(),
@@ -425,6 +435,7 @@ function service(repo, ai, { dispatch = null } = {}) {
         ...C.deterministicAudit(a.draft_text, evidence, q),
       ],
     };
+    a.writing_review = W.quality(a.draft_text,q,evidence,questionPlan);
     a.status = "NEEDS_REVIEW";
   }
   return {
@@ -782,9 +793,11 @@ function service(repo, ai, { dispatch = null } = {}) {
         return rows;
       }
       const app = await repo.app(ctx, body.application_id);
-      if (action === "get_application")
+      if (action === "get_application") {
+        let reading;
+        try {reading = await G.load(repo,ctx,brain,app);} catch(e) {reading=G.read([],app);reading.warnings.push(e.message);}
         return {
-          app,
+          app: {...app, writing_brief: W.brief(brain,app,reading)},
           brain: repo.publicBrain(brain, ctx, app.id, app),
           snapshots: await repo.db.select("gf_snapshots", {
             org_id: "eq." + ctx.org_id,
@@ -793,6 +806,7 @@ function service(repo, ai, { dispatch = null } = {}) {
             order: "created_at.desc",
           }),
         };
+      }
       if (action === "export") {
         let snapshot = null;
         if (body.snapshot_id) {
@@ -857,12 +871,9 @@ function service(repo, ai, { dispatch = null } = {}) {
       checkRevision(body, app);
       invalidate(app);
       if (action === "parse") {
-        const summary = brain.documents.find(
-          (d) => d.id === app.content.source_document_id,
-        );
-        if (!summary || summary.extraction_status !== "COMPLETE")
-          C.fail("The source needs text extraction.");
-        const source = await repo.document(ctx, summary.id);
+        const reading=await G.load(repo,ctx,brain,app);
+        if(!reading.complete)C.fail("The complete source packet is too large or unavailable for one extraction. Review or enter the remaining fields manually; existing answers are unchanged.",413);
+        const blocks=reading.blocks.map(b=>({...b,source_document_id:b.document_id,locator:b.document_id===app.content.source_document_id?b.locator:b.title+' / '+b.locator}));
         if (
           app.answers.some((a) => a.draft_text?.trim()) &&
           !body.replace_confirmed
@@ -872,11 +883,13 @@ function service(repo, ai, { dispatch = null } = {}) {
             409,
           );
         const parsed = P.normalize(
-          await call(ctx, "parse", { blocks: source.blocks }),
-          source.blocks,
+          await call(ctx, "parse", { blocks, source_warnings:reading.warnings }),
+          blocks,
         );
         prepareParsed(app, parsed, brain);
       } else if (action === "save_application") {
+        const previousSources=C.hash([app.content.source_document_id,app.content.additional_source_document_ids||[]]);
+        const previousStrategyInputs=strategyInputHash(app,brain);
         const keys = [
           "funder_name",
           "grant_program_name",
@@ -885,9 +898,17 @@ function service(repo, ai, { dispatch = null } = {}) {
           "request_amount",
           "primary_program_id",
           "secondary_program_ids",
+          "additional_source_document_ids",
+          "funding_purpose", "funder_priorities", "rubric_or_scoring", "allowable_costs", "prohibited_costs", "match_requirement", "grant_period",
         ];
         for (const k of keys)
           if (k in body.application) app.content[k] = body.application[k];
+        G.sourceIds(app.content);
+        if(previousSources!==C.hash([app.content.source_document_id,app.content.additional_source_document_ids||[]]))app.content.parser_reviewed=false;
+        if(body.application.additional_source_document_ids)await G.load(repo,ctx,brain,app);
+        for(const k of ["funding_purpose","funder_priorities","rubric_or_scoring","match_requirement","grant_period"])if(k in body.application)app.content[k]=C.str(body.application[k]||"",12000);
+        for(const k of ["allowable_costs","prohibited_costs"])if(k in body.application){if(!Array.isArray(body.application[k])||body.application[k].length>30)C.fail("Provide a bounded list of funder cost rules.");app.content[k]=body.application[k].map(v=>C.str(v,1000));}
+        if(app.content.request_amount!=null && (!Number.isFinite(app.content.request_amount)||app.content.request_amount<0))C.fail("Enter a valid nonnegative request amount.");
         if (
           app.content.primary_program_id &&
           !brain.programs.some((p) => p.id === app.content.primary_program_id)
@@ -900,6 +921,7 @@ function service(repo, ai, { dispatch = null } = {}) {
           )
         )
           C.fail("Supporting program not found");
+        if(previousStrategyInputs!==strategyInputHash(app,brain) && app.content.strategy)app.content.strategy.approved=false;
         if (body.application.strategy) {
           app.content.strategy = {
             ...body.application.strategy,
@@ -954,13 +976,10 @@ function service(repo, ai, { dispatch = null } = {}) {
         const existing = app.answers.find((a) => a.question_id === q.id);
         if (existing?.draft_text && !body.replace_confirmed)
           C.fail("Confirm replacement of the existing answer first.", 409);
-        const facts = C.authorizedFacts(brain, app.id).filter(
-          (f) =>
-            !f.program_id ||
-            f.program_id === app.content.primary_program_id ||
-            (app.content.secondary_program_ids || []).includes(f.program_id),
-        );
-        const evidence = C.retrieve(q, facts, null, brain.documents);
+        const reading = await G.load(repo,ctx,brain,app);
+        const selected = W.select(q,brain,app);
+        const evidence = selected.evidence;
+        const questionPlan = W.plan(q,selected,app);
         let result;
         if (!evidence.length)
           result = {
@@ -981,17 +1000,24 @@ function service(repo, ai, { dispatch = null } = {}) {
             methodology_rules: METHODOLOGY.rules,
             strategy: app.content.strategy,
             voice: brain.voice,
+            funder_reading: G.forQuestion(reading,q),
+            question_plan: questionPlan,
           });
         checkEvidenceIds(result.evidence_ids, evidence);
+        if((result.status==="DRAFTED" && !result.answer?.trim()) || (result.answer?.trim() && !result.evidence_ids.length))C.fail("The writer returned an empty or ungrounded answer. The existing answer is unchanged.",502);
+        const writingReview = W.quality(result.answer||"",q,evidence,questionPlan);
+        if(writingReview.counts.over)C.fail("The generated answer exceeds the funder's hard limit. Nothing was saved; shorten or regenerate it.",422);
         const a = {
           id: existing?.id || C.randomUUID(),
           question_id: q.id,
-          draft_text: result.status === "NEEDS_USER_INPUT" ? "" : result.answer,
+          draft_text: result.answer || "",
           evidence_ids: result.evidence_ids,
           status: result.status === "DRAFTED" ? "NEEDS_REVIEW" : "NEEDS_INPUT",
           generation_version: (existing?.generation_version || 0) + 1,
           generated_at: C.now(),
-          warnings: result.warnings,
+          warnings: [...result.warnings,...reading.warnings,...writingReview.issues.map(i=>i.message)],
+          writing_review: writingReview,
+          writing_plan: {version:W.VERSION,purpose:questionPlan.purpose,evidence_selection:selected.selection,grant_input_hash:reading.input_hash},
           counts: C.limits.counts(result.answer),
           audit: null,
         };
@@ -1071,6 +1097,7 @@ function service(repo, ai, { dispatch = null } = {}) {
             brain_revision: brain.revision,
           };
         }
+        if(a.audit?.requirements_signature && a.audit.requirements_signature!==C.requirementsSignature(app,brain))C.fail("The grant requirements changed after this audit. Read the updated sources and audit again.",409);
         a.status = "APPROVED";
         a.approved_by = ctx.user_id;
         a.approved_at = C.now();
@@ -1213,6 +1240,7 @@ function service(repo, ai, { dispatch = null } = {}) {
         const evidence = brain.facts.filter((f) => evIds.has(f.id));
         const docIds = new Set([
           app.content.source_document_id,
+          ...(app.content.additional_source_document_ids||[]),
           ...evidence.map((f) => f.source_document_id),
           ...(app.content.attachments || []).map((a) => a.document_id),
         ]);

@@ -442,6 +442,11 @@ function auditValid(answer, evidence, brainRevision) {
     answer.audit.coverage_complete === true
   );
 }
+function requirementsSignature(app, brain) {
+  const c=app.content||{},fields=['source_document_id','additional_source_document_ids','funder_name','grant_program_name','funding_purpose','funder_priorities','rubric_or_scoring','eligible_applicants','eligible_geographies','allowable_costs','prohibited_costs','match_requirement','grant_period','award_min','award_max','request_amount','primary_program_id','secondary_program_ids','deadline','application_cycle','funder_requirements'];
+  const ids=[c.source_document_id,...(c.additional_source_document_ids||[])].filter(Boolean);
+  return hash({application:Object.fromEntries(fields.map(k=>[k,c[k]??null])),sources:ids.map(id=>{const d=brain.documents.find(d=>d.id===id);return d?[id,d.sha256,d.version,d.revision,d.status,d.extraction_status,d.sensitivity_level,d.internal_only,d.document_type,d.external_use_allowed,d.expiration_date]:[id,'MISSING'];}),questions:app.questions.map(q=>[q.id,q.question_text,q.question_type,q.limit_type,q.limit_value,q.required,q.section,q.question_category,q.rubric_text,q.source_quote,q.instruction_sources])});
+}
 function qa(app, brain) {
   const issues = [];
   const allowedIds = new Set(authorizedFacts(brain, app.id).map((f) => f.id));
@@ -465,6 +470,12 @@ function qa(app, brain) {
     if (!source || source.extraction_status !== "COMPLETE")
       add("SOURCE", "Complete source extraction before review.");
   }
+  for (const id of app.content.additional_source_document_ids || []) {
+    const d=brain.documents.find(d=>d.id===id);
+    if(!d || d.status!=="AVAILABLE" || d.extraction_status!=="COMPLETE" || d.sensitivity_level==="RESTRICTED" || d.internal_only || d.expiration_date&&new Date(d.expiration_date+"T23:59:59Z")<new Date())add("SOURCE","A linked funder source is unavailable, private, expired or unreadable.");
+  }
+  const currentRequirements=requirementsSignature(app,brain);
+  for(const a of app.answers)if(a.audit?.requirements_signature && a.audit.requirements_signature!==currentRequirements)add("FUNDER_CONTEXT","The grant requirements changed after this answer was audited. Read the updated sources and audit again.",a.question_id);
   for (const r of app.content.eligibility || [])
     if (
       r.status !== "PASS" &&
@@ -635,6 +646,7 @@ module.exports = {
   recommend,
   eligibility,
   deterministicAudit,
+  requirementsSignature,
   auditValid,
   qa,
 };
