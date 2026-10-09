@@ -7,13 +7,13 @@
 // Nothing here is evidence. Rules shape reasoning and wording only.
 const { hash } = require("./core");
 
-const VERSION = "GRANT_METHODOLOGY_V1.1_2026-09-24";
+const VERSION = "GRANT_METHODOLOGY_V1.2_2026-10-08";
 
 const RULES = [
   {
     id: "GM-01",
     title: "Evidence chain",
-    rule: "Build each case in order: community need, the evidence establishing that need, how that evidence applies to the proposed geography and population, research supporting the proposed intervention, how the organization implements or adapts that intervention, the resources required, and the results that can reasonably follow. Never jump from a problem statement directly to a funding request.",
+    rule: "Build the internal evidence chain: community need, the evidence establishing that need, how that evidence applies to the proposed geography and population, research supporting the proposed intervention, how the organization implements or adapts that intervention, the resources required, and the results that can reasonably follow. Never jump from a problem statement directly to a funding request. This is a reasoning sequence, not a mandatory narrative opening: present each answer in the order that best answers the funder's question, leading with relevant proven strengths or the requested funded change.",
   },
   {
     id: "GM-02",
@@ -100,6 +100,10 @@ const RULES = [
     title: "Measure definitions",
     rule: "Name a measure the way its governing source defines it. Use an official indicator label (for example a federal workforce performance indicator) only when applying that indicator's definitions, eligible population, timing and data source; otherwise describe it as an internal measure. Do not relabel a similar internal measure as the official one. An instrument validated for one population, such as adults, is not assumed valid for another, such as minors, without separate justification. Keep separate results separate: placement, retention and satisfaction; competence, revenue and profit; participation and outcome.",
   },
+  {id:"GM-19",title:"Lead with the strongest supported case",rule:"Answer the current field directly in the opening. For past impact, lead with the strongest relevant established outcome and its delivering organization, population and period. For future impact, lead with the change the award would enable. Put crucial qualifications beside the claim, but do not bury strong proof behind boilerplate, broad background or a research recital. Do not choose the biggest statistic merely because it is dramatic."},
+  {id:"GM-20",title:"Confident ownership of proven work",rule:"Use active, confident organizational language for documented delivery, leadership and measured results: explain what the organization did and achieved within the supported scope. Descriptive outcomes can be owned without claiming causal proof. Do not gratuitously weaken a supported result with may, might or potentially. Keep prior legal-entity attribution, related-program history, measurement limitations and future plans accurate. Unsubstantiated best-in-class, unique, guaranteed and comparative claims remain unsupported."},
+  {id:"GM-21",title:"Read the grant as a reviewer",rule:"Before strategy and every answer, examine the original RFP, application instructions, exclusions, rubric, scope, award conditions, grant period and field limits. Ask what this funder rewards, what strongest evidence establishes fit, what previous awards actually show when verified portfolio evidence is supplied, what the grant adds, what resources delivery requires and how success will be measured. A narrative worksheet can omit numeric fields, selections, uploads and commitments. Do not infer a requirement, permitted cost or recipient history from absent information."},
+  {id:"GM-22",title:"Concrete funding design and field coverage",rule:"Propose conditional funding uses grounded in the applicant's actual approved program and funder requirements. Check staffing, participant access, equipment, compensation, evaluation, replication and existing funding restrictions rather than copying a generic budget. Cost the scope before recommending an ask; the award ceiling is not a request recommendation. Address every subquestion, differentiate the solution from the whole organization, avoid repeating the same background across fields and use available space for substance. Keep supported partial drafts when a required detail is missing, but identify that gap outside the proposed answer and require review before approval."},
 ];
 
 const METHODOLOGY = Object.freeze({ version: VERSION, rules: RULES, hash: hash(RULES) });

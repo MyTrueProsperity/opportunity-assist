@@ -190,6 +190,41 @@
         "items": {
           "type": "string"
         }
+      },
+      "funder_priorities": {
+        "type": [
+          "string",
+          "null"
+        ],
+        "description": "Priorities explicitly stated by the funder; unknown stays null."
+      },
+      "funder_requirements": {
+        "type": "array",
+        "maxItems": 100,
+        "items": {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string"
+            },
+            "text": {
+              "type": "string"
+            },
+            "source_locator": {
+              "type": "string"
+            },
+            "source_quote": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "text",
+            "source_locator",
+            "source_quote"
+          ]
+        },
+        "description": "Source-grounded priorities, review criteria, exclusions, scope, funding and reporting requirements. Exact quote required."
       }
     },
     "required": ["questions", "eligibility", "attachments", "warnings"]
@@ -245,7 +280,8 @@
         "enum": ["DRAFTED", "NEEDS_USER_INPUT"]
       },
       "answer": {
-        "type": "string"
+        "type": "string",
+        "description": "The complete answer or useful supported partial draft. Keep gaps in missing_information, never invent them or insert fake facts."
       },
       "evidence_ids": {
         "type": "array",
@@ -261,6 +297,7 @@
       },
       "warnings": {
         "type": "array",
+        "description": "Any source, evidence or editorial concern requiring review; confidence in a proven result is not itself a concern.",
         "items": {
           "type": "string"
         }

@@ -637,6 +637,15 @@
         else render();
       } catch {}
     }
+    function writingGuidance(q,ans) {
+      const plan=s.app.writing_brief?.questions.find(p=>p.question_id===q.id);
+      if(!plan)return '';
+      return '<details><summary>How OA will strengthen this answer</summary><ul>'+plan.angles.map(t=>'<li>'+esc(t)+'</li>').join('')+'</ul><p class="gf-note">'+esc(plan.available_evidence)+' approved evidence items are available for this field.</p>'+plan.opening_candidates.map(p=>{const f=evidenceFact(p.evidence_id);return '<p><strong>Possible opening proof:</strong> '+esc((f?.value||'View the approved fact in Organization Brain.').slice(0,700))+'<br><span class="gf-meta">'+esc(p.scope==='RELATED_PROGRAM_HISTORY'?'Related-program history. Attribute it accurately; it is not the new solution result.':f?.source_locator||'Approved organizational evidence')+'</span></p>';}).join('')+(ans?.writing_review?.issues||[]).map(i=>'<p class="gf-note">'+esc(i.message)+'</p>').join('')+'<p class="gf-note">This prepares the writing case. Claim audit and your approval remain separate.</p></details>';
+    }
+    function writingOverview() {
+      const b=s.app.writing_brief;if(!b)return '';
+      return '<section class="gf-card"><h3>The case this grant should make</h3><p>OA checks the original funder requirements, your strongest proven results, what the grant adds and whether delivery is properly resourced before writing.</p><details><summary>Questions OA asks itself</summary>'+b.self_questions.map(x=>'<p><strong>'+esc(x.question)+'</strong><br>'+esc(x.action)+'</p>').join('')+'</details><p class="gf-meta">'+(b.grant.complete?'All text fits in the application-wide reading packet.':'The source packet needs a completeness check.')+'</p>'+b.grant.sources.map(d=>btn('document','Read '+d.title,d.id)).join(' ')+b.grant.warnings.map(w=>'<p class="gf-note">'+esc(w)+'</p>').join('')+'<details><summary>Funding uses to consider</summary>'+b.funding.options.map(o=>'<p><strong>'+esc(o.title)+'</strong><br>'+esc(o.next_action)+'</p>').join('')+(b.funding.excluded_options||[]).map(o=>'<p class="gf-note"><strong>Leave out unless clarified: '+esc(o.title)+'</strong><br>'+esc(o.next_action)+'</p>').join('')+(b.funding.cost_context?.prohibited_costs?.length?'<p class="gf-note"><strong>Funder cost exclusions:</strong> '+esc(b.funding.cost_context.prohibited_costs.join('; '))+'</p>':'')+'<p class="gf-note">'+esc(b.funding.warning)+'</p></details><details><summary>Original funder guidance used in preparation</summary>'+b.grant.source_quotes.map(q=>'<p><strong>'+esc(q.locator)+'</strong><br>'+esc(q.text)+'</p>').join('')+'</details></section>';
+    }
     function strategyStatus() {
       const j = s.strategyJob;
       if (!j || j.application_id !== s.app?.id) return "";
@@ -911,6 +920,7 @@
         box.innerHTML =
           '<div class="gf-card"><div class="gf-row"><h3>Application source</h3><div>' +
           btn("document", "View original & extraction", a.source_document_id) +
+          (s.app.writing_brief?.grant.sources||[]).filter(d=>d.id!==a.source_document_id).map(d=>btn("document", "Read "+d.title,d.id)).join(" ") +
           (!locked
             ? btn("parse", "Run AI parser") +
               btn("question", "Add question") +
@@ -977,7 +987,7 @@
                     btn("approve-answer", "Approve answer", q.id)
                   : "") +
                 pill(ans?.status || "NOT_STARTED") +
-                '</div>' + (ans?.status === 'NEEDS_INPUT' ? '<div class="gf-callout"><strong>This answer needs more information.</strong>' + (a.inputs || []).filter(i => i.question_id === q.id && i.status !== 'RESOLVED').map(i => '<p>' + esc(i.prompt) + '</p>').join('') + '<button data-apptab="input" class="btn btn-ghost btn-sm">Answer these questions</button></div>' : '') + '<details><summary>Why did OA say this?</summary>' +
+                '</div>' + writingGuidance(q,ans) + (ans?.status === 'NEEDS_INPUT' ? '<div class="gf-callout"><strong>Supported draft saved; these details still need your input.</strong>' + (a.inputs || []).filter(i => i.question_id === q.id && i.status !== 'RESOLVED').map(i => '<p>' + esc(i.prompt) + '</p>').join('') + '<button data-apptab="input" class="btn btn-ghost btn-sm">Answer these questions</button></div>' : '') + '<details><summary>Why did OA say this?</summary>' +
                 (ans?.evidence_ids || [])
                   .map((id) => {
                     const f = evidenceFact(id);
@@ -1021,7 +1031,7 @@
           (p) => p.id === a.primary_program_id,
         );
         box.innerHTML =
-          '<div class="gf-card"><div class="gf-row"><h3>Application strategy</h3>' +
+          writingOverview() + '<div class="gf-card"><div class="gf-row"><h3>Application strategy</h3>' +
           (!locked
             ? btn("application-details", "Edit details & strategy") +
               (["QUEUED", "RUNNING"].includes(s.strategyJob?.application_id === s.app.id && s.strategyJob?.status)
@@ -1795,6 +1805,14 @@
                 a.deadline,
               ) +
               field("amount", "Request amount", a.request_amount, "number") +
+              '<label>Additional RFP, worksheet or portal documents (up to four)<select name="funder_sources" multiple>'+s.data.brain.documents.filter(d=>d.id!==a.source_document_id&&d.status==='AVAILABLE'&&d.extraction_status==='COMPLETE'&&d.sensitivity_level!=='RESTRICTED'&&!d.internal_only&&(d.document_type==='GRANT_APPLICATION'||d.external_use_allowed)).map(d=>'<option value="'+esc(d.id)+'"'+((a.additional_source_document_ids||[]).includes(d.id)?' selected':'')+'>'+esc(d.title)+'</option>').join('')+'</select></label>' +
+              area('funding_purpose','What this grant funds (from the source)',a.funding_purpose) +
+              area('funder_priorities','Funder priorities (from the source)',a.funder_priorities) +
+              area('rubric_or_scoring','Reviewer criteria or scoring rubric',a.rubric_or_scoring) +
+              area('allowable_costs','Allowed costs (one source-stated rule per line)',(a.allowable_costs||[]).join('\n')) +
+              area('prohibited_costs','Excluded costs (one source-stated rule per line)',(a.prohibited_costs||[]).join('\n')) +
+              field('grant_period','Grant period as stated',a.grant_period) +
+              area('match_requirement','Matching funds requirement as stated',a.match_requirement) +
               select(
                 "program",
                 "Primary program",
@@ -1854,6 +1872,10 @@
                     : null,
                   primary_program_id: f.get("program") || null,
                   secondary_program_ids: f.getAll("secondary"),
+                  additional_source_document_ids:f.getAll("funder_sources"),
+                  funding_purpose:f.get("funding_purpose"),funder_priorities:f.get("funder_priorities"),rubric_or_scoring:f.get("rubric_or_scoring"),grant_period:f.get("grant_period"),match_requirement:f.get("match_requirement"),
+                  allowable_costs:String(f.get("allowable_costs")||"").split(/\n/).map(v=>v.trim()).filter(Boolean),
+                  prohibited_costs:String(f.get("prohibited_costs")||"").split(/\n/).map(v=>v.trim()).filter(Boolean),
                   strategy,
                   strategy_approved: f.has("approve"),
                 },
