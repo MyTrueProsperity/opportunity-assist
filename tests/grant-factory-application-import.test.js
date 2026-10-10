@@ -105,11 +105,11 @@ test('database-backed import, proactive draft, no-op resume and final review gat
     assert.ok(C.qa(a,await repo.brain(owner)).issues.some(i=>/PARSER|STRATEGY/.test(i.code)));const blocked=await svc.handle(owner,{action:'approve_application',application_id:a.id,revision:a.revision});assert.equal(blocked.blocked,true);assert.equal(blocked.qa.passed,false);
   }finally{await pg.close();}
 });
-test('a protected application gets an upload workspace; attached full application replaces only after explicit confirmation',async()=>{
+test('a protected application gets an upload workspace; source replacement stages repairs and preserves human text',async()=>{
   const fixture=await createTestRepo(),{repo,owner,pg}=fixture;
   try{await seed(repo,owner);await pipelineFixture(fixture);const ai=fakeAi(()=>assert.fail('No AI needed'));const svc=service(repo,ai,{applicationFetch:async()=>{throw Error('HTTP 403');}});let a=await svc.handle(owner,{action:'import_pipeline',pipeline_item_id:PIPE});assert.equal(a.content.status,'NEEDS_INPUT');assert.equal(a.questions.length,0);assert.equal(a.content.application_import.status,'NEEDS_UPLOAD');
     a=await svc.handle(owner,{action:'attach_application',application_id:a.id,revision:a.revision,text:'1. Describe pre-existing impact.\nMaximum 500 words.'});assert.equal(a.questions.length,1);assert.equal(a.content.application_import.status,'USER_PROVIDED_APPLICATION');
-    a=await svc.handle(owner,{action:'save_answer',application_id:a.id,revision:a.revision,question_id:a.questions[0].id,text:'A saved human answer',evidence_ids:[]});await assert.rejects(svc.handle(owner,{action:'attach_application',application_id:a.id,revision:a.revision,text:'1. New question?'}),/Confirm replacement/);assert.equal((await repo.app(owner,a.id)).answers[0].draft_text,'A saved human answer');assert.equal(ai.calls.length,0);
+    a=await svc.handle(owner,{action:'save_answer',application_id:a.id,revision:a.revision,question_id:a.questions[0].id,text:'A saved human answer',evidence_ids:[]});a=await svc.handle(owner,{action:'attach_application',application_id:a.id,revision:a.revision,text:'1. New question?'});assert.ok(a.content.reconciliation_preview);assert.equal(a.answers[0].draft_text,'A saved human answer');assert.equal((await repo.app(owner,a.id)).answers[0].draft_text,'A saved human answer');assert.equal(ai.calls.length,0);
   }finally{await pg.close();}
 });
 test('real client escapes history, explains derived averages and has both pipeline stages connected',async()=>{
@@ -155,11 +155,11 @@ test('an interrupted or failed batch does not repeatedly spend AI allowance and 
 
 test('AI extraction preserves original explicit contact, numeric and selection formats and their locators',()=>{
   const blocks=[{locator:'L1',text:'1. Organization name *\nFormat: Short text'},{locator:'L2',text:'2. People served *\nFormat: Integer'},{locator:'L3',text:'3. Delivery model *\nFormat: Selection\nOptions: In-person | Online'}];
-  const basic=P.basic(blocks);assert.deepEqual(basic.questions.map(q=>q.question_type),['OTHER','NUMBER','MULTI_SELECT']);
-  const output={questions:basic.questions.map(q=>({...q,question_type:'NARRATIVE'}))};const parsed=P.normalize(output,blocks);assert.deepEqual(parsed.questions.map(q=>q.question_type),['OTHER','NUMBER','MULTI_SELECT']);assert.equal(parsed.questions[1].input_format,'Integer');
+  const basic=P.basic(blocks);assert.deepEqual(basic.questions.map(q=>q.question_type),['OTHER','NUMBER','SINGLE_SELECT']);
+  const output={questions:basic.questions.map(q=>({...q,question_type:'NARRATIVE'}))};const parsed=P.normalize(output,blocks);assert.deepEqual(parsed.questions.map(q=>q.question_type),['OTHER','NUMBER','SINGLE_SELECT']);assert.equal(parsed.questions[1].input_format,'Integer');
 });
 
-test('client quota recovery unlocks the batch without a retry, and parser failure falls back to a reviewable original list',async()=>{
+test('client quota recovery unlocks the batch without retry; preparation never automatically reparses saved fields',async()=>{
   const code=fs.readFileSync('assets/grant-factory.js','utf8').replace('session = s;','session = s; window.testBatch={s,prepareFirstDraft};');
   async function run(mode){
     const window={OAGrantLimits:C.limits},main={isConnected:false,innerHTML:'',querySelector:()=>null},calls=[];
@@ -176,7 +176,7 @@ test('client quota recovery unlocks the batch without a retry, and parser failur
     vm.runInNewContext(code,context);window.OAGrantFactory.mount(main,{auth:{getSession:async()=>({data:{session:{access_token:'synthetic'}}})}});await new Promise(resolve=>setImmediate(resolve));
     const ui=window.testBatch;ui.s.app=record;ui.s.root={isConnected:true};
     if(mode==='quota'){record.content.first_draft={status:'IN_PROGRESS'};await assert.rejects(ui.prepareFirstDraft(),/Saved answers are preserved/);assert.equal(ui.s.firstDraftProgress,null);assert.equal(calls.filter(x=>x.action==='first_draft_question').length,1);assert.equal(calls.filter(x=>x.action==='first_draft_failure').length,0);}
-    else {await ui.prepareFirstDraft();assert.match(calls.find(x=>x.action==='prepare_first_draft').source_warning,/original basic question list is preserved/);assert.equal(calls.filter(x=>x.action==='parse').length,1);assert.equal(ui.s.app.questions.length,1);}
+    else {await ui.prepareFirstDraft();assert.equal(calls.filter(x=>x.action==='parse').length,0);assert.equal(ui.s.app.questions.length,1);}
   }
   await run('quota');await run('parser');
 });
@@ -193,3 +193,5 @@ test('a funder selection rationale must be explicitly quoted, not inferred from 
   const sources=[{url:HISTORY,blocks:[{locator:'L1',text:quote}]}];const row={recipient:'Learning Circle',description:'',amount_text:'USD 30,000',year:null,selection_reason:'Selected because youth co-lead the design.',source_url:HISTORY,source_locator:'L1',source_quote:quote};
   assert.equal(H.grounded({awards:[row]},sources,[]).awards[0].selection_reason,row.selection_reason);assert.throws(()=>H.grounded({awards:[{...row,selection_reason:'They prefer new nonprofits.'}]},sources,[]),/selection rationale/);
 });
+
+test('canonical form metadata preserves required and optional controls independently',()=>{const markup='<h1>Application form</h1><form><label for="yes">Organization name</label><input id="yes" required><label for="no">Optional website</label><input id="no" type="url"><label for="answer">Describe the solution</label><textarea id="answer" required></textarea></form>';const {parsed}=I.analyze(page(markup));assert.equal(parsed.questions.length,3);assert.deepEqual(parsed.questions.map(q=>q.required),[true,false,true]);});

@@ -268,26 +268,7 @@ function recommend(application, programs) {
     human_review_required: true,
   };
 }
-function eligibility(rules, facts) {
-  return (rules || []).map((r) => {
-    const f = facts.find((f) => f.fact_key === r.fact_key && factAllowed(f));
-    let status = "UNCERTAIN",
-      reason = "No approved, current evidence establishes this requirement.";
-    if (r.commitment) {
-      status = "HUMAN_REVIEW";
-      reason =
-        "A person must review this legal, financial or institutional commitment.";
-    } else if (f && r.operator === "EXACT" && r.expected_value != null) {
-      status =
-        String(f.value).trim().toLowerCase() ===
-        String(r.expected_value).trim().toLowerCase()
-          ? "PASS"
-          : "FAIL";
-      reason = "Compared the explicit requirement with " + f.display_name;
-    }
-    return { ...r, status, reason, evidence_id: f?.id || null };
-  });
-}
+function eligibility(rules,facts,at=new Date()){return require('./eligibility').evaluate(rules,facts,at);}
 function deterministicAudit(text, evidence, question) {
   const findings = [];
   const sentences = String(text || "")
@@ -326,6 +307,7 @@ function deterministicAudit(text, evidence, question) {
         sentence,
       ) &&
       /(?:placed|employment|college|income|wage|outcome|earned)/i.test(sentence)
+      && !require('./proposal-review').rateSupported(sentence,evidence)
     )
       push(
         sentence,
@@ -443,9 +425,9 @@ function auditValid(answer, evidence, brainRevision) {
   );
 }
 function requirementsSignature(app, brain) {
-  const c=app.content||{},fields=['source_document_id','additional_source_document_ids','funder_name','grant_program_name','funding_purpose','funder_priorities','rubric_or_scoring','eligible_applicants','eligible_geographies','allowable_costs','prohibited_costs','match_requirement','grant_period','award_min','award_max','request_amount','primary_program_id','secondary_program_ids','deadline','application_cycle','funder_requirements'];
+  const c=app.content||{},fields=['source_document_id','additional_source_document_ids','funder_name','grant_program_name','funding_purpose','funder_priorities','rubric_or_scoring','eligible_applicants','eligible_geographies','allowable_costs','prohibited_costs','match_requirement','grant_period','award_min','award_max','request_amount','primary_program_id','secondary_program_ids','deadline','application_cycle','funder_requirements','eligibility','attachments','project_model'];
   const ids=[c.source_document_id,...(c.additional_source_document_ids||[])].filter(Boolean);
-  return hash({application:Object.fromEntries(fields.map(k=>[k,c[k]??null])),sources:ids.map(id=>{const d=brain.documents.find(d=>d.id===id);return d?[id,d.sha256,d.version,d.revision,d.status,d.extraction_status,d.sensitivity_level,d.internal_only,d.document_type,d.external_use_allowed,d.expiration_date]:[id,'MISSING'];}),questions:app.questions.map(q=>[q.id,q.question_text,q.question_type,q.limit_type,q.limit_value,q.required,q.section,q.question_category,q.rubric_text,q.source_quote,q.instruction_sources])});
+  return hash({application:Object.fromEntries(fields.map(k=>[k,k==='eligibility'?(c[k]||[]).map(({review,status,reason,evidence_id,hard_failure,applicability,...r})=>r):k==='attachments'?(c[k]||[]).map(({validation_review,condition_review,reviewed,...r})=>r):c[k]??null])),sources:ids.map(id=>{const d=brain.documents.find(d=>d.id===id);return d?[id,d.sha256,d.version,d.revision,d.status,d.extraction_status,d.sensitivity_level,d.internal_only,d.document_type,d.external_use_allowed,d.expiration_date]:[id,'MISSING'];}),questions:app.questions.map(q=>[q.id,q.question_text,q.question_type,q.limit_type,q.limit_value,q.required,q.section,q.question_category,q.rubric_text,q.source_quote,q.instruction_sources,q.options,q.conditional_trigger,q.condition,q.input_format])});
 }
 function qa(app, brain) {
   const issues = [];
@@ -476,13 +458,15 @@ function qa(app, brain) {
   }
   const currentRequirements=requirementsSignature(app,brain);
   for(const a of app.answers)if(a.audit?.requirements_signature && a.audit.requirements_signature!==currentRequirements)add("FUNDER_CONTEXT","The grant requirements changed after this answer was audited. Read the updated sources and audit again.",a.question_id);
-  for (const r of app.content.eligibility || [])
-    if (
-      r.status !== "PASS" &&
-      !(r.review?.approved && r.review?.brain_revision === brain.revision)
-    )
-      add("ELIGIBILITY", "Eligibility requires review: " + r.rule);
+  for(const raw of eligibility(app.content.eligibility,authorizedFacts(brain,app.id))){const E=require('./eligibility'),r=E.effective(raw,brain,app.id);if(!E.resolved(raw,brain,app.id))add(r.status==='FAIL'?'ELIGIBILITY_FAIL':'ELIGIBILITY_UNRESOLVED',r.rule+': '+r.reason);}
+  issues.push(...require('./requirements').issues(app,brain));
+  issues.push(...require('./project-model').validate(app.content.project_model,app.content).issues);
+  issues.push(...require('./proposal-review').issues(app,brain));
+  issues.push(...require('./attachment-review').issues(app,brain));
   for (const q of app.questions) {
+    const applies=require('./attachment-review').applicable(q,app,brain);
+    if(applies===null){add('FIELD_CONDITION','Resolve this conditional field before submission.',q.id);continue;}
+    if(applies===false)continue;
     if (q.question_type === "UPLOAD") {
       if (
         q.required !== false &&
@@ -500,6 +484,9 @@ function qa(app, brain) {
       if (q.required !== false) add("MISSING_ANSWER", q.question_text, q.id);
       continue;
     }
+    if(q.question_type==='NUMBER'&&!/^\d+(?:\.\d+)?$/.test(a.draft_text.trim()))add('FIELD_TYPE','Enter a numeric value.',q.id);
+    if(q.question_type==='DATE'&&require('./project-model').date(a.draft_text.trim())==null)add('FIELD_TYPE','Enter a real calendar date.',q.id);
+    if(['YES_NO','SINGLE_SELECT','MULTI_SELECT'].includes(q.question_type)){const opts=q.question_type==='YES_NO'?['Yes','No']:(q.options||[]);const vals=q.question_type==='MULTI_SELECT'?a.draft_text.split(/\n|;/).map(x=>x.trim()).filter(Boolean):[a.draft_text.trim()];if(!opts.length||vals.some(v=>!opts.some(o=>o.toLowerCase()===v.toLowerCase())))add('FIELD_CHOICE','Confirm the original choices and use valid selections.',q.id);}
     const c = limits.check(a.draft_text, q);
     if (c.over)
       add(

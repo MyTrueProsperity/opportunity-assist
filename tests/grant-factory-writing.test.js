@@ -108,6 +108,7 @@ test('changing ask, field limit, rubric or funder sources makes queued strategy 
 test('funder-source version and question requirements invalidate prior audit in final QA',()=>{
   const f=fact(),q=question(),app=application(q),doc=document('Source instructions');app.content.source_document_id=doc.id;const b=brain([f],[doc]);
   const a={id:C.randomUUID(),question_id:q.id,draft_text:f.value,evidence_ids:[f.id],status:'APPROVED',layout_reviewed:true,audit:{status:'COMPLETE',coverage_complete:true,text_hash:C.hash(f.value),evidence_hash:C.hash([f]),brain_revision:b.revision,requirements_signature:C.requirementsSignature(app,b),claims:[{claim:f.value,status:'SUPPORTED',evidence_ids:[f.id]}]}};app.answers=[a];
+  app.content.request_amount=250;app.content.project_model=require('./helpers/grant-proposal').project(doc);require('../netlify/lib/grant-factory/requirements').review(app,b,G.read([doc],app),require('./helpers/grant-proposal').confirmation,{user_id:'owner'});a.audit.requirements_signature=C.requirementsSignature(app,b);require('../netlify/lib/grant-factory/proposal-review').confirm(app,b,{reviewed:true,note:'Synthetic full proposal reviewed',criteria:[]},{user_id:'owner'});
   assert.equal(C.qa(app,b).passed,true,JSON.stringify(C.qa(app,b).issues));doc.sha256='changed';assert.ok(C.qa(app,b).issues.some(i=>i.code==='FUNDER_CONTEXT'));
   doc.sha256=C.hash('Source instructions');q.required=false;assert.ok(C.qa(app,b).issues.some(i=>i.code==='FUNDER_CONTEXT'));
 });
@@ -141,8 +142,8 @@ test('real repository flow reads the complete grant, retains supported partial w
     const rfp=await svc.handle(owner,{action:'upload_document',filename:'rfp.txt',document_type:'GRANT_APPLICATION',title:'Complete RFP',base64:Buffer.from('Review criteria prioritize youth co-leadership. We will not fund surveillance.').toString('base64')});
     const update=async(action,payload={})=>{const current=await repo.app(owner,app.id);const result=await svc.handle(owner,{action,application_id:app.id,revision:current.revision,...payload});app=await repo.app(owner,app.id);return result;};
     await update('save_application',{application:{primary_program_id:PROGRAM,additional_source_document_ids:[rfp.id]}});
-    await update('parse');assert.ok(calls.at(-1).data.blocks.some(x=>/surveillance/.test(x.text)));assert.ok(app.content.funder_requirements.length);assert.equal(app.content.funder_name,'Learning Fund');assert.equal(app.content.grant_program_name,'Youth Decisions');
-    await update('save_application',{application:{strategy:{primary_case:'Learning Lab documented completed portfolios.'},strategy_approved:true}});await update('confirm_parser');const qid=app.questions[0].id;
+    await update('parse');await update('apply_reconciliation',{reviewed:true});assert.ok(calls.at(-1).data.blocks.some(x=>/surveillance/.test(x.text)));assert.ok(app.content.funder_requirements.length);assert.equal(app.content.funder_name,'Learning Fund');assert.equal(app.content.grant_program_name,'Youth Decisions');
+    await update('save_application',{application:{strategy:{primary_case:'Learning Lab documented completed portfolios.'},strategy_approved:true}});await update('confirm_parser',require('./helpers/grant-proposal').confirmation);const qid=app.questions[0].id;
     await update('draft',{question_id:qid});const sent=calls.find(c=>c.task==='write').data;
     assert.equal(sent.funder_reading.sources.length,2);assert.ok(sent.funder_reading.blocks.some(x=>/surveillance/.test(x.text)));assert.ok(sent.question_plan.opening_candidates.some(p=>p.evidence_id===proof.id));
     assert.equal(app.answers[0].draft_text,proof.value);assert.equal(app.answers[0].status,'NEEDS_INPUT');assert.equal(app.content.inputs.length,1);assert.ok(C.qa(app,await repo.brain(owner)).issues.some(i=>i.code==='NEEDS_INPUT'));
@@ -152,6 +153,6 @@ test('real repository flow reads the complete grant, retains supported partial w
     b=await repo.brain(owner);const d=await repo.document(owner,rfp.id);await repo.writeBrain(owner,b,[{table:'gf_documents',id:rfp.id,content:{...d,sha256:'updated-version'}}]);
     await assert.rejects(update('approve_answer',{question_id:qid}),/current.*audit|requirements changed/);
     await update('save_application',{application:{rubric_or_scoring:'Youth must direct evaluation.'}});assert.equal(app.content.strategy.approved,false,'changed funder requirements need strategy review');
-    assert.equal((await svc.handle(owner,{action:'get_application',application_id:app.id})).app.writing_brief.self_questions.length,12);
+    const selfQuestions=(await svc.handle(owner,{action:'get_application',application_id:app.id})).app.writing_brief.self_questions;for(const id of ['schedule','other_funding','partnership_stage'])assert.ok(selfQuestions.some(x=>x.id===id));
   }finally{await pg.close();}
 });

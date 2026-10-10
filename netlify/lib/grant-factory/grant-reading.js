@@ -40,14 +40,14 @@ function read(documents,app) {
   for(const b of ordered){if(chars+b.text.length>MAX_SOURCE_CHARS)continue;kept.push(b);chars+=b.text.length;}
   const incomplete=kept.length!==all.length;
   const content=app.content||{};
-  const fields=['funder_name','grant_program_name','funding_purpose','funder_priorities','funder_requirements','rubric_or_scoring','eligible_applicants','eligible_geographies','award_min','award_max','grant_period','request_amount','match_requirement','allowable_costs','prohibited_costs'];
+  const fields=['application_cycle','deadline','funder_name','grant_program_name','funding_purpose','funder_priorities','funder_requirements','rubric_or_scoring','eligible_applicants','eligible_geographies','award_min','award_max','grant_period','request_amount','match_requirement','allowable_costs','prohibited_costs'];
   const application=Object.fromEntries(fields.map(k=>[k,content[k]??null]));
   const warnings=[];
   if(!all.length)warnings.push('No original funder text is available. Enter or attach the complete RFP and application instructions.');
   if(incomplete)warnings.push('The source packet is a bounded excerpt. Check omitted source material before treating it as complete.');
   if(all.some(b=>/vast majority of questions|not reflected on this worksheet|not.*all.*(?:fields|questions)|narrative.*only/i.test(b.text)))warnings.push('The supplied worksheet omits other application fields. Check the full portal, including numeric fields, selections, uploads and commitments.');
   return {version:VERSION,status:'FUNDER_REQUIREMENTS_NOT_ORGANIZATIONAL_EVIDENCE',application,sources:documents.map(d=>({id:d.id,title:d.title,sha256:d.sha256||null,block_count:d.blocks?.length||0})),
-    blocks:kept,total_source_characters:total,included_source_characters:chars,complete:all.length>0&&!incomplete,warnings,
+    blocks:kept,total_source_characters:total,included_source_characters:chars,complete:all.length>0&&!incomplete,text_packet_complete:all.length>0&&!incomplete,requirements_status:'UNRECONCILED_UNTIL_HUMAN_SOURCE_COMPARISON',warnings,
     input_hash:C.hash({sources:documents.map(d=>[d.id,d.sha256,d.blocks]),application})};
 }
 function forQuestion(reading,q){

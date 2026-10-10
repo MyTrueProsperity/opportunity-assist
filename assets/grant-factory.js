@@ -110,6 +110,7 @@
     "DATE",
     "YES_NO",
     "MULTI_SELECT",
+    "SINGLE_SELECT",
     "UPLOAD",
     "BUDGET",
     "CERTIFICATION",
@@ -654,7 +655,7 @@
     }
     function writingOverview() {
       const b=s.app.writing_brief;if(!b)return '';
-      return savedWritingGuides()+historyOverview()+'<section class="gf-card"><h3>The case this grant should make</h3><p>OA checks the original funder requirements, your strongest proven results, what the grant adds and whether delivery is properly resourced before writing.</p><details><summary>Questions OA asks itself</summary>'+b.self_questions.map(x=>'<p><strong>'+esc(x.question)+'</strong><br>'+esc(x.action)+'</p>').join('')+'</details><p class="gf-meta">'+(b.grant.complete?'All text fits in the application-wide reading packet.':'The source packet needs a completeness check.')+'</p>'+b.grant.sources.map(d=>btn('document','Read '+d.title,d.id)).join(' ')+b.grant.warnings.map(w=>'<p class="gf-note">'+esc(w)+'</p>').join('')+'<details><summary>Funding uses to consider</summary>'+b.funding.options.map(o=>'<p><strong>'+esc(o.title)+'</strong><br>'+esc(o.next_action)+'</p>').join('')+(b.funding.excluded_options||[]).map(o=>'<p class="gf-note"><strong>Leave out unless clarified: '+esc(o.title)+'</strong><br>'+esc(o.next_action)+'</p>').join('')+(b.funding.cost_context?.prohibited_costs?.length?'<p class="gf-note"><strong>Funder cost exclusions:</strong> '+esc(b.funding.cost_context.prohibited_costs.join('; '))+'</p>':'')+'<p class="gf-note">'+esc(b.funding.warning)+'</p></details><details><summary>Original funder guidance used in preparation</summary>'+b.grant.source_quotes.map(q=>'<p><strong>'+esc(q.locator)+'</strong><br>'+esc(q.text)+'</p>').join('')+'</details></section>';
+      return savedWritingGuides()+historyOverview()+'<section class="gf-card"><h3>The case this grant should make</h3><p>OA checks the original funder requirements, your strongest proven results, what the grant adds and whether delivery is properly resourced before writing.</p><details><summary>Questions OA asks itself</summary>'+b.self_questions.map(x=>'<p><strong>'+esc(x.question)+'</strong><br>'+esc(x.action)+'</p>').join('')+'</details><p class="gf-meta">'+(b.grant.complete?'Captured text fits in the reading packet. Check the Source checklist to establish complete requirements.':'The source packet needs a completeness check.')+'</p>'+b.grant.sources.map(d=>btn('document','Read '+d.title,d.id)).join(' ')+b.grant.warnings.map(w=>'<p class="gf-note">'+esc(w)+'</p>').join('')+'<details><summary>Funding uses to consider</summary>'+b.funding.options.map(o=>'<p><strong>'+esc(o.title)+'</strong><br>'+esc(o.next_action)+'</p>').join('')+(b.funding.excluded_options||[]).map(o=>'<p class="gf-note"><strong>Leave out unless clarified: '+esc(o.title)+'</strong><br>'+esc(o.next_action)+'</p>').join('')+(b.funding.cost_context?.prohibited_costs?.length?'<p class="gf-note"><strong>Funder cost exclusions:</strong> '+esc(b.funding.cost_context.prohibited_costs.join('; '))+'</p>':'')+'<p class="gf-note">'+esc(b.funding.warning)+'</p></details><details><summary>Original funder guidance used in preparation</summary>'+b.grant.source_quotes.map(q=>'<p><strong>'+esc(q.locator)+'</strong><br>'+esc(q.text)+'</p>').join('')+'</details></section>';
     }
     function strategyStatus() {
       const j = s.strategyJob;
@@ -885,6 +886,20 @@
         (c.over ? " · OVER LIMIT" : "")
       );
     }
+    function requirementsView(locked){const c=s.app.requirements_checklist||{},p=s.app.content.reconciliation_preview;return '<section class="gf-card"><h3>Complete source checklist</h3><p>'+esc(c.review_current?'Requirements reconciled against the complete original.':'Source captured / requirements unresolved')+'</p><p class="gf-note">Text capture, reconciled requirements and final readiness are separate decisions. Original documents remain in the vault.</p>'+(!locked?btn('preview-reconciliation','Preview source repairs')+btn('reconciliation','Review proposed repairs')+btn('confirm-parser','Confirm source checklist'):'')+(p?'<p>A repair preview is waiting for review; saved answers are unchanged.</p>':'')+(c.issues||[]).map(i=>'<p class="gf-note">'+esc(i.message)+'</p>').join('')+(c.entries||[]).map(r=>'<details><summary>'+esc(r.kind+' · '+r.label.split('\n')[0])+'</summary><p>'+esc(r.question_type||'Source requirement')+' · '+esc(r.required===false?'Optional':'Required when applicable')+' · '+esc(r.limit_value||'No numeric limit captured')+' '+esc(r.limit_type||'')+'</p><p>Cycle: '+esc(r.application_cycle)+' · Owner: '+esc(r.owner||'Assign during review')+' · '+esc(r.status)+'</p><p>'+esc(r.conditional_trigger||'No conditional trigger captured')+'</p><blockquote>'+esc(r.source_quote||'Source quote needs review')+'</blockquote><p>'+esc(r.source_locator||'Locator needs review')+'</p>'+((r.options||[]).length?'<p>Choices: '+esc(r.options.join(' · '))+'</p>':'')+(!locked&&r.conditional_trigger&&['FIELD','ATTACHMENT'].includes(r.kind)?btn(r.kind==='FIELD'?'condition-field':'condition-attachment','Review applicability',r.id):'')+'</details>').join('')+'</section>';}
+    function showReconciliation(){const p=s.app.content.reconciliation_preview;if(!p){message('Choose Preview source repairs first. This compares the source without using AI.');return;}dialog('Review proposed source repairs','<p>Matched fields retain their IDs and answers. Changed types/limits need fresh review. Fields missing from the new source are kept unless you explicitly archive them below. Original files and edit history remain.</p>'+p.changes.map(x=>'<div class="gf-list-row"><strong>'+esc(label(x.kind)+' · '+x.label)+'</strong><p>'+esc((x.fields||[]).join(', '))+(x.has_answer?' · Saved answer retained':'')+'</p>'+(x.kind==='NOT_FOUND'?check('archive','Archive this field; its old answer remains in history',false).replace('name="archive"','name="archive" value="'+esc(x.old_id)+'"'):'')+'</div>').join('')+(p.requirement_changes||[]).map(x=>'<div class="gf-list-row"><strong>'+esc(label(x.key)+' · '+label(x.kind)+' · '+x.label)+'</strong><p>'+esc((x.fields||[]).join(', '))+'</p>'+(x.kind==='NOT_FOUND'?check('archive_requirement','Archive this missing requirement after checking the complete original',false).replace('name="archive_requirement"','name="archive_requirement" value="'+esc(x.key+':'+x.id)+'"'):'')+'</div>').join('')+p.conflicts.map(x=>'<p class="gf-note">'+esc(x.message)+'. Correct ambiguous labels before applying repairs.</p>').join('')+check('reviewed','I compared these changes with the original application'),async f=>mutate('apply_reconciliation',{reviewed:f.has('reviewed'),archive_question_ids:f.getAll('archive'),archive_requirement_ids:f.getAll('archive_requirement')}));}
+    function projectView(locked){const m=s.app.content.project_model,v=s.app.project_validation;return '<section class="gf-card"><h3>One project, one budget</h3><p>Reuse the same delivery scope, dates, counts, evaluation and costed request across every answer. Historical work, current solution delivery and future expansion remain distinct.</p>'+(!locked?btn('project-model','Edit project & costed budget'):'')+(!m?'<p>Shared project model is unresolved.</p>':'<h4>'+esc(m.title)+'</h4><p>'+esc(m.service)+'</p><p>'+esc(label(m.delivery_status))+' · '+esc(m.start_date)+' to '+esc(m.end_date)+'</p><p>Organization current unique: '+esc(m.organization_current_unique??'Unknown')+' · Solution current unique: '+esc(m.solution_current_unique??'Unknown')+' · Solution encounters: '+esc(m.solution_current_encounters??'Unknown')+' · Projected solution unique: '+esc(m.solution_projected_unique??'Unknown')+'</p>')+(v?.totals?'<p><strong>Allocated cost:</strong> '+esc(v.totals.currency+' '+v.totals.cost)+' · Request '+esc(v.totals.request)+' · Confirmed other funds '+esc(v.totals.confirmed_other)+' · Funding gap '+esc(v.totals.funding_gap)+'</p>':'<p>Budget totals remain unknown until all cost and allocation inputs are supplied.</p>')+(v?.issues||[]).map(i=>'<p class="gf-note">'+esc(i.message)+'</p>').join('')+'</section>';}
+    function showProjectModel(){const m=s.app.content.project_model||{delivery_status:'UNRESOLVED',budget_lines:[],activities:[],outcomes:[],funder:{}},f=m.funder||{};
+      const defs={budget_lines:[['label','Cost item'],['unit','Unit (hour, person, session...)'],['quantity','Quantity'],['unit_rate','Rate per unit'],['duration','Duration / repetitions'],['allocation_percent','Percent allocated to this project'],['requested','Amount requested from this grant'],['confirmed_other','Confirmed other funding (0 only if confirmed)'],['count_basis','Resource count basis',['NOT_APPLICABLE','UNIQUE','ENCOUNTERS']],['eligibility','Grant cost eligibility',['UNRESOLVED','ELIGIBLE','PROHIBITED']],['funding_source','Confirmed funding source'],['restriction','Funding restrictions'],['justification','Delivery justification']],activities:[['name','Activity'],['start_date','Start date'],['end_date','End date'],['phase','Activity phase',['PREPARATION','DELIVERY','FOLLOWUP']],['participants','Participants'],['count_basis','Count basis',['UNIQUE','ENCOUNTERS']],['sessions','Sessions'],['staff_hours','Staff hours'],['owner','Delivery owner'],['dependencies','Confirmed / planned capacity and dependencies']],outcomes:[['name','Output / outcome'],['temporal_context','Result status',['PLANNED','CURRENT','HISTORICAL']],['baseline','Baseline'],['target','Target / measured result'],['denominator','Population, period and denominator'],['measure','Measurement method'],['timing','Measurement timing'],['owner','Responsible staff'],['limitations','Missing data, causal limits and consent']]};
+      const lists={};let rows='';for(const [key,fields]of Object.entries(defs)){lists[key]=[...(m[key]||[]),{}];rows+='<h3>'+esc(label(key))+'</h3>';lists[key].forEach((r,i)=>{rows+='<details class="gf-card" '+(i===lists[key].length-1?'open':'')+'><summary>'+esc(r.label||r.name||'Add a row (leave blank to skip)')+'</summary>'+fields.map(([k,l,opts])=>opts?select(key+i+k,l,opts,r[k]||opts[0]):field(key+i+k,l,r[k])).join('')+'</details>';});}
+      dialog('Shared project & budget','<p>Enter supported values. Blank means unknown; do not invent rates, commitments, match or costs. Project information guides drafts and must be supported by approved evidence.</p>'+field('title','Funded project',m.title)+area('service','Who receives what, how often and for how long?',m.service)+select('delivery_status','Delivery status',['UNRESOLVED','EXISTING','EXPANSION','PLANNED'],m.delivery_status)+field('start_date','Project start',m.start_date,'date')+field('end_date','Project end',m.end_date,'date')+field('launch_date','Planned solution opening (if applicable)',m.launch_date,'date')+field('currency','Budget currency (e.g. USD)',m.currency)+['organization_current_unique','solution_current_unique','solution_current_encounters','solution_projected_unique'].map(k=>field(k,label(k),m[k],'number')).join('')+rows+'<h3>Source-stated funder constraints</h3><p>Use the exact original source. Blank amounts are unknown. “Not stated” means you checked the complete original, not that a page was missing.</p>'+select('source_document_id','Funder document',docs(),f.source_document_id)+field('source_locator','Exact source locator',f.source_locator)+area('source_quote','Exact source quote',f.source_quote)+['award_range_status','grant_period_status','deadline_status'].map(k=>select(k,label(k),['UNRESOLVED','STATED','NOT_STATED'],f[k]||'UNRESOLVED')).join('')+['award_min','award_max','grant_start','grant_end','deadline'].map(k=>field(k,label(k),f[k])).join('')+field('funder_currency','Source-stated award currency',f.currency)+check('funder_reviewed','I checked the stated constraints and unstated fields against the original',f.reviewed)+area('notes','Definitions, uncertainties and planning notes',m.notes),async form=>{
+        const next={};for(const k of ['title','service','delivery_status','start_date','end_date','launch_date','currency','organization_current_unique','solution_current_unique','solution_current_encounters','solution_projected_unique','notes'])next[k]=form.get(k);
+        for(const [key,fields]of Object.entries(defs))next[key]=lists[key].map((r,i)=>Object.fromEntries([['id',r.id],...fields.map(([k])=>[k,form.get(key+i+k)])])).filter(r=>r.label||r.name);
+        next.funder=Object.fromEntries(['source_document_id','source_locator','source_quote','award_min','award_max','grant_start','grant_end','deadline','award_range_status','grant_period_status','deadline_status'].map(k=>[k,form.get(k)]));next.funder.currency=form.get('funder_currency');next.funder.reviewed=form.has('funder_reviewed');await mutate('save_project_model',{project_model:next});
+      });
+    }
+    function proposalView(locked){const r=s.app.proposal_analysis||{},saved=s.app.content.proposal_review;return '<section class="gf-card"><h3>Review the whole proposal</h3><p>Check the funding case across all answers, the shared budget and actual funder criteria. This review does not calculate eligibility, a funder score or funding probability.</p>'+(!locked&&s.data.role==='OWNER'?btn('proposal-review','Review criteria & complete proposal'):'')+'<p>'+esc(saved?.reviewed&&saved.signature===r.signature?'Whole-proposal review is current.':'Whole-proposal review is unresolved or stale.')+'</p>'+[...(r.issues||[]),...(r.warnings||[])].map(i=>'<p class="gf-note">'+esc(i.message)+'</p>').join('')+'<h4>Supplied funder criteria</h4>'+(r.criteria||[]).map(c=>'<blockquote>'+esc(c.text)+'</blockquote><p>'+esc(c.source_locator||'Compare with original')+'</p>').join('')+(!(r.criteria||[]).length?'<p>No funder rubric supplied. The following is an editorial checklist, not invented funder scoring.</p>':'')+(r.editorial_checklist||[]).map(x=>'<p>'+esc(x)+'</p>').join('')+'</section>';}
+    function showProposalReview(){const r=s.app.proposal_analysis||{};dialog('Whole-proposal review','<p>Read the complete proposal and original criteria. A suggested match is not proof that a criterion is answered.</p>'+(r.criteria||[]).map((c,i)=>'<section class="gf-card"><blockquote>'+esc(c.text)+'</blockquote><label>Answers addressing this criterion<select multiple name="criterion'+i+'">'+options(s.app.questions.map(q=>[q.id,q.question_text.split('\n')[0]]),'')+'</select></label>'+area('criterion_note'+i,'How the answers satisfy this criterion')+'</section>').join('')+(r.issues||[]).map(i=>'<p class="gf-note">'+esc(i.message)+'</p>').join('')+area('note','Whole-proposal finding, evidence applicability and remaining limitations')+check('reviewed','I reviewed the whole proposal, costed scope and applicable funder criteria'),async f=>mutate('review_proposal',{reviewed:f.has('reviewed'),note:f.get('note'),criteria:(r.criteria||[]).map((c,i)=>({id:c.id,status:'COVERED',question_ids:f.getAll('criterion'+i),note:f.get('criterion_note'+i)}))}));}
     function renderApplication(el) {
       const app = s.app,
         a = app.content;
@@ -902,11 +917,14 @@
         pill(a.status) +
         '</p></div><div class="gf-toolbar">' +
         btn("export-docx", "Export DOCX") +
-        btn("export-zip", "Export package") +
-        btn("export-json", "Evidence JSON") +
+        btn("export-zip", "Funder package") +
+        (s.data.role==="OWNER"?btn("export-internal_zip", "Internal review package") + btn("export-json", "Internal evidence JSON"):"") +
         '</div></div>' + (!locked ? '<div class="gf-callout"><strong>Prepare the application: </strong>Import the complete questions, then let OA propose the best supported program and prepare the answers together. '+btn('prepare-first-draft',s.firstDraftProgress?'Preparing '+s.firstDraftProgress.done+' / '+s.firstDraftProgress.total:'Prepare first draft','',true)+'<p class="gf-note">Uses your workspace’s AI allowance. Saved answers are preserved. OA fills supported fields and drafts narratives; signatures, commitments and unsupported details stay in Needs My Input. Review the original questions, proposed strategy and claims before approval.</p></div>' : '') + (a.program_selection?.status==='PROPOSED'?'<div class="gf-card"><strong>Proposed program: '+esc(s.data.brain.programs.find(p=>p.id===a.primary_program_id)?.name||'Review program selection')+'</strong><p>'+esc(a.program_selection.reason)+'</p><p class="gf-note">Review this choice in Strategy &amp; eligibility before approval.</p></div>':'') + (a.application_import?'<div class="gf-card"><strong>'+esc(label(a.application_import.status))+'</strong>'+(a.application_import.url&&/^https?:\/\//i.test(a.application_import.url)?' · <a href="'+esc(a.application_import.url)+'" target="_blank" rel="noopener">Open funder application</a>':'')+(a.application_import.warnings||[]).map(w=>'<p class="gf-note">'+esc(w)+'</p>').join('')+'</div>':'') + '<div class="gf-tabs">' +
         [
           ["questions", "Questions & drafts"],
+          ["requirements", "Source checklist"],
+          ["project", "Project & budget"],
+          ["proposal", "Whole proposal"],
           ["strategy", "Strategy & eligibility"],
           ["attachments", "Attachments"],
           ["input", "Needs My Input"],
@@ -926,13 +944,16 @@
           .join("") +
         '</div><div id="gf-appbody"></div>';
       const box = el.querySelector("#gf-appbody");
-      if (s.appTab === "questions") {
+      if(s.appTab==="requirements")box.innerHTML=requirementsView(locked);
+      else if(s.appTab==="project")box.innerHTML=projectView(locked);
+      else if(s.appTab==="proposal")box.innerHTML=proposalView(locked);
+      else if (s.appTab === "questions") {
         box.innerHTML =
           '<div class="gf-card"><div class="gf-row"><h3>Application source</h3><div>' +
-          (a.source_document_id?btn("document", "View original & extraction", a.source_document_id):"") + (!locked?btn("attach-application","Upload / replace application source"):"") +
+          (a.source_document_id?btn("document", "View original & extraction", a.source_document_id):"") + (!locked?btn("attach-application","Add complete application source"):"") +
           (s.app.writing_brief?.grant.sources||[]).filter(d=>d.id!==a.source_document_id).map(d=>btn("document", "Read "+d.title,d.id)).join(" ") +
           (!locked
-            ? btn("parse", "Run AI parser") +
+            ? btn("preview-reconciliation", "Preview source repairs") + btn("reconciliation", "Review proposed repairs") + btn("parse", "AI extraction preview (uses allowance)") +
               btn("question", "Add question") +
               btn(
                 "confirm-parser",
@@ -1085,7 +1106,7 @@
             .map(
               (r) =>
                 '<div class="gf-list-row">' +
-                pill(r.review?.approved ? "APPROVED" : r.status) +
+                pill(r.status) +
                 " <strong>" +
                 esc(r.rule) +
                 '</strong><p class="gf-note">' +
@@ -1100,7 +1121,7 @@
             )
             .join("") +
           (!(a.eligibility || []).length
-            ? "<p>No eligibility rules were found. Confirm that against the original application.</p>"
+            ? "<p>Eligibility is unresolved until checked against the original application. Program keyword matches describe strategic fit only; they are not eligibility or odds of funding.</p>"
             : "") +
           "</div>";
       } else if (s.appTab === "attachments") {
@@ -1295,7 +1316,7 @@
         }else if(action==='prepare-first-draft'){
           await prepareFirstDraft();
         }else if(action==='attach-application'){
-          dialog('Upload the complete application', '<p>Use the full application, including portal fields, instructions and attachments.</p><label>Application file (PDF, DOCX or text; maximum 3 MB)<input type="file" name="file" accept=".pdf,.docx,.txt"></label>'+area('text','Or paste all application questions')+(s.app.answers.some(a=>a.draft_text?.trim())?check('replace','Replace current questions and drafts. Edit history is retained.'):'') ,async f=>{
+          dialog('Upload the complete application', '<p>Use the full application, including portal fields, instructions and attachments.</p><label>Application file (PDF, DOCX or text; maximum 3 MB)<input type="file" name="file" accept=".pdf,.docx,.txt"></label>'+area('text','Or paste all application questions')+'<p>Saved answers remain in place. If fields change, review the repair preview before applying it.</p>' ,async f=>{
             const file=f.get('file');const payload=file?.size?await filePayload(file):{text:f.get('text')};
             await mutate('attach_application',{...payload,replace_confirmed:f.has('replace')});
           });
@@ -1788,7 +1809,9 @@
               select("type", "Field type", questionTypes, q.question_type) +
               select("limit", "Limit type", limitTypes, q.limit_type) +
               field("max", "Limit value", q.limit_value, "number") +
-              check("required", "Required", q.required) +
+              check("required", "Required when applicable", q.required) +
+              area("condition", "Conditional trigger (exact source wording)", q.conditional_trigger) +
+              area("choices", "Original choices (one per line)",(q.options||[]).join("\n")) +
               field("locator", "Source locator", q.source_locator) +
               area("quote", "Exact source quote", q.source_quote) +
               field(
@@ -1807,6 +1830,7 @@
                 limit_type: f.get("limit"),
                 limit_value: f.get("max") ? Number(f.get("max")) : null,
                 required: f.has("required"),
+                conditional_trigger:f.get("condition")||null,options:f.get("choices").split("\n").map(x=>x.trim()).filter(Boolean),
                 source_locator: f.get("locator"),
                 source_quote: f.get("quote"),
                 question_category: f.get("category"),
@@ -1908,29 +1932,17 @@
               });
             },
           );
-        } else if (action === "parse" || action === "draft") {
-          const has =
-            action === "parse"
-              ? s.app.answers.some((a) => a.draft_text)
-              : s.app.answers.some((a) => a.question_id === id && a.draft_text);
-          if (has)
-            dialog(
-              "Replace the current " +
-                (action === "parse" ? "questions and drafts" : "answer") +
-                "?",
-              "<p>Earlier versions remain in edit history. This will replace the current " +
-                (action === "parse"
-                  ? "question and answer set"
-                  : "answer text") +
-                ".</p>",
-              async () => {
-                await mutate(action, {
-                  question_id: id,
-                  replace_confirmed: true,
-                });
-              },
-            );
-          else await mutate(action, { question_id: id });
+        } else if(action==='preview-reconciliation'||action==='parse'){
+          await mutate(action==='parse'?'parse':'preview_reconciliation');showReconciliation();
+        }else if(action==='reconciliation')showReconciliation();
+        else if(action==='project-model')showProjectModel();
+        else if(action==='proposal-review')showProposalReview();
+        else if(action==='condition-field'||action==='condition-attachment'){
+          dialog('Review conditional requirement',select('applies','Does the exact source condition apply?',[['','Choose'],['yes','Yes'],['no','No']],'')+area('reason','Source-based explanation'),async f=>{if(!f.get('applies'))throw Error('Choose an applicability decision.');await mutate('review_condition',{kind:action==='condition-field'?'field':'attachment',id,applies:f.get('applies')==='yes',reason:f.get('reason')});});
+        }else if(action==='draft'){
+          const has=s.app.answers.some(a=>a.question_id===id&&a.draft_text);
+          if(has)dialog('Replace this answer?','<p>The previous answer remains in edit history.</p>',async()=>mutate('draft',{question_id:id,replace_confirmed:true}));
+          else await mutate('draft',{question_id:id});
         } else if (action === "save-answer") {
           const text = main.querySelector(
             '[data-answer-text="' + id + '"]',
@@ -1989,7 +2001,9 @@
               });
             },
           );
-        else if (action === "confirm-parser") await mutate("confirm_parser");
+        else if(action==='confirm-parser'){
+          dialog('Confirm full application requirements','<p>Compare the original portal, application, RFP and supplemental instructions. Captured text alone does not establish completeness.</p>'+['fields','conditions','types_choices','limits','eligibility','deadlines_cycle','criteria','attachments'].map(k=>check('category',label(k)+' checked against the complete source',false).replace('name="category"','name="category" value="'+k+'"')).join('')+check('portal','All portal fields and instructions are supplied')+area('note','Cycle, source conflicts and completeness findings'),async f=>mutate('confirm_parser',{portal_complete:f.has('portal'),reviewed_categories:f.getAll('category'),note:f.get('note')}));
+        }
         else if (action === "strategy") {
           const r = await api("strategy", { application_id: s.app.id, revision: s.app.revision });
           s.strategyJob = r.job;
@@ -2037,33 +2051,13 @@
               });
             },
           );
-        } else if (action === "eligibility-edit")
-          dialog(
-            "Edit eligibility requirements",
-            '<p class="gf-note">One stated rule per line. This resets prior eligibility reviews.</p>' +
-              area(
-                "rules",
-                "Requirements",
-                (s.app.content.eligibility || []).map((r) => r.rule).join("\n"),
-              ),
-            async (f) => {
-              await mutate("save_eligibility", {
-                eligibility: f
-                  .get("rules")
-                  .split("\n")
-                  .filter((x) => x.trim())
-                  .map((rule) => ({
-                    rule,
-                    operator: "REVIEW",
-                    source_locator: "Human review of application",
-                  })),
-              });
-            },
-          );
+        } else if(action==='eligibility-edit'){
+          const rules=[...(s.app.content.eligibility||[]),{}];dialog('Eligibility requirements & source corrections','<p>Use actual funder rules. Hard failures require an explicit source/evidence correction. Strategic match is separate.</p>'+rules.map((r,i)=>'<details class="gf-card" open><summary>'+esc(r.rule||'Add a rule (leave blank to skip)')+'</summary>'+area('rule'+i,'Exact requirement',r.rule)+field('key'+i,'Approved fact key (or CURRENT_DATE)',r.fact_key)+select('operator'+i,'Comparison',['REVIEW','EXACT','IN','GTE','LTE','DATE_BEFORE','DATE_AFTER'],r.operator||'REVIEW')+field('expected'+i,'Expected value (IN choices separated by |)',Array.isArray(r.expected_value)?r.expected_value.join('|'):r.expected_value)+check('commitment'+i,'Requires authorized institutional commitment',r.commitment)+field('conditionkey'+i,'Conditional trigger fact key',r.condition?.fact_key)+field('conditionvalue'+i,'Conditional trigger expected value',r.condition?.expected_value)+field('locator'+i,'Source locator',r.source_locator)+area('quote'+i,'Exact source quote',r.source_quote)+area('correction'+i,'Explain changes to a previous requirement',r.correction_note)+'</details>').join(''),async f=>mutate('save_eligibility',{eligibility:rules.map((r,i)=>({...r,id:r.id||crypto.randomUUID(),rule:f.get('rule'+i),fact_key:f.get('key'+i)||null,operator:f.get('operator'+i),expected_value:f.get('operator'+i)==='IN'?f.get('expected'+i).split('|').filter(Boolean):f.get('expected'+i)||null,commitment:f.has('commitment'+i),condition:f.get('conditionkey'+i)?{fact_key:f.get('conditionkey'+i),expected_value:f.get('conditionvalue'+i)}:null,source_locator:f.get('locator'+i),source_quote:f.get('quote'+i),correction_note:f.get('correction'+i)})).filter(r=>r.rule.trim())}));
+        }
         else if (action === "eligibility-review") {
           const review = dialog(
             "Executive eligibility review",
-            area("note", "Evidence-based eligibility finding") +
+            select("outcome","Eligibility decision",["UNRESOLVED","PASS","FAIL"],"UNRESOLVED")+area("note", "Evidence-based eligibility finding; correct mistaken rules explicitly, never override a hard failure") +
               '<div class="gf-evidence">' +
               s.data.brain.facts
                 .filter(allowed)
@@ -2081,6 +2075,7 @@
             async (f) => {
               await mutate("review_eligibility", {
                 rule_id: id,
+                outcome:f.get("outcome"),
                 note: f.get("note"),
                 evidence_ids: f.getAll("evidence"),
               });
@@ -2110,6 +2105,13 @@
                     "I checked this document/version",
                     a.reviewed,
                   ) +
+                  field('condition'+i,'Exact conditional trigger',a.conditional_trigger)+
+                  field('link'+i,'Public external link',a.external_link)+
+                  check('upload'+i,'Funder requires upload',a.upload_required)+check('linkrequired'+i,'Funder requires accessible link',a.link_required)+
+                  field('formats'+i,'Allowed file formats (comma separated)',(a.allowed_formats||[]).join(','))+
+                  field('maxbytes'+i,'Funder maximum bytes',a.max_bytes,'number')+field('maxduration'+i,'Funder maximum video seconds',a.max_duration_seconds,'number')+field('maxpages'+i,'Funder maximum pages',a.max_pages,'number')+
+                  check('formatconfirmed'+i,'I checked final format against portal rules',a.validation_review?.format_confirmed)+check('externalconfirmed'+i,'I checked permissions and confidentiality for funder use',a.validation_review?.external_use_confirmed)+check('accessconfirmed'+i,'I checked link accessibility from the funder perspective',a.validation_review?.accessibility_confirmed)+
+                  field('pages'+i,'Final rendered / inspected page count',a.validation_review?.page_count,'number')+field('duration'+i,'Final inspected video duration (seconds)',a.validation_review?.duration_seconds,'number')+field('bytes'+i,'Final file size (bytes)',a.validation_review?.size_bytes,'number')+
                   field("reason" + i, "Not-applicable explanation", a.reason) +
                   "</div>",
               )
@@ -2123,7 +2125,8 @@
                 status: f.get("status" + i),
                 required: f.has("required" + i),
                 reviewed: f.has("reviewed" + i),
-                reason: f.get("reason" + i),
+                reason: f.get("reason" + i),conditional_trigger:f.get('condition'+i)||null,external_link:f.get('link'+i)||null,upload_required:f.has('upload'+i),link_required:f.has('linkrequired'+i),allowed_formats:f.get('formats'+i).split(',').map(x=>x.trim()).filter(Boolean),max_bytes:f.get('maxbytes'+i)||null,max_duration_seconds:f.get('maxduration'+i)||null,max_pages:f.get('maxpages'+i)||null,
+                validation_review:{format_confirmed:f.has('formatconfirmed'+i),external_use_confirmed:f.has('externalconfirmed'+i),accessibility_confirmed:f.has('accessconfirmed'+i),page_count:f.get('pages'+i)||null,duration_seconds:f.get('duration'+i)||null,size_bytes:f.get('bytes'+i)||null},
               }));
               if (f.get("new").trim())
                 rows.push({
@@ -2223,16 +2226,7 @@
       try {
       const preparationWarnings=[];
       if(Object.keys(s.unsaved).some(id=>s.unsaved[id]!==s.app.answers.find(a=>a.question_id===id)?.draft_text))throw Error('Save your edited answers before preparing the rest of the draft.');
-      // Only fresh, unreviewed extraction is replaced. Existing answers and
-      // reviewed questions remain intact when the user resumes a draft.
-      if(s.data.ai_enabled&&!s.app.content.first_draft&&!s.app.content.parser_reviewed&&s.app.content.parser_confidence==='LOW'&&!s.app.answers.some(a=>a.draft_text?.trim())){
-        message('Reading the full application and extracting its fields…');
-        try{s.app=await api('parse',{application_id:s.app.id,revision:s.app.revision});}
-        catch(e){
-          if(e.responseLost||/allowance|quota|not configured|disabled|rate limit|daily.*limit/i.test(e.message))throw e;
-          preparationWarnings.push('AI extraction did not finish: '+e.message+' The original basic question list is preserved and requires your review.');
-        }
-      }
+      if(s.app.content.reconciliation_preview)throw Error('Review the pending source repair preview before preparing further answers.');
       s.app=await api('prepare_first_draft',{application_id:s.app.id,revision:s.app.revision,source_warning:preparationWarnings.join(' ')});
       if(!s.app.content.funder_history){
         message('Looking for the funder’s past awards and grantees…');
