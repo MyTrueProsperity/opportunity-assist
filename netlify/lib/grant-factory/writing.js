@@ -1,7 +1,8 @@
 "use strict";
 // Editorial preparation is deterministic, free and separate from factual approval.
 const C=require('./core'),SE=require('./strategy-evidence'),G=require('./grant-reading');
-const VERSION='GRANT_WRITING_2026-10-08';
+const Guidance=require('./writing-guidance');
+const VERSION='GRANT_WRITING_2026-10-10';
 const QUESTIONS=[
   {id:'funder',question:'What does this funder actually reward, require and exclude?',action:'Use the original RFP, rubric and field instructions. Choose the strongest real alignment; do not invent a new program.'},
   {id:'proof',question:'What is our strongest relevant proven result, and who earned it?',action:'Put supported achievements early, name the delivering organization/program and retain the measurement scope. Own the work without inventing causation or transferring history to a new legal entity.'},
@@ -9,6 +10,10 @@ const QUESTIONS=[
   {id:'increment',question:'What changes because of this grant?',action:'Separate existing delivery from the funded expansion, adaptation, access, documentation or evaluation. State only approved targets.'},
   {id:'resources',question:'Does every promised activity have staffing, access, equipment, compensation and evaluation support?',action:'Trace the budget to delivery. Do not count other grants twice or assume an award ceiling is an appropriate ask.'},
   {id:'measurement',question:'How will success be measured, by whom, when and against what baseline?',action:'Separate outputs, outcomes and long-term impact; preserve solution-specific reach, unique people, periods and actual/projected measures.'},
+  {id:'comparables',question:'Which past grantees are most comparable, what was funded, and why?',action:'Compare documented delivery models, populations, geography, maturity and scale. Look for the funder’s stated reasons. Separate individual awards from round averages and organizational revenue.'},
+  {id:'positioning',question:'Which existing strengths make this organization a compelling choice, and what is the grant-funded evolution?',action:'Build on documented work instead of inventing a new initiative to chase a trend. Recommend a proposed scope and frame that fit this application. Describe prior achievements with confident ownership and accurate attribution.'},
+  {id:'ask',question:'What amount is justified by the funder history, current range and a costed implementation plan?',action:'Consider actual comparable awards and separately labeled round averages. Do not automatically choose the maximum or recommend less just because the organization is small. Give the amount and delivery rationale when approved costs support it; otherwise give funding uses and the exact missing cost inputs.'},
+  {id:'required_material',question:'What does this application actually require us to provide?',action:'Read the entire application, including non-narrative fields. Distinguish requested budgets from financial-statement uploads, adopted policies from draft documents, and organizational capacity from the selected solution’s reach. Do not invent extra requirements or barriers.'},
   {id:'history',question:'What do verified past awards tell us about this funder?',action:'Use only supplied authorized portfolio evidence. If absent, name a research action; do not invent previous recipients or treat patterns as current rules.'},
   {id:'delivery',question:'Have we answered every part directly and used the available space well?',action:'Lead with the requested answer and strongest relevant proof. Remove generic praise and repeated background; keep crucial qualifications next to their claim.'},
 ];
@@ -53,7 +58,7 @@ const actual=f=>!['PROJECTED','DRAFT'].includes(f.verification_status)&&!['PLANN
 function select(q,brain,app,authorized){
   const purpose=kind(q),roles=PURPOSE[purpose],ids=new Set([app.content.primary_program_id,...(app.content.secondary_program_ids||[])].filter(Boolean));
   const allowRelated=['past_results','capacity','scalability'].includes(purpose);
-  const all=(authorized||C.authorizedFacts(brain,app.id)).filter(f=>!f.org_id||f.org_id===app.org_id);
+  const all=(authorized||C.authorizedFacts(brain,app.id)).filter(f=>(!f.org_id||f.org_id===app.org_id)&&!Guidance.isGuide(f.research));
   const terms=SE.terms([q.question_text,q.question_category,q.rubric_text].join(' '));
   const ranked=all.filter(f=>!f.program_id||ids.has(f.program_id)||(!f.research&&allowRelated)).map(f=>{
     const text=factText(f),hits=[...terms].filter(t=>text.includes(t)).length;
@@ -122,7 +127,7 @@ function quality(text,q,evidence,questionPlan){
 }
 function brief(brain,app,reading){
   const authorized=C.authorizedFacts(brain,app.id);
-  return {version:VERSION,grant:G.summary(reading),self_questions:QUESTIONS,funding:fundingOptions(brain,app,reading,authorized),questions:(app.questions||[]).map(q=>{
+  return {version:VERSION,writing_guidance:Guidance.guidance(brain,app,reading),grant:G.summary(reading),self_questions:QUESTIONS,funding:fundingOptions(brain,app,reading,authorized),questions:(app.questions||[]).map(q=>{
     const selected=select(q,brain,app,authorized),p=plan(q,selected,app);return {question_id:q.id,purpose:p.purpose,angles:p.angles,opening_candidates:p.opening_candidates.map(({claim,...x})=>x),available_evidence:selected.evidence.length};
   })};
 }

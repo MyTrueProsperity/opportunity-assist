@@ -117,7 +117,7 @@
     "OTHER",
   ];
   let session = null;
-  function mount(main, sb, opportunities = []) {
+  function mount(main, sb, opportunities = [], launchOptions = {}) {
     if (session && session.main === main && session.root?.isConnected) return;
     const s = {
       main,
@@ -130,7 +130,8 @@
       busy: false,
       query: "",
       unsaved: {},
-      orgId: null,
+      orgId: launchOptions.orgId || null,
+      firstDraftProgress: null,
       researchQuery: "",
       researchPacket: "",
       researchBackground: null,
@@ -397,6 +398,7 @@
       main.querySelectorAll("[data-apptab]").forEach(
         (b) =>
           (b.onclick = () => {
+            if(s.busy)return;
             s.appTab = b.dataset.apptab;
             render();
           }),
@@ -443,8 +445,8 @@
       const apps = s.data.applications;
       el.innerHTML =
         '<div class="gf-row"><h2>Your applications</h2>' +
-        btn("new", "New application", "", true) +
-        '</div><div class="gf-steps"><span>1 Upload & review</span><span>2 Choose strategy</span><span>3 Draft & audit</span><span>4 Human review & export</span></div>' +
+        btn("pipeline-picker", "Import from Qualified or Planning", "", true) + btn("new", "Upload / paste application") +
+        '</div><div class="gf-steps"><span>1 Import application</span><span>2 Prepare first draft</span><span>3 Review & audit</span><span>4 Approve & export</span></div>' +
         (apps.length
           ? '<div class="gf-grid">' +
             apps
@@ -642,9 +644,17 @@
       if(!plan)return '';
       return '<details><summary>How OA will strengthen this answer</summary><ul>'+plan.angles.map(t=>'<li>'+esc(t)+'</li>').join('')+'</ul><p class="gf-note">'+esc(plan.available_evidence)+' approved evidence items are available for this field.</p>'+plan.opening_candidates.map(p=>{const f=evidenceFact(p.evidence_id);return '<p><strong>Possible opening proof:</strong> '+esc((f?.value||'View the approved fact in Organization Brain.').slice(0,700))+'<br><span class="gf-meta">'+esc(p.scope==='RELATED_PROGRAM_HISTORY'?'Related-program history. Attribute it accurately; it is not the new solution result.':f?.source_locator||'Approved organizational evidence')+'</span></p>';}).join('')+(ans?.writing_review?.issues||[]).map(i=>'<p class="gf-note">'+esc(i.message)+'</p>').join('')+'<p class="gf-note">This prepares the writing case. Claim audit and your approval remain separate.</p></details>';
     }
+    function historyOverview() {
+      const h=s.app.content.funder_history;
+      return '<section class="gf-card"><div class="gf-row"><h3>Past awards & grantee fit</h3>'+btn('funder-history','Research / add sources')+'</div>'+(!h?'<p>Look at the funder’s published grants, award amounts, funded work and grantee similarities before choosing a strategy.</p>':'<p class="gf-meta">'+esc(label(h.status))+'</p>'+(h.sources||[]).map(x=>'<p>'+btn('document','Read historical source',x.document_id)+' <a href="'+esc(x.url)+'" target="_blank" rel="noopener">Original source</a></p>').join('')+(h.awards||[]).map(a=>'<details><summary>'+esc(a.recipient)+' · '+esc(a.amount_text||'Individual amount not published')+(a.year?' · '+esc(a.year):'')+'</summary><p>'+esc(a.description)+'</p>'+(a.selection_reason?'<p><strong>Published selection reason:</strong> '+esc(a.selection_reason)+'</p>':'')+'<blockquote>'+esc(a.source_quote)+'</blockquote></details>').join('')+(h.rounds||[]).map(r=>'<p><strong>'+esc(r.round_name)+'</strong>: '+esc(r.total_amount_text)+' across '+esc(r.award_count)+' awards; derived mean '+esc(r.currency)+' '+esc(r.mean_award.toLocaleString())+'. This is a round average, not a disclosed individual grant.</p>').join('')+(h.ranges||[]).map(r=>'<p>Observed award range: '+esc(r.currency)+' '+esc(r.minimum.toLocaleString())+'–'+esc(r.maximum.toLocaleString())+' ('+r.sample_size+' traced awards).</p>').join('')+(h.patterns||[]).map(p=>'<p><strong>Observed pattern:</strong> '+esc(p.description)+'</p>').join('')+(h.similarities||[]).map(p=>'<p><strong>How your organization compares:</strong> '+esc(p.description)+'</p>').join('')+(h.missing_information||[]).map(p=>'<p class="gf-note">'+esc(p)+'</p>').join('')+(h.warnings||[]).map(p=>'<p class="gf-note">'+esc(p)+'</p>').join(''))+'</section>';
+    }
+    function savedWritingGuides() {
+      const g=s.app.writing_brief?.writing_guidance;if(!g)return '';
+      return '<details class="gf-card"><summary>Writing research used in preparation</summary><p>'+esc(g.note)+'</p>'+g.sources.map(r=>'<p><strong>'+esc(r.record_id+' · '+r.title)+'</strong><br>'+esc(r.guidance)+'</p>').join('')+(g.sources.length?'':'<p>No verified general writing guides were found in this workspace. The built-in methodology and saved organization voice still apply.</p>')+'</details>';
+    }
     function writingOverview() {
       const b=s.app.writing_brief;if(!b)return '';
-      return '<section class="gf-card"><h3>The case this grant should make</h3><p>OA checks the original funder requirements, your strongest proven results, what the grant adds and whether delivery is properly resourced before writing.</p><details><summary>Questions OA asks itself</summary>'+b.self_questions.map(x=>'<p><strong>'+esc(x.question)+'</strong><br>'+esc(x.action)+'</p>').join('')+'</details><p class="gf-meta">'+(b.grant.complete?'All text fits in the application-wide reading packet.':'The source packet needs a completeness check.')+'</p>'+b.grant.sources.map(d=>btn('document','Read '+d.title,d.id)).join(' ')+b.grant.warnings.map(w=>'<p class="gf-note">'+esc(w)+'</p>').join('')+'<details><summary>Funding uses to consider</summary>'+b.funding.options.map(o=>'<p><strong>'+esc(o.title)+'</strong><br>'+esc(o.next_action)+'</p>').join('')+(b.funding.excluded_options||[]).map(o=>'<p class="gf-note"><strong>Leave out unless clarified: '+esc(o.title)+'</strong><br>'+esc(o.next_action)+'</p>').join('')+(b.funding.cost_context?.prohibited_costs?.length?'<p class="gf-note"><strong>Funder cost exclusions:</strong> '+esc(b.funding.cost_context.prohibited_costs.join('; '))+'</p>':'')+'<p class="gf-note">'+esc(b.funding.warning)+'</p></details><details><summary>Original funder guidance used in preparation</summary>'+b.grant.source_quotes.map(q=>'<p><strong>'+esc(q.locator)+'</strong><br>'+esc(q.text)+'</p>').join('')+'</details></section>';
+      return savedWritingGuides()+historyOverview()+'<section class="gf-card"><h3>The case this grant should make</h3><p>OA checks the original funder requirements, your strongest proven results, what the grant adds and whether delivery is properly resourced before writing.</p><details><summary>Questions OA asks itself</summary>'+b.self_questions.map(x=>'<p><strong>'+esc(x.question)+'</strong><br>'+esc(x.action)+'</p>').join('')+'</details><p class="gf-meta">'+(b.grant.complete?'All text fits in the application-wide reading packet.':'The source packet needs a completeness check.')+'</p>'+b.grant.sources.map(d=>btn('document','Read '+d.title,d.id)).join(' ')+b.grant.warnings.map(w=>'<p class="gf-note">'+esc(w)+'</p>').join('')+'<details><summary>Funding uses to consider</summary>'+b.funding.options.map(o=>'<p><strong>'+esc(o.title)+'</strong><br>'+esc(o.next_action)+'</p>').join('')+(b.funding.excluded_options||[]).map(o=>'<p class="gf-note"><strong>Leave out unless clarified: '+esc(o.title)+'</strong><br>'+esc(o.next_action)+'</p>').join('')+(b.funding.cost_context?.prohibited_costs?.length?'<p class="gf-note"><strong>Funder cost exclusions:</strong> '+esc(b.funding.cost_context.prohibited_costs.join('; '))+'</p>':'')+'<p class="gf-note">'+esc(b.funding.warning)+'</p></details><details><summary>Original funder guidance used in preparation</summary>'+b.grant.source_quotes.map(q=>'<p><strong>'+esc(q.locator)+'</strong><br>'+esc(q.text)+'</p>').join('')+'</details></section>';
     }
     function strategyStatus() {
       const j = s.strategyJob;
@@ -894,7 +904,7 @@
         btn("export-docx", "Export DOCX") +
         btn("export-zip", "Export package") +
         btn("export-json", "Evidence JSON") +
-        '</div></div>' + (!locked ? '<div class="gf-callout"><strong>Next step: </strong>' + (!a.parser_reviewed ? 'Check the questions and limits against the original, then confirm extraction review. This check is needed again after questions change.' : !a.strategy?.approved ? 'Open Strategy & eligibility. Choose your program, write or generate a strategy, and confirm that you reviewed it.' : 'Draft one answer, save edits, then audit its claims. Resolve missing information before approving and exporting.') + '<p class="gf-note">Drafts use the latest approved facts each time. You do not need to recreate an application when you update your facts.</p></div>' : '') + '<div class="gf-tabs">' +
+        '</div></div>' + (!locked ? '<div class="gf-callout"><strong>Prepare the application: </strong>Import the complete questions, then let OA propose the best supported program and prepare the answers together. '+btn('prepare-first-draft',s.firstDraftProgress?'Preparing '+s.firstDraftProgress.done+' / '+s.firstDraftProgress.total:'Prepare first draft','',true)+'<p class="gf-note">Uses your workspace’s AI allowance. Saved answers are preserved. OA fills supported fields and drafts narratives; signatures, commitments and unsupported details stay in Needs My Input. Review the original questions, proposed strategy and claims before approval.</p></div>' : '') + (a.program_selection?.status==='PROPOSED'?'<div class="gf-card"><strong>Proposed program: '+esc(s.data.brain.programs.find(p=>p.id===a.primary_program_id)?.name||'Review program selection')+'</strong><p>'+esc(a.program_selection.reason)+'</p><p class="gf-note">Review this choice in Strategy &amp; eligibility before approval.</p></div>':'') + (a.application_import?'<div class="gf-card"><strong>'+esc(label(a.application_import.status))+'</strong>'+(a.application_import.url&&/^https?:\/\//i.test(a.application_import.url)?' · <a href="'+esc(a.application_import.url)+'" target="_blank" rel="noopener">Open funder application</a>':'')+(a.application_import.warnings||[]).map(w=>'<p class="gf-note">'+esc(w)+'</p>').join('')+'</div>':'') + '<div class="gf-tabs">' +
         [
           ["questions", "Questions & drafts"],
           ["strategy", "Strategy & eligibility"],
@@ -919,7 +929,7 @@
       if (s.appTab === "questions") {
         box.innerHTML =
           '<div class="gf-card"><div class="gf-row"><h3>Application source</h3><div>' +
-          btn("document", "View original & extraction", a.source_document_id) +
+          (a.source_document_id?btn("document", "View original & extraction", a.source_document_id):"") + (!locked?btn("attach-application","Upload / replace application source"):"") +
           (s.app.writing_brief?.grant.sources||[]).filter(d=>d.id!==a.source_document_id).map(d=>btn("document", "Read "+d.title,d.id)).join(" ") +
           (!locked
             ? btn("parse", "Run AI parser") +
@@ -962,7 +972,7 @@
                 '</p><div class="gf-source">' +
                 esc(q.source_quote || "") +
                 "</div><label>Answer<textarea " +
-                (locked ? "readonly" : "") +
+                (locked || s.firstDraftProgress ? "readonly" : "") +
                 ' data-answer-text="' +
                 q.id +
                 '" style="min-height:150px">' +
@@ -981,7 +991,7 @@
                 ) +
                 '</p><div class="gf-toolbar">' +
                 (!locked
-                  ? (q.question_type === 'NARRATIVE' && a.parser_reviewed && a.strategy?.approved ? btn("draft", "Draft from evidence", q.id) : '<span class="gf-note">' + (q.question_type !== 'NARRATIVE' ? 'Enter this response yourself.' : 'Complete the next step above to enable drafting.') + '</span>') +
+                  ? (q.question_type === 'NARRATIVE' && a.parser_reviewed && a.strategy?.approved ? btn("draft", "Draft from evidence", q.id) : '<span class="gf-note">' + (ans?.draft_method==='APPROVED_FIELD_COPY'?'Copied from approved facts. Review this value.':q.question_type !== 'NARRATIVE'?'Enter this response yourself.':'Review extraction and strategy to enable individual redrafting.') + '</span>') +
                     btn("save-answer", "Save & select evidence", q.id, true) +
                     btn("audit", "Audit claims", q.id) +
                     btn("approve-answer", "Approve answer", q.id)
@@ -1059,7 +1069,7 @@
           (a.strategy
             ? Object.entries(a.strategy)
                 .filter(
-                  ([k, v]) => typeof v === "string" && k !== "reviewed_by",
+                  ([k, v]) => typeof v === "string" && !["reviewed_by","reviewed_at","prepared_at"].includes(k),
                 )
                 .map(
                   ([k, v]) =>
@@ -1273,7 +1283,23 @@
           )
         )
           throw Error("Save your changed answers before continuing.");
-        if (action === 'prepare-document') {
+        if(action==='pipeline-picker'){
+          await pipelinePicker();
+        }else if(action==='funder-history'){
+          dialog('Research past grants and funded organizations',field('url','Official funder / past awards page',s.app.content.application_import?.url||'')+'<label>Or upload an award list / annual-report excerpt (PDF, DOCX or text)<input type="file" name="file" accept=".pdf,.docx,.txt"></label><p class="gf-note">OA uses public pages and your uploaded source. Analysis uses the existing workspace AI allowance. Historical amounts help assess scope; the actual request still needs a costed delivery plan.</p>',async f=>{
+            const file=f.get('file');
+            if(file?.size)await mutate('attach_funder_history',{...await filePayload(file),url:f.get('url')});
+            else await mutate('find_funder_history',{url:f.get('url'),refresh_confirmed:true});
+            if(s.data.ai_enabled&&s.app.content.funder_history?.status==='SOURCES_READY')await mutate('analyze_funder_history');
+          });
+        }else if(action==='prepare-first-draft'){
+          await prepareFirstDraft();
+        }else if(action==='attach-application'){
+          dialog('Upload the complete application', '<p>Use the full application, including portal fields, instructions and attachments.</p><label>Application file (PDF, DOCX or text; maximum 3 MB)<input type="file" name="file" accept=".pdf,.docx,.txt"></label>'+area('text','Or paste all application questions')+(s.app.answers.some(a=>a.draft_text?.trim())?check('replace','Replace current questions and drafts. Edit history is retained.'):'') ,async f=>{
+            const file=f.get('file');const payload=file?.size?await filePayload(file):{text:f.get('text')};
+            await mutate('attach_application',{...payload,replace_confirmed:f.has('replace')});
+          });
+        }else if (action === 'prepare-document') {
           await prepareDocument(id);
         } else if (action === 'go-vault' || action === 'go-truth' || action === 'review-document') {
           s.tab = action === 'go-vault' ? 'vault' : 'truth'; s.app = null;
@@ -2174,6 +2200,67 @@
         if (button?.isConnected) button.disabled = false;
       }
     }
+    async function openPipeline(itemId, draft=true) {
+      message('Finding the public application and its questions…');
+      s.app=await api('import_pipeline',{pipeline_item_id:itemId});
+      s.tab='applications';s.appTab='questions';s.unsaved={};await refresh();
+      if(draft&&s.app.questions.length&&!s.app.answers.some(a=>a.draft_text?.trim()))await prepareFirstDraft();
+      else message(!s.app.questions.length?'Application workspace opened. Upload the complete application from the funder portal to continue.':'Application workspace opened. Your saved answers are preserved.');
+    }
+    async function pipelinePicker(offset=0) {
+      const page=await api('pipeline_candidates',{offset});
+      const d=dialog('Import a pipeline application', '<p>Choose an opportunity from Qualified or Planning. OA looks for its public application and opens a linked workspace.</p>'+select('pipeline','Opportunity', [['','Select an opportunity'],...page.items.map(p=>[p.id,p.stage+' · '+p.title])])+check('draft','Prepare a first draft after import using the workspace’s AI allowance.',true)+(page.has_more?btn('pipeline-more','More opportunities',String(offset+100)):'')+'<p class="gf-note">Protected portals require you to upload or paste the full application. OA never signs in or submits an application.</p>',async f=>{
+        if(!f.get('pipeline'))throw Error('Choose an opportunity first.');
+        if(s.busy)throw Error('Finish the current action first.');
+        const itemId=f.get('pipeline'),draft=f.has('draft');
+        d.close();d.remove();
+        s.busy=true;try{await openPipeline(itemId,draft);}catch(e){message(e.message,true);}finally{s.busy=false;}
+      });
+      d.querySelector('button[type="submit"]').textContent='Import application';
+      const more=d.querySelector('[data-action="pipeline-more"]');if(more)more.onclick=()=>{d.close();pipelinePicker(offset+100).catch(e=>message(e.message,true));};
+    }
+    async function prepareFirstDraft() {
+      try {
+      const preparationWarnings=[];
+      if(Object.keys(s.unsaved).some(id=>s.unsaved[id]!==s.app.answers.find(a=>a.question_id===id)?.draft_text))throw Error('Save your edited answers before preparing the rest of the draft.');
+      // Only fresh, unreviewed extraction is replaced. Existing answers and
+      // reviewed questions remain intact when the user resumes a draft.
+      if(s.data.ai_enabled&&!s.app.content.first_draft&&!s.app.content.parser_reviewed&&s.app.content.parser_confidence==='LOW'&&!s.app.answers.some(a=>a.draft_text?.trim())){
+        message('Reading the full application and extracting its fields…');
+        try{s.app=await api('parse',{application_id:s.app.id,revision:s.app.revision});}
+        catch(e){
+          if(e.responseLost||/allowance|quota|not configured|disabled|rate limit|daily.*limit/i.test(e.message))throw e;
+          preparationWarnings.push('AI extraction did not finish: '+e.message+' The original basic question list is preserved and requires your review.');
+        }
+      }
+      s.app=await api('prepare_first_draft',{application_id:s.app.id,revision:s.app.revision,source_warning:preparationWarnings.join(' ')});
+      if(!s.app.content.funder_history){
+        message('Looking for the funder’s past awards and grantees…');
+        s.app=await api('find_funder_history',{application_id:s.app.id,revision:s.app.revision});
+      }
+      let historyWarning='';
+      if(s.data.ai_enabled&&s.app.content.funder_history?.status==='SOURCES_READY'){
+        message('Comparing published awards and grantees with your approved program evidence…');
+        try{s.app=await api('analyze_funder_history',{application_id:s.app.id,revision:s.app.revision});}
+        catch(e){if(e.responseLost||/allowance|quota|daily.*limit|rate limit/i.test(e.message))throw e;historyWarning='Historical comparison needs review: '+e.message;}
+      }
+      const plan=await api('first_draft_status',{application_id:s.app.id});
+      const pending=plan.pending;let failures=0;
+      for(let i=0;i<pending.length;i++){
+        if(!s.root?.isConnected){s.firstDraftProgress=null;return;}
+        s.firstDraftProgress={done:i,total:pending.length};render();message('Preparing answer '+(i+1)+' of '+pending.length+'. Each answer is saved before continuing.');
+        try{s.app=await api('first_draft_question',{application_id:s.app.id,revision:s.app.revision,question_id:pending[i]});}
+        catch(e){
+          if(e.responseLost||/allowance|quota|not configured|disabled|rate limit|daily.*limit/i.test(e.message)){await refresh();throw Error(e.message+' Saved answers are preserved. Use Prepare first draft to resume.');}
+          failures++;s.app=await api('first_draft_failure',{application_id:s.app.id,revision:s.app.revision,question_id:pending[i],message:e.message});
+        }
+      }
+      s.firstDraftProgress=null;await refresh();
+      message('First draft prepared. Review the proposed program, answers, attachments and Needs My Input. '+(failures?'Some answers need review or another drafting attempt. ':'')+'Extraction, strategy and final approvals are still yours. '+preparationWarnings.join(' ')+' '+historyWarning);
+      } finally {
+        if(s.firstDraftProgress){s.firstDraftProgress=null;render();}
+      }
+    }
     async function filePayload(file) {
       if (file.size > 3145728) throw Error("File exceeds 3 MB.");
       const bytes = new Uint8Array(await file.arrayBuffer());
@@ -2191,14 +2278,17 @@
       a.click();
       setTimeout(() => URL.revokeObjectURL(url), 1500);
     }
-    refresh().catch((e) => {
+    refresh().then(async()=>{
+      if(launchOptions.pipelineItemId){s.busy=true;try{await openPipeline(launchOptions.pipelineItemId,launchOptions.prepareDraft!==false);}finally{s.busy=false;}}
+    }).catch((e) => {
+      if(s.data){s.firstDraftProgress=null;render();message(e.message,true);return;}
       main.innerHTML =
         '<section class="gf"><h1>Grant Factory</h1><div class="gf-message error" role="alert">' +
         esc(e.message) +
         '</div><p>Grant Factory uses an explicitly enabled private workspace for the Institute. An administrator provisions executive and grant-manager access during deployment.</p><button class="btn btn-ghost" id="gf-retry">Retry</button></section>';
       main.querySelector("#gf-retry").onclick = () => {
         session = null;
-        mount(main, sb);
+        mount(main, sb, opportunities, launchOptions);
       };
     });
   }

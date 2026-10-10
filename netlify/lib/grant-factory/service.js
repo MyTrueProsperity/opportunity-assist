@@ -9,6 +9,10 @@ const SQ = require("./strategy-quantities");
 const AI = require("./ai");
 const G = require("./grant-reading");
 const W = require("./writing");
+const Import = require("./application-import");
+const First = require("./first-draft");
+const Guidance = require("./writing-guidance");
+const History = require("./funder-history");
 const { researchRules } = R;
 const { exportPackage } = require("./export");
 const { proposeBatch } = require("./intake");
@@ -116,7 +120,7 @@ function prepareParsed(app, parsed, brain) {
       });
 }
 // Strategy inputs that, if changed while a job runs, make its result stale.
-const STRATEGY_FIELDS = ["funder_name", "grant_program_name", "funding_purpose", "funder_priorities", "allowable_costs", "prohibited_costs", "match_requirement", "primary_program_id", "secondary_program_ids", "request_amount", "award_min", "award_max", "grant_period", "rubric_or_scoring", "eligible_applicants", "eligible_geographies", "source_document_id", "additional_source_document_ids"];
+const STRATEGY_FIELDS = ["funder_name", "grant_program_name", "funding_purpose", "funder_priorities", "allowable_costs", "prohibited_costs", "match_requirement", "primary_program_id", "secondary_program_ids", "request_amount", "award_min", "award_max", "grant_period", "rubric_or_scoring", "eligible_applicants", "eligible_geographies", "source_document_id", "additional_source_document_ids", "funder_history"];
 function strategyInputHash(app, brain) {
   return C.hash({
     application: Object.fromEntries(STRATEGY_FIELDS.map((k) => [k, app.content[k] ?? null])),
@@ -187,13 +191,88 @@ function validationFeedback(rejection) {
     problems: problems.map((p) => ({ section: p.section || null, text: String(p.text || "").slice(0, 160), reason: String(p.reason || "").slice(0, 200) })),
   };
 }
-function service(repo, ai, { dispatch = null } = {}) {
+function service(repo, ai, { dispatch = null, applicationFetch = null } = {}) {
   const call = (ctx, task, data, meta) =>
     repo.run(ctx, task, async () => {
       const r = await ai.call(task, data);
       if (meta) Object.assign(meta, { model: r.model || null, usage: r.usage || {} });
       return r;
     });
+  async function draftQuestion(ctx,brain,app,q,existing,preliminary=false) {
+        const reading = await G.load(repo,ctx,brain,app);
+        const selected = W.select(q,brain,app);
+        const evidence = selected.evidence;
+        const questionPlan = W.plan(q,selected,app);
+        let result = preliminary ? First.direct(q,brain,app) : null;
+        if (!result && preliminary && (q.question_type !== "NARRATIVE" || First.requiresDecision(q) || !app.content.primary_program_id))
+          result={status:"NEEDS_USER_INPUT",answer:"",evidence_ids:[],warnings:[],missing_information:[First.needsInput(q,app)]};
+        if (!result && !evidence.length)
+          result = {
+            status: "NEEDS_USER_INPUT",
+            missing_information: [
+              "No approved, relevant evidence is available for: " +
+                q.question_text,
+            ],
+            answer: "",
+            evidence_ids: [],
+            warnings: [],
+          };
+        else if (!result)
+          result = await call(ctx, "write", {
+            question: q,
+            evidence,
+            claim_rules: researchRules(brain, evidence),
+            methodology_rules: METHODOLOGY.rules,
+            writing_guidance: Guidance.guidance(brain,app,reading,q),
+            organization_framework: strategyFramework(brain.framework,[app.content.primary_program_id,...(app.content.secondary_program_ids||[])]),
+            strategy: app.content.strategy,
+            preparation_mode: preliminary ? "FIRST_DRAFT_FOR_HUMAN_REVIEW" : "REVIEWED_STRATEGY",
+            funding_recommendations: preliminary ? W.fundingOptions(brain,app,reading) : undefined,
+            voice: brain.voice,
+            funder_reading: G.forQuestion(reading,q),
+            question_plan: questionPlan,
+            funder_history: History.context(app.content.funder_history),
+          });
+        checkEvidenceIds(result.evidence_ids, result.method==="APPROVED_FIELD_COPY" ? C.authorizedFacts(brain,app.id) : evidence);
+        if((result.status==="DRAFTED" && !result.answer?.trim()) || (result.answer?.trim() && !result.evidence_ids.length))C.fail("The writer returned an empty or ungrounded answer. The existing answer is unchanged.",502);
+        const writingReview = W.quality(result.answer||"",q,evidence,questionPlan);
+        if(writingReview.counts.over)C.fail("The generated answer exceeds the funder's hard limit. Nothing was saved; shorten or regenerate it.",422);
+        const a = {
+          id: existing?.id || C.randomUUID(),
+          question_id: q.id,
+          draft_text: result.answer || "",
+          evidence_ids: result.evidence_ids,
+          status: result.status === "DRAFTED" ? "NEEDS_REVIEW" : "NEEDS_INPUT",
+          generation_version: (existing?.generation_version || 0) + 1,
+          generated_at: C.now(),
+          ...(preliminary?{first_draft_signature:First.signature(q,brain,app),first_draft:true,draft_method:result.method||"GROUNDED_NARRATIVE"}:{}),
+          warnings: [...result.warnings,...reading.warnings,...writingReview.issues.map(i=>i.message)],
+          writing_review: writingReview,
+          writing_plan: {version:W.VERSION,purpose:questionPlan.purpose,evidence_selection:selected.selection,grant_input_hash:reading.input_hash},
+          counts: C.limits.counts(result.answer),
+          audit: null,
+        };
+        app.answers = app.answers
+          .filter((x) => x.question_id !== q.id)
+          .concat(a);
+        // Replace only unanswered, automatically generated requests for this
+        // question. Keep human responses and resolved history intact.
+        app.content.inputs = (app.content.inputs || []).filter(i => !(i.question_id === q.id && i.status === "OPEN" && (i.origin === "DRAFT" || i.reason === "Evidence is insufficient for drafting.")));
+        if (result.status === "NEEDS_USER_INPUT") {
+          app.content.status = "NEEDS_INPUT";
+          for (const prompt of [...new Set(result.missing_information.length
+            ? result.missing_information
+            : ["Provide supporting evidence for this answer."])])
+            app.content.inputs.push({
+              id: C.randomUUID(),
+              question_id: q.id,
+              prompt,
+              reason: "Evidence is insufficient for drafting.",
+              origin: "DRAFT",
+              status: "OPEN",
+            });
+        }
+  }
   // Start the background worker for a job. Failure to dispatch leaves the job
   // QUEUED; status polling dispatches it again, and claiming is idempotent.
   async function startJob(ctx, job) {
@@ -225,6 +304,8 @@ function service(repo, ai, { dispatch = null } = {}) {
       organization_framework: strategyFramework(brain.framework, [app.content.primary_program_id, ...(app.content.secondary_program_ids || [])]),
       funder_reading: reading,
       writing_voice: brain.voice,
+      writing_guidance: Guidance.guidance(brain,app,reading),
+      funder_history: History.context(app.content.funder_history),
       reviewer_preparation: {self_questions:W.QUESTIONS,question_map:app.questions.map(q=>({id:q.id,purpose:W.kind(q),question:q.question_text})),funding:W.fundingOptions(brain,app,reading),related_program_history_ids:[...related],history_scope:'These IDs document related-program delivery history. Attribute the actual delivering program and legal entity; never count them as the selected solution results.'},
     }, SE.strategyRules, { overhead: AI.requestChars("strategy", null) });
   }
@@ -404,6 +485,7 @@ function service(repo, ai, { dispatch = null } = {}) {
       evidence,
       claim_rules: researchRules(brain, evidence),
       methodology_rules: METHODOLOGY.rules,
+      writing_guidance: Guidance.guidance(brain,app,reading,q),
       commitment_review: a.commitment_review || null,
       funder_reading: G.forQuestion(reading,q),
       question_plan: questionPlan,
@@ -500,6 +582,7 @@ function service(repo, ai, { dispatch = null } = {}) {
         const matches = facts.filter(f => ready.has(f.id) && (!q || JSON.stringify([f.display_name, f.value, f.category, f.tags, f.source_locator]).toLowerCase().includes(q)));
         return { total: matches.length, offset, evidence: matches.slice(offset, offset + R.PAGE_LIMIT).map(ref) };
       }
+      if (action === "pipeline_candidates") return repo.pipelineCandidates(ctx,body.offset??0);
       // Bootstrap needs only a research summary, not every record.
       if (action === "bootstrap") {
         const brain = await repo.brain(ctx, { research: false });
@@ -731,6 +814,47 @@ function service(repo, ai, { dispatch = null } = {}) {
           C.fail("Complete text extraction first.");
         return proposeBatch(repo, call, ctx, brain, d, body);
       }
+      if (action === "import_pipeline") {
+        const item=await repo.pipelineItem(ctx,body.pipeline_item_id);
+        const appId=Import.pipelineApplicationId(ctx.org_id,item.id);
+        const existing=(await repo.listApps(ctx)).find(a=>a.id===appId||a.pipeline_item_id===item.id);
+        if(existing)return repo.app(ctx,existing.id);
+        const found=await Import.discover(item.opportunity,applicationFetch);
+        const app={id:appId,org_id:ctx.org_id,revision:0,content:{
+          funder_name:"",grant_program_name:C.str(item.title||item.opportunity.title||"Pipeline application",300),
+          opportunity_id:item.opportunity_id,pipeline_item_id:item.id,pipeline_stage_at_import:item.stage,
+          created_by:ctx.user_id,created_at:C.now(),status:"UPLOADED",inputs:[],attachments:[],strategy:null,
+          application_import:{status:found.status,url:found.url,sha256:found.sha256||null,imported_at:C.now(),attempts:found.attempts,warnings:found.warnings,review_required:true},
+        },questions:[],answers:[]};
+        if(found.status==="PUBLIC_APPLICATION_FOUND"){
+          const source=await upload(ctx,brain,{filename:found.filename,title:app.content.grant_program_name+' — original application',document_type:"GRANT_APPLICATION",base64:found.bytes.toString('base64')});
+          brain=await repo.brain(ctx);app.content.source_document_id=source.id;
+          try {
+          if(source.extraction_status!=="COMPLETE")C.fail("The original application was saved but extraction failed. Open the Document Vault to review it.",422);
+          // PDF questions use the original PDF's page locators. HTML controls
+          // use their saved worksheet with every field and visible source text.
+          const marker=source.blocks.findIndex(b=>b.text==='ORIGINAL PUBLIC PAGE');
+          if(found.text.startsWith('APPLICATION FIELDS\n')&&marker<0)C.fail('The original form could not be mapped completely. Upload the complete application.',422);
+          const fieldBlocks=marker>=0?source.blocks.slice(0,marker):source.blocks;
+          prepareParsed(app,P.basic(fieldBlocks),brain);
+          if(!app.questions.length)C.fail("The original application was saved but its questions could not be mapped. Upload or review the full application.",422);
+          if(found.filename!=='application.pdf'){
+            const canonical=found.parsed.questions;
+            // Re-anchor parsed form labels to the stored text file's real lines.
+            if(canonical.length===app.questions.length)app.questions=app.questions.map((q,i)=>({...q,question_type:canonical[i].question_type,required:canonical[i].required,input_format:canonical[i].input_format,input_min:canonical[i].input_min,input_max:canonical[i].input_max}));
+          }
+          app.content.application_import.warnings.push(...(source.warnings||[]));
+          } catch(e) {
+            app.questions=[];app.answers=[];app.content.status='NEEDS_INPUT';
+            app.content.application_import.status='NEEDS_SOURCE_REVIEW';
+            app.content.application_import.warnings.push(e.message);
+            app.content.inputs=[{id:C.randomUUID(),origin:'APPLICATION_IMPORT',status:'OPEN',prompt:'The original was saved. Upload a readable complete application or review and enter every question before drafting.',reason:e.message}];
+          }
+        }else{
+          app.content.status='NEEDS_INPUT';app.content.inputs=[{id:C.randomUUID(),origin:'APPLICATION_IMPORT',status:'OPEN',prompt:found.warnings[0],reason:'The complete application is not publicly accessible.'}];
+        }
+        return repo.save(ctx,app,brain,'IMPORTED_FROM_PIPELINE');
+      }
       if (action === "new_application") {
         let source = brain.documents.find(
           (d) => d.id === body.source_document_id && C.visible(d, ctx.role),
@@ -868,9 +992,80 @@ function service(repo, ai, { dispatch = null } = {}) {
         const job = queued.created ? (await repo.strategyJobs.status(ctx, app.id)) || queued.job : queued.job;
         return { job: publicJob(job), created: queued.created };
       }
+      if(action==='first_draft_status')return {app,pending:First.pending(app,brain).map(q=>q.id)};
       checkRevision(body, app);
+      // A completed attempt is a real no-op: keep its stored review state.
+      if(['first_draft_question','first_draft_failure'].includes(action)){
+        if(!app.content.first_draft)C.fail('Start Prepare first draft first.');
+        if(!app.questions.some(q=>q.id===body.question_id))C.fail('Question not found',404);
+        if(!First.pending(app,brain).some(q=>q.id===body.question_id))return app;
+      }
+      if(action==='find_funder_history'&&app.content.funder_history?.status&&!body.refresh_confirmed)return app;
       invalidate(app);
-      if (action === "parse") {
+      if(action==='find_funder_history'){
+        if(app.content.funder_history?.status&& !body.refresh_confirmed)return app;
+        let url=app.content.application_import?.url;
+        if(app.content.opportunity_id){const [opp]=await repo.db.select('opportunities',{id:'eq.'+C.id(app.content.opportunity_id),limit:1});url=opp?.source_url||url;}
+        if(body.url)url=Import.safeUrl(C.str(body.url,2000));
+        const found=url?await History.discover(url,applicationFetch):{sources:[],attempts:[{url:null,reason:'Add the official funder page or upload an award history document.'}]};
+        const sources=[];
+        for(const src of found.sources){
+          const doc=await upload(ctx,brain,{filename:src.filename,title:'Funder award history · '+new URL(src.url).hostname,document_type:'GRANT_REPORT',base64:src.bytes.toString('base64')});brain=await repo.brain(ctx);
+          if(doc.extraction_status==='COMPLETE')sources.push({document_id:doc.id,url:src.url,sha256:doc.sha256});
+        }
+        app.content.funder_history={status:sources.length?'SOURCES_READY':'NO_PUBLIC_HISTORY',sources,attempts:found.attempts,awards:[],patterns:[],similarities:[],ranges:[],review_required:true,researched_at:C.now(),warnings:[sources.length?'Sources located; analyze the published awards to prepare funder-fit comparisons.':'Published individual awards were not found in this bounded search. Upload an annual report or add the official award-history page. Missing history does not prevent drafting.']};
+      }else if(action==='analyze_funder_history'){
+        const meta=app.content.funder_history;
+        if(meta?.status!=='SOURCES_READY')C.fail('Find or upload historical award sources first.');
+        const sources=[];let chars=0;
+        for(const source of meta.sources||[]){const d=await repo.document(ctx,source.document_id);if(d.sensitivity_level==='RESTRICTED'||d.internal_only||d.extraction_status!=='COMPLETE')C.fail('A funder history document is restricted or unavailable.');
+          const blocks=History.groupedBlocks(d.blocks);chars+=blocks.reduce((n,b)=>n+b.text.length,0);sources.push({...source,blocks});}
+        if(chars>60000)C.fail('Historical sources exceed the analysis limit. Upload a smaller relevant award list.',413);
+        const facts=C.authorizedFacts(brain,app.id).filter(f=>(!f.org_id||f.org_id===ctx.org_id)&&!f.research&&(!f.program_id||f.program_id===app.content.primary_program_id));
+        const data=await call(ctx,'funder_history',{funder:app.content.funder_name,application:app.content.grant_program_name,sources,evidence:facts,questions:app.questions.map(q=>q.question_text),methodology_rules:METHODOLOGY.rules});
+        app.content.funder_history=History.grounded(data,sources,facts);
+      }else if(action==='attach_funder_history'){
+        let source=brain.documents.find(d=>d.id===body.source_document_id&&C.visible(d,ctx.role));
+        if(body.base64){source=await upload(ctx,brain,{...body,document_type:'GRANT_REPORT'});brain=await repo.brain(ctx);}
+        if(!source||source.extraction_status!=='COMPLETE'||source.sensitivity_level==='RESTRICTED'||source.internal_only)C.fail('Upload a readable, unrestricted historical awards source.');
+        const url=Import.safeUrl(C.str(body.url,2000));
+        app.content.funder_history={status:'SOURCES_READY',sources:[{document_id:source.id,url,sha256:source.sha256}],awards:[],patterns:[],similarities:[],ranges:[],review_required:true,warnings:['User-provided history source. Confirm that the document belongs to this funder and the awards are actual grants.']};
+      }else if(action==='attach_application'){
+        if(app.answers.some(a=>a.draft_text?.trim())&&!body.replace_confirmed)C.fail('Confirm replacement of the questions and drafts before changing the application source.',409);
+        let source=brain.documents.find(d=>d.id===body.source_document_id&&C.visible(d,ctx.role));
+        if(body.base64||body.text?.trim()){
+          source=await upload(ctx,brain,body.base64?{...body,document_type:'GRANT_APPLICATION'}:{filename:'application.txt',title:app.content.grant_program_name,document_type:'GRANT_APPLICATION',base64:Buffer.from(C.str(body.text,100000)).toString('base64')});
+          brain=await repo.brain(ctx);
+        }
+        if(!source||source.extraction_status!=='COMPLETE'||source.sensitivity_level==='RESTRICTED')C.fail('Upload a readable application first.');
+        if(!Array.isArray(source.blocks))source=await repo.document(ctx,source.id);
+        app.content.source_document_id=source.id;
+        prepareParsed(app,P.basic(source.blocks),brain);
+        app.content.application_import={...app.content.application_import,status:'USER_PROVIDED_APPLICATION',review_required:true};
+      }else if(action==='prepare_first_draft'){
+        if(!app.questions.length)C.fail('Import or upload the full application questions first.');
+        const reading=await G.load(repo,ctx,brain,app);
+        if(!reading.complete)C.fail('The complete application source is unavailable or too large. Review the remaining source text before drafting.',413);
+        if(body.source_warning)app.content.warnings=[...new Set([...(app.content.warnings||[]),C.str(body.source_warning,1000)])];
+        First.prepare(brain,app,reading);
+      }else if(action==='first_draft_question'){
+        if(!app.content.first_draft)C.fail('Start Prepare first draft first.');
+        const q=app.questions.find(q=>q.id===body.question_id);if(!q)C.fail('Question not found',404);
+        const existing=app.answers.find(a=>a.question_id===q.id);
+        // Saved human text and completed attempts are never overwritten on resume.
+        if(!First.pending(app,brain).some(x=>x.id===q.id))return app;
+        await draftQuestion(ctx,brain,app,q,existing,true);
+        app.content.first_draft={...app.content.first_draft,status:First.pending(app,brain).length?'IN_PROGRESS':'READY_FOR_REVIEW',completed_at:First.pending(app,brain).length?null:C.now()};
+      }else if(action==='first_draft_failure'){
+        const q=app.questions.find(q=>q.id===body.question_id);if(!q)C.fail('Question not found',404);
+        if(!app.content.first_draft)C.fail('Start Prepare first draft first.');
+        if(!First.pending(app,brain).some(x=>x.id===q.id))return app;
+        const a=app.answers.find(a=>a.question_id===q.id);
+        app.answers=app.answers.filter(a=>a.question_id!==q.id).concat({id:a?.id||C.randomUUID(),question_id:q.id,draft_text:'',evidence_ids:[],status:'NEEDS_INPUT',first_draft:true,first_draft_signature:First.signature(q,brain,app),generation_version:(a?.generation_version||0)+1,warnings:[C.str(body.message||'Automatic drafting did not finish.',500)],audit:null});
+        app.content.inputs=(app.content.inputs||[]).filter(i=>!(i.question_id===q.id&&i.origin==='DRAFT'&&i.status==='OPEN'));
+        app.content.inputs.push({id:C.randomUUID(),question_id:q.id,origin:'DRAFT',status:'OPEN',prompt:'Review or draft this answer: '+q.question_text,reason:C.str(body.message||'Automatic drafting did not finish.',500)});
+        app.content.status='NEEDS_INPUT';
+      }else if (action === "parse") {
         const reading=await G.load(repo,ctx,brain,app);
         if(!reading.complete)C.fail("The complete source packet is too large or unavailable for one extraction. Review or enter the remaining fields manually; existing answers are unchanged.",413);
         const blocks=reading.blocks.map(b=>({...b,source_document_id:b.document_id,locator:b.document_id===app.content.source_document_id?b.locator:b.title+' / '+b.locator}));
@@ -976,71 +1171,7 @@ function service(repo, ai, { dispatch = null } = {}) {
         const existing = app.answers.find((a) => a.question_id === q.id);
         if (existing?.draft_text && !body.replace_confirmed)
           C.fail("Confirm replacement of the existing answer first.", 409);
-        const reading = await G.load(repo,ctx,brain,app);
-        const selected = W.select(q,brain,app);
-        const evidence = selected.evidence;
-        const questionPlan = W.plan(q,selected,app);
-        let result;
-        if (!evidence.length)
-          result = {
-            status: "NEEDS_USER_INPUT",
-            missing_information: [
-              "No approved, relevant evidence is available for: " +
-                q.question_text,
-            ],
-            answer: "",
-            evidence_ids: [],
-            warnings: [],
-          };
-        else
-          result = await call(ctx, "write", {
-            question: q,
-            evidence,
-            claim_rules: researchRules(brain, evidence),
-            methodology_rules: METHODOLOGY.rules,
-            strategy: app.content.strategy,
-            voice: brain.voice,
-            funder_reading: G.forQuestion(reading,q),
-            question_plan: questionPlan,
-          });
-        checkEvidenceIds(result.evidence_ids, evidence);
-        if((result.status==="DRAFTED" && !result.answer?.trim()) || (result.answer?.trim() && !result.evidence_ids.length))C.fail("The writer returned an empty or ungrounded answer. The existing answer is unchanged.",502);
-        const writingReview = W.quality(result.answer||"",q,evidence,questionPlan);
-        if(writingReview.counts.over)C.fail("The generated answer exceeds the funder's hard limit. Nothing was saved; shorten or regenerate it.",422);
-        const a = {
-          id: existing?.id || C.randomUUID(),
-          question_id: q.id,
-          draft_text: result.answer || "",
-          evidence_ids: result.evidence_ids,
-          status: result.status === "DRAFTED" ? "NEEDS_REVIEW" : "NEEDS_INPUT",
-          generation_version: (existing?.generation_version || 0) + 1,
-          generated_at: C.now(),
-          warnings: [...result.warnings,...reading.warnings,...writingReview.issues.map(i=>i.message)],
-          writing_review: writingReview,
-          writing_plan: {version:W.VERSION,purpose:questionPlan.purpose,evidence_selection:selected.selection,grant_input_hash:reading.input_hash},
-          counts: C.limits.counts(result.answer),
-          audit: null,
-        };
-        app.answers = app.answers
-          .filter((x) => x.question_id !== q.id)
-          .concat(a);
-        // Replace only unanswered, automatically generated requests for this
-        // question. Keep human responses and resolved history intact.
-        app.content.inputs = (app.content.inputs || []).filter(i => !(i.question_id === q.id && i.status === "OPEN" && (i.origin === "DRAFT" || i.reason === "Evidence is insufficient for drafting.")));
-        if (result.status === "NEEDS_USER_INPUT") {
-          app.content.status = "NEEDS_INPUT";
-          for (const prompt of [...new Set(result.missing_information.length
-            ? result.missing_information
-            : ["Provide supporting evidence for this answer."])])
-            app.content.inputs.push({
-              id: C.randomUUID(),
-              question_id: q.id,
-              prompt,
-              reason: "Evidence is insufficient for drafting.",
-              origin: "DRAFT",
-              status: "OPEN",
-            });
-        }
+        await draftQuestion(ctx,brain,app,q,existing);
       } else if (action === "save_answer") {
         const q = app.questions.find((q) => q.id === body.question_id);
         if (!q) C.fail("Question not found", 404);

@@ -29,7 +29,7 @@ function strategyDispatcher(event, fetcher = fetch) {
     if (!r.ok) throw new Error("Background worker returned " + r.status);
   };
 }
-function makeHandler({ repo, ai, dispatch } = {}) {
+function makeHandler({ repo, ai, dispatch, applicationFetch } = {}) {
   return async (event) => {
     if (event.httpMethod !== "POST")
       return {
@@ -60,6 +60,7 @@ function makeHandler({ repo, ai, dispatch } = {}) {
       const ctx = await repositoryInstance.context(event, body.org_id);
       const result = await service(repositoryInstance, ai || provider(), {
         dispatch: dispatch === undefined ? strategyDispatcher(event) : dispatch,
+        applicationFetch,
       }).handle(ctx, body);
       return { statusCode: 200, headers, body: JSON.stringify(result) };
     } catch (e) {

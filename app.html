@@ -160,7 +160,7 @@ label{display:block;font-weight:600;font-size:.85rem;margin:0 0 .3rem;color:var(
   <link rel="stylesheet" href="/assets/grant-factory.css?v=20260923">
   <script src="/assets/grant-factory-limits.js?v=20260917"></script>
   <script src="/assets/grant-factory-reading.js?v=20260923"></script>
-  <script src="/assets/grant-factory.js?v=20260923c"></script>
+  <script src="/assets/grant-factory.js?v=20261010a"></script>
   <script src="/assets/matching.js?v=20260925"></script>
   <script>
 // Opportunity Assist — Supabase client config
@@ -202,7 +202,8 @@ window.OA_CONFIG = {
     currentPipelineItem: null,
     pipelineActivity: [], // activity rows for the currently-open pipeline item, loaded on demand
     pipelineOpps: {},     // opportunity_id -> record for pipeline cards Funding Radar no longer lists
-    notesDraft: {},       // pipeline_item_id -> unsaved notes text, kept across repaints
+    notesDraft: {},
+    grantFactoryIntent: null,       // Organization and pipeline application to open in Grant Factory
     fincapShares: {}      // opportunity_id -> {status, needs_review}: this org's Pass & Share requests
   };
 
@@ -720,7 +721,7 @@ window.OA_CONFIG = {
     if (state.view === "radar") return renderRadar(main);
       if (state.view === "foundations") return renderFoundationLeads(main);
     if (state.view === "pipeline") return renderPipeline(main);
-    if (state.view === "grant-factory") return window.OAGrantFactory.mount(main, sb, state.opps);
+    if (state.view === "grant-factory") { var intent=state.grantFactoryIntent||{orgId:state.org.id}; state.grantFactoryIntent=null; return window.OAGrantFactory.mount(main,sb,state.opps,intent); }
     if (state.view === "contracts") return renderContracts(main);
     if (state.view === "alerts") return renderAlerts(main);
     if (state.view === "assistant") return renderAssistant(main);
@@ -1055,6 +1056,10 @@ window.OA_CONFIG = {
   }
 
   /* ---------- capture pipeline (kanban) ---------- */
+  function openPipelineInGrantFactory(p) {
+    state.grantFactoryIntent={orgId:state.org.id,pipelineItemId:p.id,prepareDraft:true};
+    state.currentPipelineItem=null;state.currentOpp=null;state.view='grant-factory';paint();
+  }
   function renderPipeline(main) {
     main.innerHTML =
       '<div class="topbar"><div><h1>Capture Pipeline</h1><p class="sub">Click a card to review it. Drag cards between stages.</p></div></div>' +
@@ -1074,6 +1079,10 @@ window.OA_CONFIG = {
         c.addEventListener("dragstart", function (e) { e.dataTransfer.setData("text/plain", p.id); c.classList.add("drag"); });
         c.addEventListener("dragend", function () { c.classList.remove("drag"); });
         c.addEventListener("click", function (e) { if (c.classList.contains("drag")) return; state.currentPipelineItem = p; paint(); });
+        if(['Qualified','Planning'].indexOf(p.stage)!==-1){
+          var launch=el('<button type="button" class="btn btn-ghost btn-sm" title="Find the application and prepare a draft using your workspace AI allowance">Open in Grant Factory</button>');
+          launch.addEventListener('click',function(e){e.stopPropagation();openPipelineInGrantFactory(p);});c.appendChild(launch);
+        }
         col.appendChild(c);
       });
       col.addEventListener("dragover", function (e) { e.preventDefault(); col.classList.add("over"); });
@@ -1206,6 +1215,7 @@ window.OA_CONFIG = {
       '<div class="detail-grid">' +
       '<div class="stack">' +
       reviewCard +
+      (['Qualified','Planning'].indexOf(p.stage)!==-1 ? '<div class="card"><h2>Prepare this application</h2><p class="hint">Bring the full application into Grant Factory and prepare supported answers using your workspace AI allowance.</p><button type="button" class="btn btn-primary" id="pipelineToGrantFactory">Import application &amp; prepare draft</button></div>' : '') +
       summaryCard +
       '<div class="card"><h2>Requirements' + (readiness != null ? ' <span class="tag">' + readiness + '% ready</span>' : "") + '</h2>' +
       '<div id="reqList" style="margin-top:10px"></div>' +
@@ -1236,6 +1246,8 @@ window.OA_CONFIG = {
       });
     }
 
+    var gfLaunch=main.querySelector('#pipelineToGrantFactory');
+    if(gfLaunch)gfLaunch.addEventListener('click',function(){openPipelineInGrantFactory(p);});
     var notesEl = main.querySelector("#notes");
     notesEl.addEventListener("input", function () { state.notesDraft[p.id] = notesEl.value; });
     main.querySelector("#saveNotes").addEventListener("click", function () {
