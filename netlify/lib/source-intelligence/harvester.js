@@ -6,6 +6,7 @@ const {htmlToText,extractLinks,fetchPage}=require('./fetch-page');
 const {healthTransition}=require('./quality');
 const {SOURCE_TYPES,STATES}=require('./config');
 const themes=require('../../../data/harvester-themes.json');
+const promotion=require('./deterministic-promotion');
 const list=x=>x==null?[]:Array.isArray(x)?x:[x];
 const text=x=>typeof x==='string'?x:typeof x==='number'?String(x):x?.['#text']||'';
 const candidateKey=c=>c.external_id?hash('harvester-external|'+c.external_provider+'|'+c.external_id):identityKey(c);
@@ -58,7 +59,7 @@ function parse(page,source={}){
   return {programs:[...unique.values()],links:links.slice(0,3),method,review_reasons:reasons,duplicates:items.length-unique.size};
 }
 function report(){return {sources_checked:0,sources_unchanged:0,sources_changed:0,sources_failed:0,new_opportunities:0,updated_opportunities:0,duplicate_opportunities_prevented:0,expired_opportunities:0,items_sent_to_review:0,items_requiring_interpretation:0,database_reads:0,database_writes:0,paid_llm_calls:0,paid_llm_tokens:0,estimated_ai_cost:0};}
-async function collect({db=null,source,fetcher=fetchPage,dryRun=true,cache=null,now=new Date(),runId=null}){
+async function collect({db=null,source,fetcher=fetchPage,dryRun=true,cache=null,now=new Date(),runId=null,env=process.env}){
   const r=report();r.sources_checked=1;const url=source.source_url||source.url;
   const read=async(t,p)=>{r.database_reads++;return db.select(t,p);};
   const write=async(fn)=>{r.database_writes++;return fn();};
@@ -67,7 +68,14 @@ async function collect({db=null,source,fetcher=fetchPage,dryRun=true,cache=null,
     // A legacy model cache needs one deterministic parse before it can be reused.
     const page=await fetcher(url,cache?.extracted?.harvester===1?cache:null);
     if(cache?.extracted?.harvester===1&&(page.unchanged||page.hash===cache?.page_hash)){r.sources_unchanged++;if(db&&!dryRun&&source.id)await write(()=>db.patch('funding_programs',{id:'eq.'+source.id},{last_attempted_at:now.toISOString(),next_scan_at:nextScan(source,now),consecutive_failures:0}));return {report:r,programs:[],links:[],cache};}
-    r.sources_changed++;const parsed=parse(page,source);r.duplicate_opportunities_prevented+=parsed.duplicates;
+    r.sources_changed++;
+    // One settings row only when the separately enabled C path is requested.
+    const promotionSettings=db&&promotion.enabled(env)?(await read('source_engine_settings',{id:'eq.true',limit:1}))[0]:null;
+    const promotionSource=promotionSettings?.deterministic_promotion_enabled===true&&promotion.sourceAllowed(promotionSettings,source);
+    const parsed=promotionSource?require('./official-page').parseOfficialPage(page,source,{asOf:now.toISOString().slice(0,10),synthetic:true}):parse(page,source);
+    if(promotionSource){parsed.links=parsed.links||[];parsed.duplicates=0;parsed.programs=parsed.programs.map(c=>promotion.observe(c,page,source,{now,independent:fetcher===fetchPage}));}
+    r.duplicate_opportunities_prevented+=parsed.duplicates||0;
+    const promotionRows=[],promotionDecisions=[];
     // URL- and organization-scoped indexed comparisons, never whole-table scans.
     if(parsed.programs.length>100)throw new Error('Page exceeds 100-program pilot bound; manual parser review required');
     const domains=[...new Set([url,page.url,...parsed.programs.map(c=>c.source_url)].map(u=>new URL(normalizeUrl(u)).hostname))];
@@ -80,7 +88,7 @@ async function collect({db=null,source,fetcher=fetchPage,dryRun=true,cache=null,
     for(const c of parsed.programs){const duplicate=compareCandidate(c,records,[]);const key=candidateKey(c);
       const prior=priorByKey.get(key);
       if(prior?.proposed?.harvest_hash===c.harvest_hash){r.duplicate_opportunities_prevented++;continue;}
-      if(prior?.last_verified_at&&!prior.proposed?.harvest_hash){
+      if(prior&&(promotionSource||(prior.last_verified_at&&!prior.proposed?.harvest_hash))){
         // A model-verified or manually curated proposal is stronger than a scrape.
         // Keep its fields and decision; attach the conflicting observation only.
         r.duplicate_opportunities_prevented++;r.items_sent_to_review++;r.items_requiring_interpretation++;
@@ -90,14 +98,28 @@ async function collect({db=null,source,fetcher=fetchPage,dryRun=true,cache=null,
       c.material_changes=prior?['current_deadline','award_min','award_max','eligibility','geography','application_url','current_cycle_open','organization_name'].filter(k=>JSON.stringify(prior.proposed[k]??null)!==JSON.stringify(c[k]??null)).map(field=>({field,before:prior.proposed[field]??null,after:c[field]??null})):[];
       if(c.current_deadline&&c.current_deadline<now.toISOString().slice(0,10)){c.review_reasons.push('EXPIRED');c.current_cycle_open=false;r.expired_opportunities++;}
       if(duplicate.outcome!=='NEW')c.review_reasons.push('SOURCE_CONFLICT');
-      r[prior||duplicate.matched_program_id?'updated_opportunities':'new_opportunities']++;r.items_sent_to_review++;if(c.review_reasons.length)r.items_requiring_interpretation++;
-      if(db&&!dryRun)await write(()=>db.rpc('source_ingest_candidate',{p_candidate:{identity_key:key,source_name:c.program_name||c.source_name,source_url:c.source_url,normalized_url:c.normalized_url,state_code:c.target_state,proposed:c,scores:{},duplicate_matches:duplicate.matches,duplicate_outcome:duplicate.outcome,matched_program_id:duplicate.matched_program_id,quality_ready:!!(c.evidence.program_name&&c.evidence.funding_mechanism&&c.applicable_states.includes(c.target_state)),reason:c.review_reasons.join(', ')||'Deterministic harvest requires human review',reason_code:'HUMAN_REVIEW',discovery_method:'ZERO_TOKEN_HARVEST',last_verified_at:now.toISOString()},p_sighting:{run_id:runId,observation_key:hash(key+'|'+c.harvest_hash),provenance:{source_url:url,page_hash:page.hash,parser:parsed.method,review_reasons:c.review_reasons}}}));
+      r[prior||duplicate.matched_program_id?'updated_opportunities':'new_opportunities']++;r.items_sent_to_review++;
+      if(promotionSource){
+        const decision=promotion.assess(c,{source,settings:promotionSettings,now,prior,duplicate});
+        c.deterministic_assessment=decision;promotionDecisions.push({identity_key:key,...decision});
+      }
+      if(c.review_reasons.some(x=>x!=='HUMAN_REVIEW')||(promotionSource&&c.deterministic_assessment.outcome!=='ELIGIBLE'))r.items_requiring_interpretation++;
+      if(db&&!dryRun){const row=await write(()=>db.rpc('source_ingest_candidate',{p_candidate:{identity_key:key,source_name:c.program_name||c.source_name,source_url:c.source_url,normalized_url:c.normalized_url,state_code:c.target_state,proposed:c,scores:{},duplicate_matches:duplicate.matches,duplicate_outcome:duplicate.outcome,matched_program_id:duplicate.matched_program_id,quality_ready:!!(c.evidence.program_name&&c.evidence.funding_mechanism&&c.applicable_states.includes(c.target_state)),reason:promotionSource&&c.deterministic_assessment.outcome!=='ELIGIBLE'?'Deterministic check: '+c.deterministic_assessment.reasons.join(', '):c.review_reasons.join(', ')||'Deterministic harvest requires human review',reason_code:'HUMAN_REVIEW',discovery_method:'ZERO_TOKEN_HARVEST',last_verified_at:now.toISOString()},p_sighting:{run_id:runId,observation_key:hash(key+'|'+c.harvest_hash),provenance:{source_url:url,page_hash:page.hash,parser:parsed.method,review_reasons:c.review_reasons,...(promotionSource&&c.deterministic_observation?{deterministic_observation:c.deterministic_observation,evidence_hash:c.deterministic_observation.evidence_hash}:{})}}}));
+        if(promotionSource&&c.deterministic_assessment.outcome==='ELIGIBLE'&&promotionRows.length<promotion.MAX_PER_RUN)promotionRows.push(row);
+      }
     }
     if(db&&!dryRun){await write(()=>db.upsert('source_page_cache',{normalized_url:normalizeUrl(url),resolved_url:page.url,page_hash:page.hash,etag:page.etag||null,last_modified:page.last_modified||null,links:parsed.links,extracted:{harvester:1,programs:parsed.programs},fetched_at:now.toISOString()},'normalized_url'));
-      await write(()=>db.insert('source_scan_history',{program_id:source.id||null,run_id:runId,source_url:url,resolved_url:page.url,http_status:page.status,page_hash:page.hash,change_detected:true,extraction_result:{...parsed,report:r},model:'deterministic',estimated_cost_usd:0}));
+      await write(()=>db.insert('source_scan_history',{program_id:source.id||null,run_id:runId,source_url:url,resolved_url:page.url,http_status:page.status,page_hash:page.hash,change_detected:true,extraction_result:{...parsed,promotion_decisions:promotionDecisions,report:r},model:'deterministic',estimated_cost_usd:0}));
+      for(const row of promotionRows){
+        const decision=await write(()=>promotion.promote(db,row,{env}));
+        promotionDecisions.push({candidate_id:row.id,...decision});
+        if(decision.outcome==='PROMOTED'){r.automatic_promotions=(r.automatic_promotions||0)+1;r.items_sent_to_review--;}else r.items_requiring_interpretation++;
+      }
+      // Keep the transaction outcomes visible without hiding uncertain findings.
+      if(promotionRows.length)await write(()=>db.insert('source_scan_history',{run_id:runId,source_url:url,resolved_url:page.url,http_status:page.status,page_hash:page.hash,extraction_result:{promotion_decisions:promotionDecisions,report:r},model:'deterministic-promotion',estimated_cost_usd:0}));
       if(source.id){const health=healthTransition(source,{ok:true,hash:page.hash,redirected:page.redirected},now);health.next_scan_at=nextScan(source,now);delete health.last_verified_at;await write(()=>db.patch('funding_programs',{id:'eq.'+source.id},health));}
     }
-    return {...parsed,report:r,cache:{page_hash:page.hash,extracted:{harvester:1},etag:page.etag,last_modified:page.last_modified,resolved_url:page.url}};
+    return {...parsed,promotion_decisions:promotionDecisions,report:r,cache:{page_hash:page.hash,extracted:{harvester:1},etag:page.etag,last_modified:page.last_modified,resolved_url:page.url}};
   }catch(e){r.sources_failed++;if(db&&!dryRun){await write(()=>db.insert('source_scan_history',{program_id:source.id||null,run_id:runId,source_url:url,http_status:e.httpStatus||null,error:e.message.slice(0,500),model:'deterministic',estimated_cost_usd:0}));if(source.id)await write(()=>db.patch('funding_programs',{id:'eq.'+source.id},healthTransition(source,{ok:false},now)));}return {report:r,programs:[],links:[],error:e.message};}
 }
 module.exports={parse,collect,classify,date,report,candidateKey,nextScan};

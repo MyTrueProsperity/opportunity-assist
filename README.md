@@ -242,3 +242,8 @@ The existing `MyTrueProsperity/opportunity-assist` repository deploys to the exi
 ## Custom domain
 In Netlify → Domain settings, add `opportunityassist.com` once the domain is ready.
 Update the URLs in `index.html` (og/canonical), `robots.txt`, and `sitemap.xml` if the final domain differs.
+
+
+## Choice C: selective official-source promotion
+
+[Choice C instructions](docs/local-proposals/deterministic-promotion.md) describe the default-off policy for new grants with complete quoted official evidence. It preserves manual review for ambiguous or existing records, caps audited checks at five per UTC day, and approves/publishes atomically. The migration is registered and the five-page official-source pilot found no qualifying notices. Keep C disabled until a supported complete live notice passes its source review. This checkout preserves the published Grant Factory improvements and research budget controls; it does not activate C.

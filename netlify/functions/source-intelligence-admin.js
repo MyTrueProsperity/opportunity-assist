@@ -62,6 +62,13 @@ async function handle(event,db=createDb()) {
   }
   if((event.body||'').length>1000000)throw new HttpError(413,'Request too large');
   let b;try{b=JSON.parse(event.body||'{}');}catch{throw new HttpError(400,'Invalid JSON');}
+  if(b.action==='configure_deterministic_promotion'){
+    if(typeof b.enabled!=='boolean'||!Array.isArray(b.sources)||b.sources.length>5||!Number.isInteger(b.daily_limit)||b.daily_limit<0||b.daily_limit>5)throw new HttpError(400,'Use up to five reviewed sources and a daily limit from zero to five.');
+    const {exactUrl}=require('../lib/source-intelligence/deterministic-promotion');
+    const sources=b.sources.map(s=>{try{checkState(s.state);if(s.kind!=='official-page'||exactUrl(s.url)!==s.url)throw new Error('Exact official-page URL required');return {url:s.url,kind:s.kind,state:s.state};}catch{throw new HttpError(400,'Use reviewed exact official HTTPS page URLs and valid states.');}});
+    if(b.enabled&&b.confirmation!=='ENABLE_DETERMINISTIC_PROMOTION_AFTER_OFFICIAL_PILOT')throw new HttpError(400,'Explicit activation confirmation is required after the official-source pilot.');
+    return json(200,await db.rpc('source_configure_deterministic',{p_actor:actor,p_enabled:b.enabled,p_sources:sources,p_daily_limit:b.daily_limit,p_confirmation:b.confirmation||''}));
+  }
   if(['harvest_preview','harvest_queue'].includes(b.action)){
     checkState(b.state);const rows=parseJson(b.sources);
     if(!rows.length||rows.length>25||rows.some(r=>r.error))throw new HttpError(400,'Supply 1–25 valid source records');
