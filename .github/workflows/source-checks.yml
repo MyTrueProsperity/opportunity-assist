@@ -14,5 +14,8 @@ jobs:
       - name: Real PostgreSQL research budget checks
         timeout-minutes: 4
         run: pnpm test:research-postgres
+      - name: Real PostgreSQL deterministic promotion checks
+        timeout-minutes: 4
+        run: node scripts/test-deterministic-postgres.cjs
       - run: pnpm build
       - run: pnpm check:functions
