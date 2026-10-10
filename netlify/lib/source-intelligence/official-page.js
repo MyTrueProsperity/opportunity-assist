@@ -88,4 +88,3 @@ async function fetchOfficialPageDetail(source,{request,...options}={}) {
   return parseOfficialPage(await request(source.source_url||source.url),source,options);
 }
 module.exports={parseOfficialPage,fetchOfficialPageDetail};
-

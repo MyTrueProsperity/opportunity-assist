@@ -205,7 +205,7 @@ test('C: the review screen explains manual review and publication failure withou
 
 test('C: default database installation stays disabled and the privileged server role can publish verified amounts',async()=>{
  const db=await localDb();try{
- 
+
  assert.equal((await db.select('source_engine_settings'))[0].deterministic_promotion_enabled,false);
  const {row}=await seed(db,{extra:'<p>Award ceiling: $5,000</p>'});
  assert.equal((await P.promote(db,row,{env})).outcome,'DISABLED');

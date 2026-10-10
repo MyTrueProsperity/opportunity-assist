@@ -80,4 +80,3 @@ function candidate(facts,{asOf,synthetic=true}={}) {
   return c;
 }
 module.exports={dateValue,deadlineFacts,money,lines,labeled,deadlineLines,fieldEvidence,candidate};
-

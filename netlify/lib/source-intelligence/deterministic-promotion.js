@@ -66,4 +66,3 @@ async function promote(db,row,{env=process.env}={}){
   }
 }
 module.exports={POLICY,REQUIRED,MAX_PER_RUN,MAX_AGE_MS,MAX_TEXT,enabled,exactUrl,sourceAllowed,evidenceHash,observe,assess,promote};
-
