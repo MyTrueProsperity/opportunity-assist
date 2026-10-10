@@ -13,6 +13,7 @@ const Import = require("./application-import");
 const First = require("./first-draft");
 const Guidance = require("./writing-guidance");
 const History = require("./funder-history");
+const Requirements=require("./requirements"), Project=require("./project-model"), Proposal=require("./proposal-review"), Attachment=require("./attachment-review"), Eligibility=require("./eligibility");
 const { researchRules } = R;
 const { exportPackage } = require("./export");
 const { proposeBatch } = require("./intake");
@@ -103,13 +104,15 @@ function prepareParsed(app, parsed, brain) {
     status: "PARSED",
     parser_reviewed: false,
   };
-  app.content.eligibility = C.eligibility(parsed.eligibility, brain.facts);
+  app.content.eligibility = C.eligibility(parsed.eligibility, C.authorizedFacts(brain,app.id));
   app.content.recommendation = C.recommend(
     { ...app.content, questions: app.questions },
     brain.programs,
   );
   for (const q of app.questions.filter((q) => q.question_type === "UPLOAD"))
-    if (!app.content.attachments.some((a) => a.question_id === q.id))
+    if (!app.content.attachments.some((a) => a.question_id === q.id)) {
+      const candidate=app.content.attachments.find(a=>!a.question_id&&a.source_quote===q.source_quote);
+      if(candidate){candidate.question_id=q.id;candidate.required=q.required;candidate.conditional_trigger=q.conditional_trigger;continue;}
       app.content.attachments.push({
         id: C.randomUUID(),
         question_id: q.id,
@@ -118,9 +121,10 @@ function prepareParsed(app, parsed, brain) {
         status: "MISSING",
         source_locator: q.source_locator,
       });
+    }
 }
 // Strategy inputs that, if changed while a job runs, make its result stale.
-const STRATEGY_FIELDS = ["funder_name", "grant_program_name", "funding_purpose", "funder_priorities", "allowable_costs", "prohibited_costs", "match_requirement", "primary_program_id", "secondary_program_ids", "request_amount", "award_min", "award_max", "grant_period", "rubric_or_scoring", "eligible_applicants", "eligible_geographies", "source_document_id", "additional_source_document_ids", "funder_history"];
+const STRATEGY_FIELDS = ["funder_name", "grant_program_name", "funding_purpose", "funder_priorities", "allowable_costs", "prohibited_costs", "match_requirement", "primary_program_id", "secondary_program_ids", "request_amount", "award_min", "award_max", "grant_period", "rubric_or_scoring", "eligible_applicants", "eligible_geographies", "source_document_id", "additional_source_document_ids", "funder_history", "project_model", "deadline", "application_cycle"];
 function strategyInputHash(app, brain) {
   return C.hash({
     application: Object.fromEntries(STRATEGY_FIELDS.map((k) => [k, app.content[k] ?? null])),
@@ -231,6 +235,8 @@ function service(repo, ai, { dispatch = null, applicationFetch = null } = {}) {
             voice: brain.voice,
             funder_reading: G.forQuestion(reading,q),
             question_plan: questionPlan,
+            project_model: app.content.project_model || null,
+            proposal_context: Proposal.context(app,q.id),
             funder_history: History.context(app.content.funder_history),
           });
         checkEvidenceIds(result.evidence_ids, result.method==="APPROVED_FIELD_COPY" ? C.authorizedFacts(brain,app.id) : evidence);
@@ -306,6 +312,7 @@ function service(repo, ai, { dispatch = null, applicationFetch = null } = {}) {
       writing_voice: brain.voice,
       writing_guidance: Guidance.guidance(brain,app,reading),
       funder_history: History.context(app.content.funder_history),
+      project_model: app.content.project_model || null,
       reviewer_preparation: {self_questions:W.QUESTIONS,question_map:app.questions.map(q=>({id:q.id,purpose:W.kind(q),question:q.question_text})),funding:W.fundingOptions(brain,app,reading),related_program_history_ids:[...related],history_scope:'These IDs document related-program delivery history. Attribute the actual delivering program and legal entity; never count them as the selected solution results.'},
     }, SE.strategyRules, { overhead: AI.requestChars("strategy", null) });
   }
@@ -902,7 +909,7 @@ function service(repo, ai, { dispatch = null, applicationFetch = null } = {}) {
           });
           if (!opp) C.fail("Opportunity not found");
         }
-        prepareParsed(app, P.basic(source.blocks), brain);
+        prepareParsed(app, P.basic(source.blocks.map(b=>({...b,source_document_id:source.id}))), brain);
         return repo.save(ctx, app, brain, "CREATED");
       }
       if (action === "history") {
@@ -921,7 +928,7 @@ function service(repo, ai, { dispatch = null, applicationFetch = null } = {}) {
         let reading;
         try {reading = await G.load(repo,ctx,brain,app);} catch(e) {reading=G.read([],app);reading.warnings.push(e.message);}
         return {
-          app: {...app, writing_brief: W.brief(brain,app,reading)},
+          app: {...app, content:{...app.content,eligibility:C.eligibility(app.content.eligibility,C.authorizedFacts(brain,app.id)).map(r=>Eligibility.effective(r,brain,app.id))},writing_brief: W.brief(brain,app,reading),requirements_checklist:{...Requirements.diagnostics(reading),review_current:Requirements.issues(app,brain).length===0,entries:Requirements.entries(app,brain)},project_validation:Project.validate(app.content.project_model,app.content),proposal_analysis:Proposal.analyze(app,brain)},
           brain: repo.publicBrain(brain, ctx, app.id, app),
           snapshots: await repo.db.select("gf_snapshots", {
             org_id: "eq." + ctx.org_id,
@@ -932,6 +939,7 @@ function service(repo, ai, { dispatch = null, applicationFetch = null } = {}) {
         };
       }
       if (action === "export") {
+        if(["json","internal_zip"].includes(body.format))owner(ctx);
         let snapshot = null;
         if (body.snapshot_id) {
           owner(ctx);
@@ -1001,6 +1009,10 @@ function service(repo, ai, { dispatch = null, applicationFetch = null } = {}) {
         if(!First.pending(app,brain).some(q=>q.id===body.question_id))return app;
       }
       if(action==='find_funder_history'&&app.content.funder_history?.status&&!body.refresh_confirmed)return app;
+      if(action==='save_project_model'){
+        const candidate=Project.normalize(body.project_model);const previous=app.content.project_model;
+        if(previous){const {updated_by,updated_at,...existing}=previous;if(C.hash(candidate)===C.hash(existing))return app;}
+      }
       invalidate(app);
       if(action==='find_funder_history'){
         if(app.content.funder_history?.status&& !body.refresh_confirmed)return app;
@@ -1031,16 +1043,20 @@ function service(repo, ai, { dispatch = null, applicationFetch = null } = {}) {
         const url=Import.safeUrl(C.str(body.url,2000));
         app.content.funder_history={status:'SOURCES_READY',sources:[{document_id:source.id,url,sha256:source.sha256}],awards:[],patterns:[],similarities:[],ranges:[],review_required:true,warnings:['User-provided history source. Confirm that the document belongs to this funder and the awards are actual grants.']};
       }else if(action==='attach_application'){
-        if(app.answers.some(a=>a.draft_text?.trim())&&!body.replace_confirmed)C.fail('Confirm replacement of the questions and drafts before changing the application source.',409);
         let source=brain.documents.find(d=>d.id===body.source_document_id&&C.visible(d,ctx.role));
         if(body.base64||body.text?.trim()){
-          source=await upload(ctx,brain,body.base64?{...body,document_type:'GRANT_APPLICATION'}:{filename:'application.txt',title:app.content.grant_program_name,document_type:'GRANT_APPLICATION',base64:Buffer.from(C.str(body.text,100000)).toString('base64')});
-          brain=await repo.brain(ctx);
+          source=await upload(ctx,brain,body.base64?{...body,document_type:'GRANT_APPLICATION'}:{filename:'application.txt',title:app.content.grant_program_name,document_type:'GRANT_APPLICATION',base64:Buffer.from(C.str(body.text,100000)).toString('base64')});brain=await repo.brain(ctx);
         }
-        if(!source||source.extraction_status!=='COMPLETE'||source.sensitivity_level==='RESTRICTED')C.fail('Upload a readable application first.');
+        if(!source||source.extraction_status!=='COMPLETE'||source.sensitivity_level==='RESTRICTED'||source.internal_only)C.fail('Upload a readable application first.');
         if(!Array.isArray(source.blocks))source=await repo.document(ctx,source.id);
+        if(app.content.source_document_id&&app.content.source_document_id!==source.id){
+          app.content.original_source_document_ids=[...new Set([...(app.content.original_source_document_ids||[]),app.content.source_document_id])];
+        }
         app.content.source_document_id=source.id;
-        prepareParsed(app,P.basic(source.blocks),brain);
+        const parsed=P.basic(source.blocks.map(b=>({...b,source_document_id:source.id})));
+        if(!app.questions.length&&!app.answers.length)prepareParsed(app,parsed,brain);
+        else app.content.reconciliation_preview=Requirements.preview(app,parsed,await G.load(repo,ctx,brain,app),brain);
+        app.content.parser_reviewed=false;app.content.requirements_review=null;
         app.content.application_import={...app.content.application_import,status:'USER_PROVIDED_APPLICATION',review_required:true};
       }else if(action==='prepare_first_draft'){
         if(!app.questions.length)C.fail('Import or upload the full application questions first.');
@@ -1065,23 +1081,31 @@ function service(repo, ai, { dispatch = null, applicationFetch = null } = {}) {
         app.content.inputs=(app.content.inputs||[]).filter(i=>!(i.question_id===q.id&&i.origin==='DRAFT'&&i.status==='OPEN'));
         app.content.inputs.push({id:C.randomUUID(),question_id:q.id,origin:'DRAFT',status:'OPEN',prompt:'Review or draft this answer: '+q.question_text,reason:C.str(body.message||'Automatic drafting did not finish.',500)});
         app.content.status='NEEDS_INPUT';
-      }else if (action === "parse") {
+      }else if (action === "parse" || action==='preview_reconciliation') {
         const reading=await G.load(repo,ctx,brain,app);
-        if(!reading.complete)C.fail("The complete source packet is too large or unavailable for one extraction. Review or enter the remaining fields manually; existing answers are unchanged.",413);
+        if(!reading.complete)C.fail('The source packet is unreadable or truncated. Supply the missing material before proposing repairs. Existing answers are unchanged.',413);
         const blocks=reading.blocks.map(b=>({...b,source_document_id:b.document_id,locator:b.document_id===app.content.source_document_id?b.locator:b.title+' / '+b.locator}));
-        if (
-          app.answers.some((a) => a.draft_text?.trim()) &&
-          !body.replace_confirmed
-        )
-          C.fail(
-            "Reparsing replaces current questions and answers. Confirm replacement first. Existing history is preserved.",
-            409,
-          );
-        const parsed = P.normalize(
-          await call(ctx, "parse", { blocks, source_warnings:reading.warnings }),
-          blocks,
-        );
-        prepareParsed(app, parsed, brain);
+        let parsed=P.basic(blocks);
+        if(action==='parse')parsed=P.normalize(await call(ctx,'parse',{blocks,source_warnings:reading.warnings}),blocks);
+        app.content.reconciliation_preview=Requirements.preview(app,parsed,reading,brain);
+      }else if(action==='apply_reconciliation'){
+        const reading=await G.load(repo,ctx,brain,app);
+        if(reading.input_hash!==app.content.reconciliation_preview?.reading_hash)C.fail('The original source text changed. Create a fresh preview.',409);
+        Requirements.apply(app,brain,{...body,actor:ctx.user_id});invalidateAnswers(app);
+      }else if(action==='save_project_model'){
+        app.content.project_model=Project.normalize(body.project_model);
+        const f=app.content.project_model.funder;
+        if(f.reviewed){const doc=await repo.document(ctx,C.id(f.source_document_id));if(doc.internal_only||doc.sensitivity_level==='RESTRICTED'||doc.extraction_status!=='COMPLETE'||!P.sourceGrounded({source_locator:f.source_locator,source_quote:f.source_quote},doc.blocks))C.fail('Trace funder constraints to a readable, unrestricted original source and quote.');}
+        app.content.project_model.updated_by=ctx.user_id;app.content.project_model.updated_at=C.now();
+        if(app.content.strategy)app.content.strategy.approved=false;
+        app.content.proposal_review=null;invalidateAnswers(app);
+      }else if(action==='review_proposal'){
+        owner(ctx);Proposal.confirm(app,brain,body,ctx);
+      }else if(action==='review_condition'){
+        const row=body.kind==='attachment'?(app.content.attachments||[]).find(a=>a.id===body.id):app.questions.find(q=>q.id===body.id);
+        if(!row||!row.conditional_trigger&&!row.condition)C.fail('Conditional requirement not found.');
+        if(![true,false].includes(body.applies)||!body.reason?.trim())C.fail('Record applicability and a source-based explanation.');
+        row.condition_review={applies:body.applies,reason:C.str(body.reason,3000),by:ctx.user_id,at:C.now(),requirements_signature:C.requirementsSignature(app,brain)};
       } else if (action === "save_application") {
         const previousSources=C.hash([app.content.source_document_id,app.content.additional_source_document_ids||[]]);
         const previousStrategyInputs=strategyInputHash(app,brain);
@@ -1152,11 +1176,7 @@ function service(repo, ai, { dispatch = null, applicationFetch = null } = {}) {
         app.content.parser_reviewed = false;
         invalidateAnswers(app);
       } else if (action === "confirm_parser") {
-        if (!app.questions.length)
-          C.fail("Add application questions before confirming.");
-        app.content.parser_reviewed = true;
-        app.content.parser_reviewed_by = ctx.user_id;
-        app.content.parser_reviewed_at = C.now();
+        Requirements.review(app,brain,await G.load(repo,ctx,brain,app),body,ctx);
       } else if (action === "draft") {
         if (!app.content.parser_reviewed)
           C.fail("First check the questions against the funder's application, then choose Confirm extraction review at the top of Questions & drafts. Adding or changing a question requires this check again.");
@@ -1297,11 +1317,15 @@ function service(repo, ai, { dispatch = null, applicationFetch = null } = {}) {
           a.id = a.id || C.randomUUID();
           a.reviewed = a.reviewed === true;
         }
-        app.content.attachments = body.attachments;
-        app.content.parser_reviewed = false;
+        app.content.attachments=body.attachments.map(a=>{const next={...a,validation_review:null};for(const k of ['max_bytes','max_duration_seconds','max_pages'])if(a[k]!=null&&a[k]!==''){if(!Number.isFinite(Number(a[k]))||Number(a[k])<=0)C.fail('Attachment limits must be positive.');next[k]=Number(a[k]);}if(next.external_link)next.external_link=C.str(next.external_link,2000);if(next.allowed_formats&&(!Array.isArray(next.allowed_formats)||next.allowed_formats.length>15))C.fail('Provide the source-stated file formats.');return next;});
+        for(const [i,a]of app.content.attachments.entries())if(body.attachments[i].reviewed){const input=body.attachments[i].validation_review||{};a.validation_review={document_signature:Attachment.documentSignature(brain.documents.find(d=>d.id===a.document_id)),external_link:a.external_link||null,requirements_signature:C.requirementsSignature(app,brain),format_confirmed:input.format_confirmed===true,external_use_confirmed:input.external_use_confirmed===true,accessibility_confirmed:input.accessibility_confirmed===true,page_count:input.page_count==null?null:Number(input.page_count),duration_seconds:input.duration_seconds==null?null:Number(input.duration_seconds),size_bytes:input.size_bytes==null?null:Number(input.size_bytes),by:ctx.user_id,at:C.now()};}
+        app.content.parser_reviewed=false;
       } else if (action === "save_eligibility") {
         if (!Array.isArray(body.eligibility) || body.eligibility.length > 100)
           C.fail("Invalid eligibility rules");
+        const reading=await G.load(repo,ctx,brain,app);
+        for(const rule of body.eligibility){const old=(app.content.eligibility||[]).find(r=>r.id===rule.id);if(old&&Eligibility.signature(old)!==Eligibility.signature(rule)){owner(ctx);if(!rule.correction_note?.trim()||!P.sourceGrounded(rule,reading.blocks))C.fail('Explain the correction and retain an exact original requirement quote.');}}
+        for(const old of C.eligibility(app.content.eligibility,C.authorizedFacts(brain,app.id)).filter(r=>r.status==='FAIL'))if(!body.eligibility.some(r=>r.id===old.id))C.fail('A failed eligibility rule cannot be silently removed. Correct its source or evidence explicitly.',409);
         app.content.eligibility = C.eligibility(
           body.eligibility.map((r) => ({
             ...r,
@@ -1309,7 +1333,7 @@ function service(repo, ai, { dispatch = null, applicationFetch = null } = {}) {
             id: r.id || C.randomUUID(),
             rule: C.str(r.rule, 3000),
           })),
-          brain.facts,
+          C.authorizedFacts(brain,app.id),
         );
         app.content.parser_reviewed = false;
       } else if (action === "review_eligibility") {
@@ -1322,13 +1346,10 @@ function service(repo, ai, { dispatch = null, applicationFetch = null } = {}) {
         );
         if (!ev.length || !body.note?.trim())
           C.fail("Record supporting evidence and a review note.");
-        rule.review = {
-          approved: true,
-          note: C.str(body.note, 3000),
-          evidence_ids: ev,
-          reviewed_by: ctx.user_id,
-          brain_revision: brain.revision,
-        };
+        const current=C.eligibility([rule],C.authorizedFacts(brain,app.id))[0];
+        if(current.status==='FAIL'&&body.outcome!=='FAIL')C.fail('A hard eligibility failure cannot be overridden. Correct the source rule or evidence explicitly, then re-evaluate.',409);
+        if(!['PASS','FAIL','UNRESOLVED'].includes(body.outcome))C.fail('Choose pass, fail or unresolved.');
+        rule.review={approved:body.outcome==='PASS',outcome:body.outcome,note:C.str(body.note,3000),evidence_ids:ev,reviewed_by:ctx.user_id,reviewed_at:C.now(),brain_revision:brain.revision,requirement_hash:Eligibility.signature(rule)};
       } else if (action === "qa") {
         app.content.qa = C.qa(app, brain);
         app.content.status = app.content.qa.passed

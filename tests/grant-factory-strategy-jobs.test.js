@@ -194,7 +194,7 @@ test("a job whose inputs change while it runs does not overwrite the newer strat
   const a = await fresh();
   assert.equal(a.content.funder_name, "A different funder");
   assert.equal(a.content.strategy.primary_case, "Written for the new program");
-  // A change that does not affect strategy (the deadline) does not block saving.
+  // A changed deadline affects feasibility and now invalidates an in-flight strategy.
   await reset();
   const second = await start();
   ai.behavior = async () => {
@@ -202,9 +202,9 @@ test("a job whose inputs change while it runs does not overwrite the newer strat
     await s.handle(f.ctx, { action: "save_application", application_id: x.id, revision: x.revision, application: { deadline: "2026-12-01" } });
     return { data: { ...STRATEGY, primary_case: "Fresh" }, model: "test-model", usage: USAGE };
   };
-  assert.equal((await s.runStrategyJob(f.ctx, second.job.id)).status, "COMPLETED");
+  assert.equal((await s.runStrategyJob(f.ctx, second.job.id)).failure_code, "STALE_INPUTS");
   const b = await fresh();
-  assert.equal(b.content.strategy.primary_case, "Fresh");
+  assert.notEqual(b.content.strategy?.primary_case, "Fresh");
   assert.equal(b.content.deadline, "2026-12-01");
   // Inputs changed between queueing and starting.
   await reset();

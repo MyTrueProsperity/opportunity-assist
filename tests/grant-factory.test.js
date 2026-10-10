@@ -154,11 +154,11 @@ test("eligibility is uncertain without verified evidence and commitments need re
       ],
       [],
     )[0].status,
-    "UNCERTAIN",
+    "UNRESOLVED",
   );
   assert.equal(
     C.eligibility([{ rule: "Match", commitment: true }], [])[0].status,
-    "HUMAN_REVIEW",
+    "UNRESOLVED",
   );
 });
 test("basic parsing preserves different limits and certification flags", () => {
@@ -469,6 +469,7 @@ test("application lifecycle audits evidence, requires executive review, freezes 
   });
   const appId = app.id,
     qId = app.questions[0].id;
+  app=await s.handle(owner,{action:'save_project_model',application_id:app.id,revision:app.revision,project_model:require('./helpers/grant-proposal').project(await repo.document(owner,app.content.source_document_id))});
   await assert.rejects(
     s.handle(outsider, { action: "get_application", application_id: appId }),
     /not found/,
@@ -479,12 +480,13 @@ test("application lifecycle audits evidence, requires executive review, freezes 
     revision: app.revision,
     application: {
       primary_program_id: brain.programs[0].id,
+      request_amount:250,
       strategy: { primary_case: "Explain our education mission" },
       strategy_approved: true,
     },
   });
   app = await s.handle(owner, {
-    action: "confirm_parser",
+    action: "confirm_parser", ...require("./helpers/grant-proposal").confirmation,
     application_id: appId,
     revision: app.revision,
   });
@@ -518,6 +520,7 @@ test("application lifecycle audits evidence, requires executive review, freezes 
     revision: app.revision,
     question_id: qId,
   });
+  app=await s.handle(owner,{action:"review_proposal",application_id:appId,revision:app.revision,reviewed:true,note:"Complete synthetic proposal checked",criteria:[]});
   app = await s.handle(owner, {
     action: "qa",
     application_id: appId,
@@ -706,7 +709,7 @@ test("AI prompt injection data cannot override the tool schema or introduce unkn
     },
   });
   a = await s.handle(owner, {
-    action: "confirm_parser",
+    action: "confirm_parser", ...require("./helpers/grant-proposal").confirmation,
     application_id: a.id,
     revision: a.revision,
   });
@@ -726,7 +729,7 @@ test("AI prompt injection data cannot override the tool schema or introduce unkn
     questions: [{ ...a.questions[0], question_type: "NARRATIVE" }],
   });
   a = await s.handle(owner, {
-    action: "confirm_parser",
+    action: "confirm_parser", ...require("./helpers/grant-proposal").confirmation,
     application_id: a.id,
     revision: a.revision,
   });

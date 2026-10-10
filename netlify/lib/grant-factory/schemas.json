@@ -88,6 +88,7 @@
                 "DATE",
                 "YES_NO",
                 "MULTI_SELECT",
+                "SINGLE_SELECT",
                 "UPLOAD",
                 "BUDGET",
                 "CERTIFICATION",
@@ -121,6 +122,13 @@
             },
             "rubric_text": {
               "type": ["string", "null"]
+            },
+            "conditional_trigger": {
+              "type": ["string", "null"]
+            },
+            "options": {
+              "type": "array",
+              "items": {"type": "string"}
             }
           },
           "required": [

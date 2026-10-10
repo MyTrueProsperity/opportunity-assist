@@ -69,7 +69,7 @@ test("methodology reaches strategy, writer and auditor; the framework guides str
     assert.equal(app.content.strategy.evidence_chain, "Need to impact");
     assert.equal(app.content.strategy.budget_consistency, "None found");
     app = await s.handle(f.owner, { action: "save_application", application_id: app.id, revision: app.revision, application: { strategy: { ...app.content.strategy }, strategy_approved: true } });
-    app = await s.handle(f.owner, { action: "confirm_parser", application_id: app.id, revision: app.revision });
+    app = await s.handle(f.owner, { action: "confirm_parser", ...require("./helpers/grant-proposal").confirmation, application_id: app.id, revision: app.revision });
     app = await s.handle(f.owner, { action: "draft", application_id: app.id, revision: app.revision, question_id: qId });
     assert.deepEqual(seen.write.methodology_rules, METHODOLOGY.rules);
     assert.deepEqual(seen.write.organization_framework.program_alignment.map(p=>p.name),[primary.name]);

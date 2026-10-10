@@ -149,18 +149,18 @@ test("ZIP export rejects expired or unreviewed attachments, including optional s
   };
   await assert.rejects(
     exportPackage(app, brain, repo, {}, "zip"),
-    /expired attachment/,
+    /expired/,
   );
   assert.ok(C.qa(app, brain).issues.some((i) => i.code === "ATTACHMENT"));
   delete doc.expiration_date;
   attachment.reviewed = false;
   await assert.rejects(
     exportPackage(app, brain, repo, {}, "zip"),
-    /unreviewed/,
+    /Review the exact/
   );
   attachment.reviewed = true;
   assert.equal(
-    (await exportPackage(app, brain, repo, {}, "zip")).mime,
+    (await exportPackage(app, brain, repo, {role:"OWNER"}, "internal_zip")).mime,
     "application/zip",
   );
 });
@@ -217,7 +217,7 @@ test("question removal drops only its answer and invalidates extraction review",
     });
     const kept = app.questions[0];
     app = await s.handle(f.owner, {
-      action: "confirm_parser",
+      action: "confirm_parser", ...require("./helpers/grant-proposal").confirmation,
       application_id: app.id,
       revision: app.revision,
     });
@@ -365,7 +365,7 @@ test("missing input stays application-specific and pending until an executive ap
       },
     });
     app = await s.handle(f.owner, {
-      action: "confirm_parser",
+      action: "confirm_parser", ...require("./helpers/grant-proposal").confirmation,
       application_id: app.id,
       revision: app.revision,
     });

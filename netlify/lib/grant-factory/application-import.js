@@ -41,10 +41,10 @@ function formQuestions(html){
       const help=[a['aria-describedby']?.split(/\s+/).map(id=>byId.get(id)||'').join(' '),clean(trailing)].filter(Boolean).join('\n');
       const choice=controls.filter(x=>attrs(x[2]).name===a.name).map(x=>{const b=attrs(x[2]);return labels.get(b.id)||b.value||'';}).filter(Boolean);
       const opts=tag==='select'?[...(m[3]||'').matchAll(/<option\b[^>]*>([\s\S]*?)<\/option>/gi)].map(x=>clean(x[1])).filter(Boolean):['radio','checkbox'].includes(type)?choice:[];
-      const format=type==='file'?'Attachment':tag==='textarea'?'Narrative':type==='number'?(a.step==='any'||a.step&&Number(a.step)<1?'Decimal':'Integer'):type==='date'?'Date':['email','url','tel'].includes(type)?type:tag==='select'||type==='radio'||type==='checkbox'?'Selection':'Short text';
+      const format=type==='file'?'Attachment':tag==='textarea'?'Narrative':type==='number'?(a.step==='any'||a.step&&Number(a.step)<1?'Decimal':'Integer'):type==='date'?'Date':['email','url','tel'].includes(type)?type:tag==='select'||type==='radio'||type==='checkbox'?('multiple' in a||type==='checkbox'?'Multi select':'Single choice'):'Short text';
       // The canonical worksheet is stored along with full visible source text.
       // Literal labels/choices stay traceable; form credentials/hidden values do not.
-      sheets.push(title.replace(/\s*\*$/,'')+('required' in a||a['aria-required']==='true'?' *':'')+'\nFormat: '+format+(opts.length?'\nOptions: '+opts.join(' | '):'')+(help?'\n'+help:'')+(/^\d+$/.test(a.maxlength||'')?'\nCharacter limit: '+a.maxlength:''));
+      sheets.push(title.replace(/\s*\*$/,'')+('required' in a||a['aria-required']==='true'?' *':'')+'\nRequired: '+('required' in a||a['aria-required']==='true'?'Yes':'No')+'\nFormat: '+format+(opts.length?'\nOptions: '+opts.join(' | '):'')+(help?'\n'+help:'')+(/^\d+$/.test(a.maxlength||'')?'\nCharacter limit: '+a.maxlength:''));
     }
   }
   return {sheet:sheets.map((s,i)=>(i+1)+'. '+s).join('\n\n'),count:sheets.length,warnings};
@@ -62,10 +62,10 @@ function analyze(page){
     const entries=forms.sheet.split('\n\n');
     if(parsed.questions.length!==forms.count)throw Error('Some form fields could not be mapped completely. Upload the application for review.');
     parsed.questions.forEach((q,i)=>{
-      q.required=/ \*\nFormat:/.test(entries[i]||'');
+      q.required=/^Required:\s*Yes$/im.test(entries[i]||'');
       if(!['SIGNATURE','CERTIFICATION','BUDGET','UPLOAD'].includes(q.question_type)){
         if(/Format: (?:Short text|email|url|tel)/i.test(entries[i]||''))q.question_type='OTHER';
-        if(/Format: Selection/i.test(entries[i]||''))q.question_type='MULTI_SELECT';
+        if(/Format: (?:Selection|Multi select)/i.test(entries[i]||''))q.question_type='MULTI_SELECT';if(/Format: Single choice/i.test(entries[i]||''))q.question_type='SINGLE_SELECT';
         if(/Format: (?:Number|Integer|Decimal)/i.test(entries[i]||''))q.question_type='NUMBER';
       }
     });

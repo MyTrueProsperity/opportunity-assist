@@ -76,7 +76,11 @@ async function opp(over = {}) {
 const passShare = (org, oppId, item = null) => pg.query('select fincap_pass_and_share($1,$2,$3,$4,$5) r', [org, oppId, 'Pass', 31, item]).then((r) => r.rows[0].r);
 const GOOD = { summary: 'A statewide grant for nonprofits that teach practical money skills to young adults. Funds classroom materials and coach stipends.', eligible_applicants: 'Nonprofits and schools', geography: 'Florida only' };
 const edit = async (id, fields, v) => pg.query('select fincap_admin_edit($1,$2,$3) r', [id, JSON.stringify(fields), v]).then((r) => r.rows[0].r);
-const decide = async (id, action, reason, v) => pg.query('select fincap_admin_decide($1,$2,$3,$4) r', [id, action, reason, v]).then((r) => r.rows[0].r);
+const decide = async (id, action, reason, v) => {
+ const result=(await pg.query('select fincap_admin_decide($1,$2,$3,$4) r',[id,action,reason,v])).rows[0].r;
+ if(action==='approve'){await sup();await pg.query("update fincap_submissions set published_at='2026-10-10T10:00:00Z' where id=$1",[id]);await as(ADMIN);}
+ return result;
+};
 async function submissionFor(oppId) { return (await pg.query('select id, version from test_sub($1)', [oppId])).rows[0]; }
 async function publish(oppId, fields = GOOD) {
   await as(MEMBER); await passShare(ORG, oppId); await as(ADMIN);

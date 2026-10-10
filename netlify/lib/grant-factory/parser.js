@@ -6,6 +6,7 @@ const TYPES = [
   "DATE",
   "YES_NO",
   "MULTI_SELECT",
+  "SINGLE_SELECT",
   "UPLOAD",
   "BUDGET",
   "CERTIFICATION",
@@ -36,6 +37,8 @@ function question(raw) {
     q.limit_value == null || q.limit_value === ""
       ? null
       : Number(q.limit_value);
+  if(q.options!=null&&(!Array.isArray(q.options)||q.options.length>100||q.options.some(v=>typeof v!=='string'||v.length>1000)))fail('Provide a bounded list of original choices.');
+  if(q.conditional_trigger!=null)q.conditional_trigger=str(q.conditional_trigger,3000);
   q.required = q.required !== false;
   return q;
 }
@@ -65,8 +68,9 @@ function normalize(parsed, blocks) {
     // Keep explicit field formats from the original even when AI classifies a
     // short/numeric/contact field as prose. Never convert it to a narrative.
     const match=original.find(q=>q.source_locator===raw.source_locator&&(q.source_quote.includes(raw.source_quote)||raw.source_quote.includes(q.source_quote)));
-    return question(match?.input_format&&match.question_type!=='NARRATIVE'?{...raw,question_type:match.question_type,input_format:match.input_format}:raw);
+    return question(match?{...raw,question_type:match.input_format||match.question_type!=='NARRATIVE'?match.question_type:raw.question_type,input_format:match.input_format,conditional_trigger:match.conditional_trigger||raw.conditional_trigger||null,options:match.options?.length?match.options:raw.options||[],limit_type:match.limit_type!=='NONE'?match.limit_type:raw.limit_type,limit_value:match.limit_value||raw.limit_value,required:match.required_explicit?match.required:raw.required}:raw);
   });
+  for(const q of original)if(!questions.some(x=>x.source_locator===q.source_locator&&(x.source_quote.includes(q.source_quote)||q.source_quote.includes(x.source_quote))))questions.push(q);
   if (!questions.length)
     warnings.push(
       "No questions were extracted. Add them manually after checking the source.",
@@ -90,11 +94,18 @@ function normalize(parsed, blocks) {
   };
 }
 function basic(blocks) {
-  const rows=blocks.flatMap(b=>b.text.split(/\r?\n/).map(line=>({text:line.trim(),locator:b.locator})).filter(r=>r.text));
+  const rawRows=blocks.flatMap(b=>b.text.split(/\r?\n/).map(line=>({text:line.trim(),locator:b.locator,document_id:b.source_document_id||b.document_id})).filter(r=>r.text));
+  const marker=rawRows.findIndex(r=>r.text==='ORIGINAL PUBLIC PAGE');const rows=marker>=0?rawRows.slice(0,marker):rawRows;
   const marked=i=>/\*\s*$/.test(rows[i].text)&&rows[i].text!=='*'||rows[i+1]?.text==='*';
   const numbered=i=>/^\s*(?:\d+[.)]|[A-Z][.)]|Q\d+[:.)])\s+/.test(rows[i].text);
   const forms=rows.some((r,i)=>marked(i));
-  const starts=rows.map((r,i)=>i).filter(i=>rows[i].text!=='*'&&(marked(i)||numbered(i)||(!forms&&rows[i].text.includes('?'))));
+  const label=i=>{
+    const text=rows[i].text,next=rows[i+1]?.text||'';
+    if(/^(?:format|options|required|limit|note|instructions|character limit|word limit|page limit):/i.test(text))return false;
+    const known=/^(?:organization(?:al)? (?:name|email|revenue|budget|reach)|requested (?:funding )?amount|project (?:timeline|title|start|end)|use of funds|leader (?:biography|aspirations)|data policy|safeguarding(?: information)?|model card|partners?|current (?:reach|participants)|proposed (?:solution|reach)|solution (?:reach|participants)|video|impact (?:image|slide))\s*[:.*]?$/i.test(text);
+    return known||(/^[^.!?]{3,150}:$/.test(text)&&!/^format|limit|note|instructions/i.test(text))||(/^[^.!?]{3,150}$/.test(text)&&/^format:|^(?:maximum|word|character|page)\s*limit/i.test(next));
+  };
+  const starts=rows.map((r,i)=>i).filter(i=>rows[i].text!=='*'&&(marked(i)||numbered(i)||label(i)||(!forms&&rows[i].text.includes('?'))));
   const questions=starts.map((start,n)=>{
     const head=rows[start],end=starts[n+1]??rows.length;
     const context=rows.slice(start,Math.min(end,start+20)).filter(r=>r.text!=='*');
@@ -105,15 +116,15 @@ function basic(blocks) {
     const unit=limit?.[2]||inverted?.[0]||'';
     let limit_type=number?/^word/i.test(unit)?'WORDS':/^page/i.test(unit)?'PAGES':/without|excluding\s+spaces/i.test(text)?'CHARACTERS_WITHOUT_SPACES':/with|including\s+spaces/i.test(text)?'CHARACTERS_WITH_SPACES':'CHARACTERS':'NONE';
     if(number&&/recommended|suggested|approximately/i.test(text))limit_type='ADVISORY';
-    let type=/\bsign(?:ature)?\b/i.test(head.text)?'SIGNATURE':/certif|attest|agree to|willing.{0,30}commit/i.test(text)?'CERTIFICATION':/attach|upload|enclose/i.test(head.text)?'UPLOAD':/format:\s*(?:integer|decimal|number|\$)|(?:how many|what percentage)/i.test(text)?'NUMBER':(/format:\s*(?:email|phone|url|attachment|short text)/i.test(text)||/\b(?:email|e-mail|phone number|telephone|mailing address|employer identification|tax id|EIN)\b/i.test(head.text))?(/attachment/i.test(text)?'UPLOAD':'OTHER'):/format:\s*date/i.test(text)?'DATE':/format:\s*(?:yes.?no|boolean)|^yes\s*\nno$/im.test(text)?'YES_NO':/format:\s*selection|select (?:all|one)|choose one/i.test(text)?'MULTI_SELECT':/\bbudget\b/i.test(head.text)&&!/(describe|explain|how|why|experience)/i.test(head.text)?'BUDGET':'NARRATIVE';
-    const instructions=context.slice(1).filter(r=>!/^(?:character|word|page)\s*limit|^format:/i.test(r.text)).map(r=>r.text).join('\n').slice(0,5000);
-    return question({id:randomUUID(),section:'Application',question_number:String(n+1),question_text:head.text.replace(/^\s*(?:Q)?(?:\d+|[A-Z])[.):]\s+/i,'').replace(/\s*\*$/,'')+(instructions?'\n'+instructions:''),question_type:type,input_format:text.match(/format:\s*([^\n]+)/i)?.[1]||null,required:!/optional|if applicable/i.test(head.text),limit_type,limit_value:number,spaces_count:limit_type==='CHARACTERS'?null:limit_type==='CHARACTERS_WITH_SPACES',source_locator:head.locator,source_quote:head.text,question_category:'',status:'NEEDS_REVIEW',instruction_sources:context.slice(1).map(r=>({source_locator:r.locator,source_quote:r.text}))});
+    let type=/\bsign(?:ature)?\b/i.test(head.text)?'SIGNATURE':/certif|attest|agree to|willing.{0,30}commit/i.test(text)?'CERTIFICATION':/attach|upload|enclose/i.test(head.text)?'UPLOAD':/format:\s*(?:integer|decimal|number|\$)|(?:how many|what percentage)/i.test(text)||/^(?:requested (?:funding )?amount|number of |organization(?:al)? (?:revenue|reach)|current (?:reach|participants)|proposed (?:reach)|solution (?:reach|participants))/i.test(head.text)?'NUMBER':(/format:\s*(?:email|phone|url|attachment|short text)/i.test(text)||/\b(?:email|e-mail|phone number|telephone|mailing address|employer identification|tax id|EIN)\b/i.test(head.text))?(/attachment/i.test(text)?'UPLOAD':'OTHER'):/format:\s*date/i.test(text)?'DATE':/format:\s*(?:yes.?no|boolean)|^yes\s*\nno$/im.test(text)?'YES_NO':/select all|multiple.choice|multi.select/i.test(text)?'MULTI_SELECT':/format:\s*selection|select one|choose one|single.choice/i.test(text)?'SINGLE_SELECT':/\bbudget\b/i.test(head.text)&&!/(describe|explain|how|why|experience)/i.test(head.text)?'BUDGET':'NARRATIVE';
+    const instructions=context.slice(1).filter(r=>!/^(?:character|word|page)\s*limit|^format:|^required:/i.test(r.text)).map(r=>r.text).join('\n').slice(0,5000);
+    return question({id:randomUUID(),section:'Application',question_number:String(n+1),question_text:head.text.replace(/^\s*(?:Q)?(?:\d+|[A-Z])[.):]\s+/i,'').replace(/\s*\*$/,'')+(instructions?'\n'+instructions:''),question_type:type,input_format:text.match(/format:\s*([^\n]+)/i)?.[1]||null,required:!(/\boptional\b/i.test(head.text)||/^Required:\s*No$/im.test(text)),required_explicit:marked(start)||/\boptional\b/i.test(head.text)||/^Required:\s*(?:Yes|No)$/im.test(text),conditional_trigger:text.match(/(?:if applicable|if (?:yes|your|you|the)|only if)[^\n]*/i)?.[0]||null,options:/^Options:/im.test(text)?text.match(/^Options:\s*(.*)$/im)[1].split('|').map(x=>x.trim()).filter(Boolean):context.filter(r=>/^(?:yes|no)$/i.test(r.text)||/^(?:[a-z]|[0-9]+)[).]\s/.test(r.text)).map(r=>r.text.replace(/^[a-z0-9]+[).]\s/i,'')),limit_type,limit_value:number,spaces_count:limit_type==='CHARACTERS'?null:limit_type==='CHARACTERS_WITH_SPACES',source_document_id:head.document_id,source_locator:head.locator,source_quote:head.text,question_category:'',status:'NEEDS_REVIEW',instruction_sources:context.slice(1).map(r=>({source_locator:r.locator,source_quote:r.text}))});
   });
   const eligibility=[],attachments=[],funder_requirements=[];
-  for(const r of rows){
-    if(/eligible|eligibility|501\(c\)\(3\)|matching funds|must be|must serve/i.test(r.text))eligibility.push({id:randomUUID(),rule:r.text,source_locator:r.locator,source_quote:r.text,operator:'REVIEW',commitment:/match|certif|agree|commit/i.test(r.text)});
-    if(/attach|upload|enclose/i.test(r.text))attachments.push({id:randomUUID(),title:r.text,required:true,status:'MISSING',source_locator:r.locator,source_quote:r.text});
-    if(/looking for|priorit|review criteria|out.of.scope|prohibit|allowable|may not use|must.{0,50}(?:engage|protect|provide)|youth.led|co.lead/i.test(r.text))funder_requirements.push({kind:'SOURCE_GUIDANCE',text:r.text,source_locator:r.locator,source_quote:r.text});
+  for(const r of rawRows){
+    if(/eligible|eligibility|501\(c\)\(3\)|matching funds|must be|must serve/i.test(r.text))eligibility.push({id:randomUUID(),rule:r.text,source_document_id:r.document_id,source_locator:r.locator,source_quote:r.text,operator:'REVIEW',commitment:/match|certif|agree|commit/i.test(r.text)});
+    if(/attach|upload|enclose|video.*link|impact slide|data policy|safeguarding information|model card/i.test(r.text))attachments.push({id:randomUUID(),title:r.text,required:!/\boptional\b/i.test(r.text),conditional_trigger:r.text.match(/(?:if applicable|only if|if (?:your|you|the))[^\n]*/i)?.[0]||null,status:'MISSING',upload_required:/upload/i.test(r.text),link_required:/\blink\b/i.test(r.text),max_duration_seconds:r.text.match(/(\d+)[ -]minute.*video/i)?Number(r.text.match(/(\d+)[ -]minute/i)[1])*60:null,max_pages:r.text.match(/(\d+)[ -]page/i)?Number(r.text.match(/(\d+)[ -]page/i)[1]):/one.page/i.test(r.text)?1:null,source_document_id:r.document_id,source_locator:r.locator,source_quote:r.text});
+    if(/deadline|grant term|grant period|award range|application cycle|looking for|priorit|review criteria|out.of.scope|prohibit|allowable|may not use|must.{0,50}(?:engage|protect|provide)|youth.led|co.lead/i.test(r.text))funder_requirements.push({id:randomUUID(),kind:/review criteria|rubric|selection criteria/i.test(r.text)?'CRITERION':'SOURCE_GUIDANCE',text:r.text,source_document_id:r.document_id,source_locator:r.locator,source_quote:r.text});
   }
   return {questions,eligibility,attachments,funder_requirements:funder_requirements.slice(0,100),parser_confidence:'LOW',warnings:['Basic text extraction remains a review aid. Check every question, field format, limit, eligibility condition and attachment against all original sources.'],parser_reviewed:false};
 }
