@@ -11,7 +11,7 @@ function evaluate(rules,facts,at=new Date()){
    if(f&&r.operator==='EXACT'&&r.expected_value!=null)pass=String(v).trim().toLowerCase()===String(r.expected_value).trim().toLowerCase();
    if(f&&r.operator==='IN'&&Array.isArray(r.expected_value))pass=r.expected_value.map(x=>String(x).toLowerCase()).includes(String(v).toLowerCase());
    if(f&&['GTE','LTE'].includes(r.operator)&&v!==''&&r.expected_value!==''&&Number.isFinite(Number(v))&&Number.isFinite(Number(r.expected_value)))pass=r.operator==='GTE'?Number(v)>=Number(r.expected_value):Number(v)<=Number(r.expected_value);
-   if(['DATE_BEFORE','DATE_AFTER'].includes(r.operator)&&r.expected_value){const date=r.fact_key==='CURRENT_DATE'?at:new Date(String(v));const boundary=new Date(r.expected_value);if((f||r.fact_key==='CURRENT_DATE')&&Number.isFinite(+date)&&Number.isFinite(+boundary)&&/[TZ]|[+-]\d\d:\d\d$/.test(r.expected_value))pass=r.operator==='DATE_BEFORE'?date<=boundary:date>=boundary;}
+   if(['DATE_BEFORE','DATE_AFTER'].includes(r.operator)&&r.expected_value){const date=r.fact_key==='CURRENT_DATE'?at:new Date(String(v));const boundary=new Date(r.expected_value);if((f||r.fact_key==='CURRENT_DATE')&&Number.isFinite(+date)&&Number.isFinite(+boundary)&&/(?:Z|[+-]\d\d:\d\d)$/.test(r.expected_value))pass=r.operator==='DATE_BEFORE'?date<=boundary:date>=boundary;}
    if(pass!=null){status=pass?'PASS':'FAIL';hard_failure=!pass;reason='Compared the explicit rule with '+(f?.display_name||'the current time')+'.';}
   }
   if(r.commitment&&applicability==='APPLICABLE')reason='An authorized person must confirm this institutional commitment.';
