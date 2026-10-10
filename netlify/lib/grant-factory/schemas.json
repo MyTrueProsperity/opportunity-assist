@@ -405,5 +405,172 @@
       }
     },
     "required": ["facts", "warnings"]
+  },
+  "funder_history": {
+    "type": "object",
+    "properties": {
+      "awards": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "recipient": {
+              "type": "string"
+            },
+            "description": {
+              "type": "string"
+            },
+            "amount_text": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "year": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "source_url": {
+              "type": "string"
+            },
+            "source_locator": {
+              "type": "string"
+            },
+            "source_quote": {
+              "type": "string"
+            },
+            "selection_reason": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "maxLength": 1200
+            }
+          },
+          "required": [
+            "recipient",
+            "description",
+            "amount_text",
+            "year",
+            "source_url",
+            "source_locator",
+            "source_quote"
+          ]
+        },
+        "maxItems": 12
+      },
+      "patterns": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "description": {
+              "type": "string"
+            },
+            "award_indexes": {
+              "type": "array",
+              "items": {
+                "type": "integer"
+              },
+              "maxItems": 12
+            }
+          },
+          "required": [
+            "description",
+            "award_indexes"
+          ]
+        },
+        "maxItems": 12
+      },
+      "similarities": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "description": {
+              "type": "string"
+            },
+            "award_indexes": {
+              "type": "array",
+              "items": {
+                "type": "integer"
+              },
+              "maxItems": 12
+            },
+            "evidence_ids": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "maxItems": 12
+            }
+          },
+          "required": [
+            "description",
+            "award_indexes",
+            "evidence_ids"
+          ]
+        },
+        "maxItems": 12
+      },
+      "missing_information": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "maxItems": 12
+      },
+      "rounds": {
+        "type": "array",
+        "maxItems": 10,
+        "items": {
+          "type": "object",
+          "properties": {
+            "round_name": {
+              "type": "string"
+            },
+            "total_amount_text": {
+              "type": "string"
+            },
+            "award_count_text": {
+              "type": "string"
+            },
+            "year": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "source_url": {
+              "type": "string"
+            },
+            "source_locator": {
+              "type": "string"
+            },
+            "source_quote": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "round_name",
+            "total_amount_text",
+            "award_count_text",
+            "year",
+            "source_url",
+            "source_locator",
+            "source_quote"
+          ]
+        }
+      }
+    },
+    "required": [
+      "awards",
+      "patterns",
+      "similarities",
+      "missing_information",
+      "rounds"
+    ]
   }
 }

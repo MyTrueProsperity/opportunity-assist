@@ -27,10 +27,14 @@ async function validateTarget(value,resolve=dns.lookup) {
   if(!addresses.length||addresses.some(a=>!publicIp(a.address)))throw new Error('Private or reserved network address blocked');
   return {u,address:addresses[0]};
 }
-async function requestPublic(url,{maxBytes=2*1024*1024,timeoutMs=12000,headers={},redirects=0,resolve}={}) {
+async function requestPublic(url,{maxBytes=2*1024*1024,timeoutMs=12000,headers={},redirects=0,resolve,deadline=null,urlPolicy=null}={}) {
   if(redirects>5)throw new Error('Too many redirects');
+  if(urlPolicy)urlPolicy(url);
+  const remaining=()=>deadline===null?timeoutMs:Math.min(timeoutMs,deadline-Date.now());
+  if(remaining()<=0)throw new Error('Public source reading time limit reached');
   const {u,address}=await validateTarget(url,resolve);
   await paceHost(u.hostname);
+  if(remaining()<=0)throw new Error('Public source reading time limit reached');
   const response=await new Promise((ok,no)=>{
     // Pin the validated DNS answer to this connection (including every redirect).
     const req=(u.protocol==='https:'?https:http).request(u,{method:'GET',headers:{'User-Agent':UA,'Accept':'text/html,application/pdf,text/plain;q=0.9','Accept-Encoding':'identity',...headers},lookup:(_h,opts,cb)=>opts.all?cb(null,[address]):cb(null,address.address,address.family)},res=>{
@@ -38,10 +42,10 @@ async function requestPublic(url,{maxBytes=2*1024*1024,timeoutMs=12000,headers={
       res.on('data',b=>{size+=b.length;if(size>maxBytes){res.destroy(new Error('Page exceeds size limit'));}else chunks.push(b);});
       res.on('error',no);res.on('end',()=>ok({status:res.statusCode,headers:res.headers,bytes:Buffer.concat(chunks),url:u.href}));
     });
-    const timer=setTimeout(()=>req.destroy(new Error('Page timeout')),timeoutMs);timer.unref();
+    const timer=setTimeout(()=>req.destroy(new Error('Page timeout')),remaining());timer.unref();
     req.on('error',no);req.on('close',()=>clearTimeout(timer));req.end();
   });
-  if([301,302,303,307,308].includes(response.status)&&response.headers.location) return requestPublic(new URL(response.headers.location,u).href,{maxBytes,timeoutMs,redirects:redirects+1,resolve});
+  if([301,302,303,307,308].includes(response.status)&&response.headers.location) return requestPublic(new URL(response.headers.location,u).href,{maxBytes,timeoutMs,redirects:redirects+1,resolve,deadline,urlPolicy});
   return response;
 }
 function decode(s){return s.replace(/&(?:amp|lt|gt|quot|apos|nbsp);|&#(?:x[0-9a-f]+|\d+);/gi,m=>{const common={'&amp;':'&','&lt;':'<','&gt;':'>','&quot;':'"','&apos;':"'",'&nbsp;':' '};if(common[m.toLowerCase()])return common[m.toLowerCase()];const n=m[2].toLowerCase()==='x'?parseInt(m.slice(3,-1),16):parseInt(m.slice(2,-1),10);return n>0&&n<=0x10ffff?String.fromCodePoint(n):' ';});}
@@ -56,7 +60,7 @@ function robotsAllowed(text,url) {
   return !matched.length||matched[0].allow;
 }
 const robotsCache=new Map();
-async function fetchPage(url,cache=null,request=requestPublic) {
+async function fetchPage(url,cache=null,request=requestPublic,options={}) {
   const origin=new URL(url).origin;
   let robots=robotsCache.get(origin);
   if(!robots){const r=await request(origin+'/robots.txt',{maxBytes:256000});if(r.status>=500||r.status===429||r.status===401||r.status===403)throw new Error('Robots unavailable or access restricted; deferred');robots=r.status===404?'':r.bytes.toString('utf8');robotsCache.set(origin,robots);}
@@ -76,9 +80,9 @@ async function fetchPage(url,cache=null,request=requestPublic) {
     const {getDocument}=await import('pdfjs-dist/legacy/build/pdf.mjs');
     const standardFontDataUrl=require.resolve('pdfjs-dist/package.json').replace(/package\.json$/,'standard_fonts/');
     const doc=await getDocument({data:new Uint8Array(r.bytes),isEvalSupported:false,useSystemFonts:false,disableFontFace:true,standardFontDataUrl}).promise;
-    try {if(doc.numPages>40)throw new Error('PDF exceeds 40-page extraction limit');const parts=[];for(let p=1;p<=doc.numPages;p++){const page=await doc.getPage(p);parts.push((await page.getTextContent()).items.map(i=>i.str||'').join(' '));}text=parts.join('\n');}finally{await doc.destroy();}
+    try {if(doc.numPages>40)throw new Error('PDF exceeds 40-page extraction limit');const parts=[];for(let p=1;p<=doc.numPages;p++){const page=await doc.getPage(p);parts.push((await page.getTextContent()).items.map(i=>(i.str||'')+(i.hasEOL?'\n':' ')).join(''));}text=parts.join('\n');}finally{await doc.destroy();}
   }else if(mime.includes('html')||mime.includes('text/plain')||mime.includes('json')||mime.includes('xml')||!mime){raw=r.bytes.toString('utf8');text=mime.includes('json')||mime.includes('xml')?raw:htmlToText(raw);links=extractLinks(raw,r.url);}else throw new Error('Unsupported document type: '+mime.split(';')[0]);
   if(!text.trim()||/just a moment|verify you are human|enable javascript and cookies|checking your browser/i.test(text.slice(0,900)))throw new Error('Unreadable or bot-protected page; investigation required');
-  return {url:r.url,status:r.status,text:text.slice(0,40000),raw,hash:contentHash(raw||text),links,etag:r.headers.etag||null,last_modified:r.headers['last-modified']||null,redirected:normalizeUrl(r.url)!==normalizeUrl(url)};
+  return {url:r.url,status:r.status,text:text.slice(0,options.maxTextChars||40000),text_truncated:text.length>(options.maxTextChars||40000),...(options.includeBytes?{bytes:r.bytes,mime}:{}),raw,hash:contentHash(raw||text),links,etag:r.headers.etag||null,last_modified:r.headers['last-modified']||null,redirected:normalizeUrl(r.url)!==normalizeUrl(url)};
 }
 module.exports={publicIp,validateTarget,requestPublic,htmlToText,extractLinks,robotsAllowed,fetchPage,paceHost,decodeHtmlEntities:decode};

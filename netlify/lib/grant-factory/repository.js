@@ -225,6 +225,22 @@ function repository(env = process.env, fetcher = fetch, db = createDb(env, fetch
       rejection: (ctx, appId) => db.rpc("gf_strategy_job_rejection", { p_org: ctx.org_id, p_actor: ctx.user_id, p_app: id(appId) }),
       };
     },
+    async pipelineCandidates(ctx, offset = 0) {
+      if (!Number.isInteger(offset) || offset < 0 || offset > 100000) fail("Invalid pipeline page");
+      const rows = await db.select("pipeline_items", {
+        org_id: "eq." + ctx.org_id, or: "(stage.eq.Qualified,stage.eq.Planning)",
+        select: "id,title,stage,opportunity_id,updated_at", order: "updated_at.desc,id.asc", limit: 101, offset,
+      });
+      return { items: rows.slice(0,100), has_more: rows.length > 100, offset };
+    },
+    async pipelineItem(ctx, pipelineId) {
+      const [item] = await db.select("pipeline_items", { org_id: "eq." + ctx.org_id, id: "eq." + id(pipelineId), limit: 1 });
+      if (!item) fail("Pipeline item not found in this organization",404);
+      if (!["Qualified","Planning"].includes(item.stage)) fail("Import applications from Qualified or Planning.",409);
+      const [opportunity] = await db.select("opportunities", { id: "eq." + id(item.opportunity_id), limit: 1 });
+      if (!opportunity) fail("The opportunity behind this pipeline item is unavailable",404);
+      return { ...item, opportunity };
+    },
     async listApps(ctx) {
       return (await db.all("gf_applications", { org_id: "eq." + ctx.org_id }))
         .map(flatten)

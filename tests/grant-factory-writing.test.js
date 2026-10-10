@@ -152,6 +152,6 @@ test('real repository flow reads the complete grant, retains supported partial w
     b=await repo.brain(owner);const d=await repo.document(owner,rfp.id);await repo.writeBrain(owner,b,[{table:'gf_documents',id:rfp.id,content:{...d,sha256:'updated-version'}}]);
     await assert.rejects(update('approve_answer',{question_id:qid}),/current.*audit|requirements changed/);
     await update('save_application',{application:{rubric_or_scoring:'Youth must direct evaluation.'}});assert.equal(app.content.strategy.approved,false,'changed funder requirements need strategy review');
-    assert.equal((await svc.handle(owner,{action:'get_application',application_id:app.id})).app.writing_brief.self_questions.length,8);
+    assert.equal((await svc.handle(owner,{action:'get_application',application_id:app.id})).app.writing_brief.self_questions.length,12);
   }finally{await pg.close();}
 });

@@ -31,7 +31,7 @@ test("strategy framework includes only the selected programs and is marked as no
   assert.equal(strategyFramework(null, ["a"]), null);
 });
 
-test("methodology reaches strategy, writer and auditor; the framework reaches strategy only", async () => {
+test("methodology reaches strategy, writer and auditor; the framework guides strategy and writing without becoming evidence", async () => {
   const f = await createTestRepo();
   try {
     const seen = {};
@@ -72,7 +72,9 @@ test("methodology reaches strategy, writer and auditor; the framework reaches st
     app = await s.handle(f.owner, { action: "confirm_parser", application_id: app.id, revision: app.revision });
     app = await s.handle(f.owner, { action: "draft", application_id: app.id, revision: app.revision, question_id: qId });
     assert.deepEqual(seen.write.methodology_rules, METHODOLOGY.rules);
-    assert.equal("organization_framework" in seen.write, false, "the framework is never evidence for the writer");
+    assert.deepEqual(seen.write.organization_framework.program_alignment.map(p=>p.name),[primary.name]);
+    assert.equal(JSON.stringify(seen.write.organization_framework).includes('Unverified 38%'),false,'quarantined framework claims never reach the writer');
+    assert.ok(seen.write.evidence.every(f=>f.fact_key!=='framework'),'planning guidance is not applicant evidence');
     assert.equal(JSON.stringify(seen.write).includes("Unverified 38%"), false);
     app = await s.handle(f.owner, { action: "audit_answer", application_id: app.id, revision: app.revision, question_id: qId });
     assert.deepEqual(seen.audit.methodology_rules, METHODOLOGY.rules);

@@ -60,7 +60,13 @@ function normalize(parsed, blocks) {
         );
       return { ...v, id: randomUUID() };
     });
-  const questions = grounded("questions").map(question);
+  const original=basic(blocks).questions;
+  const questions = grounded("questions").map(raw=>{
+    // Keep explicit field formats from the original even when AI classifies a
+    // short/numeric/contact field as prose. Never convert it to a narrative.
+    const match=original.find(q=>q.source_locator===raw.source_locator&&(q.source_quote.includes(raw.source_quote)||raw.source_quote.includes(q.source_quote)));
+    return question(match?.input_format&&match.question_type!=='NARRATIVE'?{...raw,question_type:match.question_type,input_format:match.input_format}:raw);
+  });
   if (!questions.length)
     warnings.push(
       "No questions were extracted. Add them manually after checking the source.",
@@ -99,9 +105,9 @@ function basic(blocks) {
     const unit=limit?.[2]||inverted?.[0]||'';
     let limit_type=number?/^word/i.test(unit)?'WORDS':/^page/i.test(unit)?'PAGES':/without|excluding\s+spaces/i.test(text)?'CHARACTERS_WITHOUT_SPACES':/with|including\s+spaces/i.test(text)?'CHARACTERS_WITH_SPACES':'CHARACTERS':'NONE';
     if(number&&/recommended|suggested|approximately/i.test(text))limit_type='ADVISORY';
-    let type=/\bsign(?:ature)?\b/i.test(head.text)?'SIGNATURE':/certif|attest|agree to|willing.{0,30}commit/i.test(text)?'CERTIFICATION':/attach|upload|enclose/i.test(head.text)?'UPLOAD':/format:\s*(?:integer|decimal|\$)|(?:how many|what percentage)/i.test(text)?'NUMBER':(/format:\s*(?:email|phone|url|attachment)/i.test(text)||/\b(?:email|e-mail|phone number|telephone|mailing address|employer identification|tax id|EIN)\b/i.test(head.text))?(/attachment/i.test(text)?'UPLOAD':'OTHER'):/format:\s*date/i.test(text)?'DATE':/format:\s*(?:yes.?no|boolean)|^yes\s*\nno$/im.test(text)?'YES_NO':/select (?:all|one)|choose one/i.test(text)?'MULTI_SELECT':/\bbudget\b/i.test(head.text)&&!/(describe|explain|how|why|experience)/i.test(head.text)?'BUDGET':'NARRATIVE';
+    let type=/\bsign(?:ature)?\b/i.test(head.text)?'SIGNATURE':/certif|attest|agree to|willing.{0,30}commit/i.test(text)?'CERTIFICATION':/attach|upload|enclose/i.test(head.text)?'UPLOAD':/format:\s*(?:integer|decimal|number|\$)|(?:how many|what percentage)/i.test(text)?'NUMBER':(/format:\s*(?:email|phone|url|attachment|short text)/i.test(text)||/\b(?:email|e-mail|phone number|telephone|mailing address|employer identification|tax id|EIN)\b/i.test(head.text))?(/attachment/i.test(text)?'UPLOAD':'OTHER'):/format:\s*date/i.test(text)?'DATE':/format:\s*(?:yes.?no|boolean)|^yes\s*\nno$/im.test(text)?'YES_NO':/format:\s*selection|select (?:all|one)|choose one/i.test(text)?'MULTI_SELECT':/\bbudget\b/i.test(head.text)&&!/(describe|explain|how|why|experience)/i.test(head.text)?'BUDGET':'NARRATIVE';
     const instructions=context.slice(1).filter(r=>!/^(?:character|word|page)\s*limit|^format:/i.test(r.text)).map(r=>r.text).join('\n').slice(0,5000);
-    return question({id:randomUUID(),section:'Application',question_number:String(n+1),question_text:head.text.replace(/^\s*(?:Q)?(?:\d+|[A-Z])[.):]\s+/i,'').replace(/\s*\*$/,'')+(instructions?'\n'+instructions:''),question_type:type,required:!/optional|if applicable/i.test(head.text),limit_type,limit_value:number,spaces_count:limit_type==='CHARACTERS'?null:limit_type==='CHARACTERS_WITH_SPACES',source_locator:head.locator,source_quote:head.text,question_category:'',status:'NEEDS_REVIEW',instruction_sources:context.slice(1).map(r=>({source_locator:r.locator,source_quote:r.text}))});
+    return question({id:randomUUID(),section:'Application',question_number:String(n+1),question_text:head.text.replace(/^\s*(?:Q)?(?:\d+|[A-Z])[.):]\s+/i,'').replace(/\s*\*$/,'')+(instructions?'\n'+instructions:''),question_type:type,input_format:text.match(/format:\s*([^\n]+)/i)?.[1]||null,required:!/optional|if applicable/i.test(head.text),limit_type,limit_value:number,spaces_count:limit_type==='CHARACTERS'?null:limit_type==='CHARACTERS_WITH_SPACES',source_locator:head.locator,source_quote:head.text,question_category:'',status:'NEEDS_REVIEW',instruction_sources:context.slice(1).map(r=>({source_locator:r.locator,source_quote:r.text}))});
   });
   const eligibility=[],attachments=[],funder_requirements=[];
   for(const r of rows){
