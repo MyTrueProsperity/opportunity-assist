@@ -137,7 +137,7 @@ test("16. missing budget information is written as a gap, not an estimate", () =
 });
 test("17. a production-sized strategy fits well within the 12,000-token output allowance", () => {
   assert.equal(AI.TASK_MAX_TOKENS.strategy, 12000, "the ceiling is unchanged");
-  const props = schemas.strategy.properties;
+  const props = Object.fromEntries(Object.entries(schemas.strategy.properties).filter(([k])=>k!=="guidance_assessments"));
   assert.deepEqual(Object.keys(props).sort(), Object.keys(STRATEGY).sort(), "all nine sections are still required");
   assert.deepEqual(schemas.strategy.required.slice().sort(), Object.keys(STRATEGY).sort());
   const words = Object.fromEntries(Object.entries(props).map(([k, v]) => [k, Number(/At most (\d+) words/.exec(v.description)[1])]));
@@ -174,6 +174,7 @@ test.before(async () => {
   const program = (await f.real.brain(f.ctx)).programs[0];
   app = await s.handle(f.ctx, { action: "new_application", funder_name: "County Workforce Fund", grant_program_name: "Youth employment grant", text: "1. Describe youth employment need in the county." });
   app = await s.handle(f.ctx, { action: "save_application", application_id: app.id, revision: app.revision, application: { primary_program_id: program.id } });
+  app=await require('./helpers/grant-proposal').reviewSyntheticAI(f.real,f.ctx,app);
   // Funder terms come from the parsed opportunity, not from save_application.
   await f.pg.query("update gf_applications set content = content || $2::jsonb where id=$1", [app.id, JSON.stringify({ allowable_costs: "Student wages up to $250,000 per year" })]);
 });

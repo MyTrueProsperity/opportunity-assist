@@ -56,6 +56,7 @@ async function addProgram(org) {
 // A failed job is raised as an error carrying its failure code.
 async function runStrategy(ctx = f.ctx, a = app, svc = s) {
   const fresh = await svc.handle(ctx, { action: "get_application", application_id: a.id });
+  fresh.app=await require('./helpers/grant-proposal').reviewSyntheticAI(f.real,ctx,fresh.app);
   const out = await svc.handle(ctx, { action: "strategy", application_id: a.id, revision: fresh.app.revision });
   if (out.job.status === "FAILED") throw Object.assign(Error(out.job.error), { code: out.job.failure_code });
   return (await svc.handle(ctx, { action: "get_application", application_id: a.id })).app;

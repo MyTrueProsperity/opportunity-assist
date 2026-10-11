@@ -60,6 +60,7 @@ test("methodology reaches strategy, writer and auditor; the framework guides str
     let app = await s.handle(f.owner, { action: "new_application", funder_name: "Test Foundation", grant_program_name: "Education grant", text: "1. Describe your mission. Maximum 100 words." });
     const qId = app.questions[0].id;
     app = await s.handle(f.owner, { action: "save_application", application_id: app.id, revision: app.revision, application: { primary_program_id: primary.id } });
+    app=await require('./helpers/grant-proposal').reviewSyntheticAI(f.repo,f.owner,app);
     const started = await s.handle(f.owner, { action: "strategy", application_id: app.id, revision: app.revision });
     assert.equal(started.job.status, "COMPLETED");
     app = (await s.handle(f.owner, { action: "get_application", application_id: app.id })).app;

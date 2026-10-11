@@ -101,6 +101,7 @@ test.before(async () => {
   const program = (await f.real.brain(f.ctx)).programs[0];
   app = await s.handle(f.ctx, { action: "new_application", funder_name: "County Workforce Fund", grant_program_name: "Youth employment grant", text: "1. Describe youth employment need in the county." });
   app = await s.handle(f.ctx, { action: "save_application", application_id: app.id, revision: app.revision, application: { primary_program_id: program.id } });
+  app = await require('./helpers/grant-proposal').reviewSyntheticAI(f.real,f.ctx,app);
 });
 test.after(async () => { await f.pg.close(); });
 

@@ -369,6 +369,7 @@ test("missing input stays application-specific and pending until an executive ap
       application_id: app.id,
       revision: app.revision,
     });
+    app=await require('./helpers/grant-proposal').reviewSyntheticAI(f.repo,f.owner,app);
     app = await s.handle(f.owner, {
       action: "draft",
       application_id: app.id,

@@ -123,7 +123,7 @@ test('draft retries replace open requests and use facts added after application 
     const change=(action,payload={})=>s.handle(f.owner,{action,application_id:app.id,revision:app.revision,...payload});
     app=await change('save_application',{application:{primary_program_id:brain.programs[0].id,strategy:{primary_case:'Education'},strategy_approved:true}});
     app=await change('confirm_parser',require('./helpers/grant-proposal').confirmation);
-    app=await change('draft',{question_id:app.questions[0].id});
+    app=await require('./helpers/grant-proposal').reviewSyntheticAI(f.repo,f.owner,app);app=await change('draft',{question_id:app.questions[0].id});
     app=await change('draft',{question_id:app.questions[0].id});
     assert.equal(app.content.inputs.length,1);
     brain=await f.repo.brain(f.owner);

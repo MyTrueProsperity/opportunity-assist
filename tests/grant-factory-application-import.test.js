@@ -70,8 +70,8 @@ test('first-draft copies only exact approved fields and valid formats, proposes 
   a.answers=[{question_id:a.questions[0].id,draft_text:'',first_draft_signature:First.signature(a.questions[0],b,a)}];assert.equal(First.pending(a,b).length,0);a.content.funder_history={status:'SOURCE_TRACED_HISTORY'};assert.equal(First.pending(a,b).length,1);
 });
 test('saved general grant-writing guidance remains separate from applicant evidence and another funder’s rubric',()=>{
-  const version='GRANT_WRITING_APPROVAL_RESEARCH_V1';const base={package_version:version,record_id:'SYN-GW-01',topic:'How to write a winning grant proposal',approved_language:'Connect the need, design, outcomes, budget and sustainability.',external_use_status:'VERIFIED',verification_status:'PRIMARY_VERIFIED',last_verified:'2026-10-01',review_before_external_use:false};
-  const b={...brain([fact({research:base,value:base.approved_language})]),research:{packages:[{package_version:version,status:'active'}],records:[base,{...base,record_id:'UNVERIFIED',external_use_status:'NEEDS_REVIEW'},{...base,record_id:'SPECIFIC',topic:'Another Funder youth scoring rubric'},{...base,record_id:'STUDY',topic:'Promotional language and funding probability association'}],rules:[{package_version:version,rule_id:'NO-TRANSFER',rule:'Do not transplant another funder’s requirements.'}]}};
+  const version='GRANT_WRITING_APPROVAL_RESEARCH_V1';const base={package_version:version,record_id:'SYN-GW-01',topic:'How to write a winning grant proposal',guidance_metadata:{category:'GENERAL_GUIDANCE',topics:['design','case','evaluation'],stages:['FULL_APPLICATION','INQUIRY'],authority:'PRACTITIONER_GUIDANCE'},approved_language:'Connect the need, design, outcomes, budget and sustainability.',external_use_status:'VERIFIED',verification_status:'PRIMARY_VERIFIED',last_verified:'2026-10-01',review_before_external_use:false};
+  const b={...brain([fact({research:base,value:base.approved_language})]),research:{packages:[{package_version:version,status:'active'}],records:[base,{...base,record_id:'UNVERIFIED',external_use_status:'NEEDS_REVIEW'},{...base,record_id:'SPECIFIC',guidance_metadata:null,topic:'Another Funder youth scoring rubric'},{...base,record_id:'STUDY',guidance_metadata:null,topic:'Promotional language and funding probability association'}],rules:[{package_version:version,rule_id:'NO-TRANSFER',rule:'Do not transplant another funder’s requirements.'}]}};
   const a=app([q({question_type:'NARRATIVE',question_text:'Describe the proposal design'})]),r=Guide.guidance(b,a,{});assert.equal(r.sources.length,1);assert.equal(r.status,'WRITING_GUIDANCE_NOT_APPLICANT_EVIDENCE');assert.equal(r.safeguards.length,1);assert.equal(W.select(a.questions[0],b,a).evidence.length,0);
   assert.match(AI.systemPrompt('write'),/confident|confident ownership/);assert.match(AI.systemPrompt('write'),/writing_guidance/);assert.match(AI.systemPrompt('funder_history'),/not applicants or finalists/);
 });
@@ -92,7 +92,7 @@ test('database-backed import, proactive draft, no-op resume and final review gat
     await seed(repo,owner);await pipelineFixture(fixture);let b=await repo.brain(owner);const proof=b.facts.find(f=>f.program_id===PROGRAM);
     const ai=fakeAi((task,data)=>{assert.equal(task,'write');assert.equal(data.preparation_mode,'FIRST_DRAFT_FOR_HUMAN_REVIEW');assert.ok(data.question_plan.opening_candidates.length);assert.ok(data.writing_guidance);return {status:'DRAFTED',answer:proof.value,evidence_ids:[proof.id],missing_information:[],warnings:[]};});
     const svc=service(repo,ai,{applicationFetch:async()=>page()});let a=await svc.handle(owner,{action:'import_pipeline',pipeline_item_id:PIPE});assert.equal(a.questions.length,7);assert.equal(ai.calls.length,0);assert.equal(a.content.pipeline_item_id,PIPE);assert.equal(a.content.parser_reviewed,false);assert.equal(storage.size,1);assert.ok(a.questions.every(q=>q.source_locator.startsWith('Line')));
-    const action=async(name,payload={})=>{a=await svc.handle(owner,{action:name,application_id:a.id,revision:a.revision,...payload});return a;};
+    const action=async(name,payload={})=>{if(name==='first_draft_question')a=await require('./helpers/grant-proposal').reviewSyntheticAI(repo,owner,a);a=await svc.handle(owner,{action:name,application_id:a.id,revision:a.revision,...payload});return a;};
     await action('prepare_first_draft');assert.equal(a.content.strategy.approved,false);
     let status=await svc.handle(owner,{action:'first_draft_status',application_id:a.id});assert.equal(status.pending.length,7);
     for(const id of status.pending)await action('first_draft_question',{question_id:id});assert.equal(ai.calls.length,1,'only the supported narrative needs a model call');
@@ -124,7 +124,7 @@ test('saved writing research and traced funder awards reach the first-draft writ
   const fixture=await createTestRepo(),{repo,owner,pg}=fixture;
   try{
     await seed(repo,owner);await pipelineFixture(fixture);const originalBrain=repo.brain;
-    const version='GRANT_WRITING_APPROVAL_RESEARCH_V1';repo.brain=async ctx=>({...await originalBrain(ctx),research:{packages:[{package_version:version,status:'active'}],records:[{package_version:version,record_id:'SYN-GW-01',topic:'Logic model development guide',approved_language:'Connect resources, activities, outputs and outcomes.',external_use_status:'VERIFIED',verification_status:'PRIMARY_VERIFIED',last_verified:'2026-10-01',review_before_external_use:false}],rules:[]}});
+    const version='GRANT_WRITING_APPROVAL_RESEARCH_V1';repo.brain=async ctx=>({...await originalBrain(ctx),research:{packages:[{package_version:version,status:'active'}],records:[{package_version:version,record_id:'SYN-GW-01',guidance_metadata:{category:'GENERAL_GUIDANCE',topics:['design','case','evaluation'],stages:['FULL_APPLICATION','INQUIRY'],authority:'PRACTITIONER_GUIDANCE'},topic:'Logic model development guide',approved_language:'Connect resources, activities, outputs and outcomes.',external_use_status:'VERIFIED',verification_status:'PRIMARY_VERIFIED',last_verified:'2026-10-01',review_before_external_use:false}],rules:[]}});
     const published='Past grantees\n2025: Learning Circle received USD 30,000 for youth-led portfolios.\nLearning Round 2024 awarded USD 100,000 across 4 grants.';
     const ai=fakeAi((task,data)=>{
       if(task==='funder_history'){
@@ -135,7 +135,7 @@ test('saved writing research and traced funder awards reach the first-draft writ
     });
     const load=async url=>url===HISTORY?page('<h1>Past grantees</h1><p>'+published.replace(/\n/g,'</p><p>')+'</p>',HISTORY):{...page(),links:[{url:HISTORY,text:'Past recipients'}]};
     const svc=service(repo,ai,{applicationFetch:load});let a=await svc.handle(owner,{action:'import_pipeline',pipeline_item_id:PIPE});
-    const action=async(name,payload={})=>a=await svc.handle(owner,{action:name,application_id:a.id,revision:a.revision,...payload});
+    const action=async(name,payload={})=>{if(name==='first_draft_question')a=await require('./helpers/grant-proposal').reviewSyntheticAI(repo,owner,a);return a=await svc.handle(owner,{action:name,application_id:a.id,revision:a.revision,...payload});};
     await action('prepare_first_draft');await action('find_funder_history');assert.equal(ai.calls.length,0);assert.equal(a.content.funder_history.status,'SOURCES_READY');
     const source=a.content.funder_history.sources[0];await assert.rejects(repo.document({org_id:OTHER},source.document_id),/not found/i);
     await action('analyze_funder_history');assert.equal(a.content.funder_history.status,'SOURCE_TRACED_HISTORY');await action('first_draft_question',{question_id:a.questions[2].id});assert.deepEqual(ai.calls.map(c=>c.task),['funder_history','write']);
@@ -146,9 +146,9 @@ test('an interrupted or failed batch does not repeatedly spend AI allowance and 
   try{
     await seed(repo,owner);const ai=fakeAi(()=>{throw Object.assign(Error('Invalid model response'),{status:502});}),svc=service(repo,ai);let a=await svc.handle(owner,{action:'new_application',text:'1. Describe pre-existing impact.\nMaximum 1000 characters.',grant_program_name:'Youth learning'});
     a=await svc.handle(owner,{action:'prepare_first_draft',application_id:a.id,revision:a.revision});const id=a.questions[0].id;
-    await assert.rejects(svc.handle(owner,{action:'first_draft_question',application_id:a.id,revision:a.revision,question_id:id}),/Invalid model response/);assert.equal((await repo.app(owner,a.id)).answers.length,0);
+    a=await require('./helpers/grant-proposal').reviewSyntheticAI(repo,owner,a);await assert.rejects(svc.handle(owner,{action:'first_draft_question',application_id:a.id,revision:a.revision,question_id:id}),/Invalid model response/);assert.equal((await repo.app(owner,a.id)).answers.length,0);
     a=await svc.handle(owner,{action:'first_draft_failure',application_id:a.id,revision:a.revision,question_id:id,message:'Model response needs review'});const before=a.revision;
-    a=await svc.handle(owner,{action:'first_draft_question',application_id:a.id,revision:a.revision,question_id:id});assert.equal(a.revision,before);assert.equal(ai.calls.length,1);assert.equal((await svc.handle(owner,{action:'first_draft_status',application_id:a.id})).pending.length,0);
+    a=await require('./helpers/grant-proposal').reviewSyntheticAI(repo,owner,a);a=await svc.handle(owner,{action:'first_draft_question',application_id:a.id,revision:a.revision,question_id:id});assert.equal(a.revision,before);assert.equal(ai.calls.length,1);assert.equal((await svc.handle(owner,{action:'first_draft_status',application_id:a.id})).pending.length,0);
     assert.equal(First.requiresDecision(q({question_type:'NARRATIVE',question_text:'I certify that the information is correct'})),true);assert.equal(First.requiresDecision(q({question_type:'NARRATIVE',question_text:'Describe how the grant budget will support youth leadership'})),false);
   }finally{await pg.close();}
 });
