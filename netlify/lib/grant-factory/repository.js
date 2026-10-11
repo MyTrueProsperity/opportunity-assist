@@ -44,6 +44,24 @@ function repository(env = process.env, fetcher = fetch, db = createDb(env, fetch
   return {
     db,
     env,
+    async searchProfile(ctx, executive = false) {
+      if (executive && ctx.role !== "OWNER") fail("Executive approval is required to update the search profile.",403);
+      const membership = await this.db.select("org_memberships",{org_id:"eq."+ctx.org_id,user_id:"eq."+ctx.user_id,select:"org_id"});
+      if (!membership.length) fail("Organization membership is required to access its search profile.",403);
+      const [org] = await this.db.select("organizations",{id:"eq."+ctx.org_id,select:"id,service_areas,target_populations,programs,past_performance,keywords"});
+      if (!org) fail("Organization not found.",404);
+      return org;
+    },
+    async searchBrain(ctx) {
+      // No master research bundle or original document blocks are read here.
+      const [[workspace],facts,programs,documents]=await Promise.all([
+        this.db.select("gf_workspaces",{org_id:"eq."+ctx.org_id}),
+        this.db.all("gf_facts",{org_id:"eq."+ctx.org_id}),
+        this.db.all("gf_programs",{org_id:"eq."+ctx.org_id}),this.documentSummaries(ctx),
+      ]);
+      if (!workspace) fail("Grant Factory workspace is unavailable.",503);
+      return {revision:workspace.brain_revision,facts:facts.map(flatten),programs:programs.map(flatten),documents:documents.map(flatten)};
+    },
     async context(event, requestedOrg) {
       const token = String(
         event.headers?.authorization || event.headers?.Authorization || "",

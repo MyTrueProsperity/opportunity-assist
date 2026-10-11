@@ -1,5 +1,6 @@
 "use strict";
 const C = require("./core");
+const SearchProfile = require("./search-profile");
 const { extract, validateFile, MAX_BYTES } = require("./documents");
 const P = require("./parser");
 const { seed } = require("./seed");
@@ -626,6 +627,27 @@ function service(repo, ai, { dispatch = null, applicationFetch = null } = {}) {
           ai_enabled: ai.enabled,
           document_types: DOCUMENT_TYPES,
         };
+      }
+      if (["search_profile_preview","search_profile_transfer"].includes(action)) {
+        const org = await repo.searchProfile(ctx,true), brain = await repo.searchBrain(ctx);
+        const review = SearchProfile.preview(brain,org,body.selections||[],body.modes||{});
+        if (action==="search_profile_preview") return review;
+        if (body.confirmation!=="USE_REVIEWED_PUBLIC_FACTS_FOR_SEARCH") C.fail("Confirm the reviewed public profile for search.");
+        if (body.preview_hash!==review.preview_hash) C.fail("The facts or search profile changed. Refresh the review before saving.",409);
+        try {
+          return await repo.db.rpc("gf_transfer_search_profile",{
+            p_org:ctx.org_id,p_actor:ctx.user_id,p_brain_revision:review.brain_revision,p_before:review.before,
+            p_patch:review.patch,p_sources:review.selected,p_preview_hash:review.preview_hash,
+          });
+        } catch(e) {
+          if (/40001|Truth changed|Search profile changed/.test(String(e.code)+e.message)) C.fail("The facts or search profile changed. Refresh the review to preserve the latest edits.",409);
+          if (/PGRST202|Could not find the function|does not exist/.test(String(e.code)+e.message)) C.fail("Search profile transfer is awaiting database setup. Nothing was changed.",503);
+          throw e;
+        }
+      }
+      if (action==="foundation_profile_matches") {
+        const org=await repo.searchProfile(ctx);
+        return require("../source-intelligence/profile-discovery").findProfileSources(repo.db,org);
       }
       let brain = await repo.brain(ctx);
       if (action === "seed") return seed(repo, ctx, brain, body.pack);

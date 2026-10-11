@@ -176,8 +176,27 @@ async function handle(event,db=createDb()) {
     if(!e.seed_completed_at)throw new HttpError(409,'Import and reconcile the existing corpus first');
     if(!e.engine_enabled||!s?.discovery_enabled||(b.state!=='FL'&&!e.florida_validated_at))throw new HttpError(409,'Enable the engine and this state first');
     const params={state_code:'eq.'+b.state,category:'in.('+s.categories.join(',')+')',order:'next_search_at.asc,id.asc',limit:1};
+    if(b.organization_id){
+      const enabled=s.categories.filter(c=>['COMMUNITY_FOUNDATION','PRIVATE_FOUNDATION','CORPORATE_GIVING','BANK_CREDIT_UNION','HOSPITAL_HEALTH'].includes(c));
+      if(!enabled.length)throw new HttpError(409,'Foundation discovery categories are disabled for this state');
+      params.category='in.('+enabled.join(',')+')';
+    }
     if(b.coverage_id){if(!uuid(b.coverage_id))throw new HttpError(400,'Invalid coverage cell');params.id='eq.'+b.coverage_id;}
     const [cell]=await db.select('source_coverage',params);if(!cell)throw new HttpError(400,'No enabled coverage cell');
+    if(b.organization_id){
+      if(!uuid(b.organization_id))throw new HttpError(400,'Invalid organization');
+      const [membership]=await db.select('org_memberships',{org_id:'eq.'+b.organization_id,user_id:'eq.'+actor,select:'org_id'});
+      if(!membership)throw new HttpError(403,'Organization membership required');
+      const [profile]=await db.select('organizations',{id:'eq.'+b.organization_id,select:'id,programs,target_populations,service_areas,keywords'});
+      if(!profile)throw new HttpError(404,'Organization not found');
+      const {findProfileSources}=require('../lib/source-intelligence/profile-discovery');
+      const matches=await findProfileSources(db,profile);
+      if(matches.states.length&&!matches.states.includes(b.state))throw new HttpError(409,'Choose a state in this organization’s reviewed service areas');
+      const urls=[...new Set(matches.items.filter(r=>r.geographic_match!=='Geography needs review').map(r=>r.source_url))].slice(0,3);
+      if(!urls.length)throw new HttpError(409,'No matching approved source URLs. Review the profile or source registry first.');
+      // Existing manual action, existing queue and page budget. No paid provider.
+      return json(202,{job:await enqueue(db,{kind:'DISCOVER',state:b.state,actor,category:cell.category,geographyId:cell.geography_id,key:'profile:'+b.organization_id+':'+b.state,payload:{coverage_id:cell.id,organization_id:b.organization_id,urls,zero_token_only:true}})});
+    }
     return json(202,{job:await enqueue(db,{kind:'DISCOVER',state:b.state,actor,cleanRoom:b.clean_room===true,category:cell.category,geographyId:cell.geography_id,key:'coverage:'+cell.id,payload:{coverage_id:cell.id}})});
   }
   if(b.action==='review'){

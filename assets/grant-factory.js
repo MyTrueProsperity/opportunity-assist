@@ -519,7 +519,7 @@
         (s.tab === "truth" ? "Truth Review" : "Organization Brain") +
         '</h2><p class="gf-note">Check a fact against its source, then choose whether it can be used in grants. You can leave unrelated gaps for later. Planned programs remain plans.</p></div>' +
         btn("fact", "Add fact", "", true) +
-        (s.data.role === "OWNER" ? btn("voice", "Writing voice") : "") +
+        (s.data.role === "OWNER" ? btn("voice", "Writing voice") + btn("search-profile", "Review search profile") : "") + btn("foundation-matches", "Find matching foundations") +
         '</div>' + (s.reviewDocument ? '<p>Showing facts from one document. ' + btn('go-truth', 'Show all facts') + '</p>' : '') + '<input id="gf-search" class="gf-search" aria-label="Search organization facts" placeholder="Search enrollment, John Doe, theater, board…" value="' +
         esc(s.query) +
         '">' +
@@ -1292,6 +1292,29 @@
         await refresh();
       }
     }
+    async function reviewSearchProfile() {
+      const initial=await api("search_profile_preview");
+      const current=Object.entries(initial.fields).map(([key,title])=>'<details><summary>'+esc(title)+' — current profile</summary><pre style="white-space:pre-wrap">'+esc(Array.isArray(initial.before[key])?initial.before[key].join(', '):initial.before[key]||'Not entered')+'</pre></details>').join('');
+      const choices=initial.candidates.map(c=>'<label class="gf-card" style="display:block"><input type="checkbox" name="source" value="'+esc(c.key)+'"> <strong>'+esc(c.label)+'</strong> → '+esc(initial.fields[c.field])+'<p>'+esc(c.value)+'</p><small>'+esc(c.source_reference|| (c.source_document_id?'Saved document '+c.source_document_id:'Executive-approved program record'))+' · '+esc(c.source_locator)+' · revision '+esc(c.revision)+'</small></label>').join('');
+      const modes=Object.entries(initial.fields).map(([key,title])=>select('mode_'+key,title+' — how to update',[['APPEND','Keep existing text and add selected facts'],['REPLACE','Replace with selected facts']], 'APPEND')).join('');
+      const first=dialog('Review your search profile','<p>Only approved, public organization facts and programs appear here. Choose what to add to Organization for grant matching. Existing edits stay in place unless you choose Replace. Search keywords may later be used by external grant search services.</p>'+current+(choices?'<h3>Choose reviewed items</h3>'+choices+modes:'<p>No eligible items yet. Review and approve public facts with their sources first. Private, expired, projected and application-only facts are excluded.</p>')+(initial.truncated?'<p>Showing the first 200 eligible items. Narrow the organization facts before transferring more.</p>':''), choices?async f=>{
+        const selections=f.getAll('source');if(!selections.length)throw Error('Choose at least one reviewed item.');
+        const modes=Object.fromEntries(Object.keys(initial.fields).map(k=>[k,f.get('mode_'+k)]));
+        const reviewed=await api('search_profile_preview',{selections,modes});
+        const changes=Object.entries(reviewed.patch).map(([key,value])=>'<section class="gf-card"><h3>'+esc(reviewed.fields[key])+'</h3><p class="gf-meta">Current</p><pre style="white-space:pre-wrap">'+esc(Array.isArray(reviewed.before[key])?reviewed.before[key].join(', '):reviewed.before[key]||'Not entered')+'</pre><p class="gf-meta">After saving</p><pre style="white-space:pre-wrap">'+esc(Array.isArray(value)?value.join(', '):value)+'</pre></section>').join('');
+        const final=dialog('Confirm search profile changes',changes||'<p>The profile already contains the selected facts. No changes are needed.</p>',Object.keys(reviewed.patch).length?async()=>{
+          const result=await api('search_profile_transfer',{selections,modes,preview_hash:reviewed.preview_hash,confirmation:'USE_REVIEWED_PUBLIC_FACTS_FOR_SEARCH'});
+          window.dispatchEvent(new CustomEvent('oa:search-profile-updated',{detail:{orgId:s.orgId}}));
+          message(result.saved?'Search profile updated with reviewed facts and source history. No research was started.':'Search profile already up to date.');
+        }:null);
+        const submit=final.querySelector('[type="submit"]');if(submit)submit.textContent='Approve these public profile changes';
+      }:null);
+      const submit=first.querySelector('[type="submit"]');if(submit)submit.textContent='Preview profile changes';
+    }
+    async function foundationMatches() {
+      const result=await api('foundation_profile_matches');
+      dialog('Foundations matching your search profile','<p>Free matching against saved, approved sources. No AI call or live search. These are leads to review, not confirmed eligibility or open applications.</p><p>Topics: '+esc(result.topics.join(', ')||'None found — review Programs, Target populations and Keywords')+'</p>'+result.items.map(r=>'<article class="gf-card"><h3>'+esc(r.source_name)+'</h3><p>'+esc(r.program_name||'')+'</p><p>Matched: '+esc(r.matched_topics.join(', '))+' · '+esc(r.geographic_match)+'</p><p class="gf-meta">'+esc(r.current_status||'Status needs review')+' · Last verified '+esc(r.last_verified_at||'not recorded')+'</p><a href="'+esc(r.source_url)+'" target="_blank" rel="noopener">Review source ↗</a></article>').join('')+(!result.items.length?'<p>No matching approved sources found in this bounded lookup. This does not mean there are no suitable grants.</p>':'')+'<p class="gf-meta">Checked '+result.examined+' saved sources'+(result.limited?' (lookup limit reached)':'')+'.</p>');
+    }
     async function perform(action, id, button) {
       if (s.busy) return;
       s.busy = true;
@@ -1320,7 +1343,9 @@
           )
         )
           throw Error("Save your changed answers before continuing.");
-        if(action==='pipeline-picker'){
+        if(action==='search-profile')await reviewSearchProfile();
+        else if(action==='foundation-matches')await foundationMatches();
+        else if(action==='pipeline-picker'){
           await pipelinePicker();
         }else if(action==='funder-history'){
           dialog('Research past grants and funded organizations',field('url','Official funder / past awards page',s.app.content.application_import?.url||'')+'<label>Or upload an award list / annual-report excerpt (PDF, DOCX or text)<input type="file" name="file" accept=".pdf,.docx,.txt"></label><p class="gf-note">OA uses public pages and your uploaded source. Analysis uses the existing workspace AI allowance. Historical amounts help assess scope; the actual request still needs a costed delivery plan.</p>',async f=>{

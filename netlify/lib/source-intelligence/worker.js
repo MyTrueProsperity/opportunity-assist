@@ -98,6 +98,21 @@ async function inspect(db,provider,job,url,name,program,fetcher=fetchPage) {
   }
 }
 async function discover(db,provider,job,fetcher) {
+  if(job.payload.organization_id){
+    // Re-rank current approved sources at execution, without putting any
+    // organization facts in shared source/candidate history or search queries.
+    const [run]=await db.select('source_discovery_runs',{id:'eq.'+job.run_id,select:'requested_by'});
+    const [member]=await db.select('org_memberships',{org_id:'eq.'+job.payload.organization_id,user_id:'eq.'+run?.requested_by,select:'org_id'});
+    if(!member)throw new Paused('Organization membership changed; review this discovery request');
+    const [profile]=await db.select('organizations',{id:'eq.'+job.payload.organization_id,select:'id,programs,target_populations,service_areas,keywords'});
+    if(!profile)throw new Paused('Organization profile unavailable');
+    const matches=await require('./profile-discovery').findProfileSources(db,profile);
+    if(matches.states.length&&!matches.states.includes(job.state_code))throw new Paused('Organization service areas changed; review the discovery state');
+    const urls=[...new Set(matches.items.filter(r=>r.geographic_match!=='Geography needs review').map(r=>r.source_url))].slice(0,3);
+    if(!urls.length)throw new Paused('No matching approved source URLs; review the organization profile');
+    job={...job,payload:{...job.payload,urls}};provider=null;
+  }
+  if(job.payload.zero_token_only)provider=null;
   if(!provider){
     await gate(db,job,'discovery');
     const urls=job.payload.urls;
