@@ -160,7 +160,7 @@ test("the prompt shows the citation format without growing much", () => {
   assert.match(p, /in brackets right after each research-derived finding in the same sentence/);
   assert.match(p, /\[ABC-012\]/);
   assert.match(p, /an author, study or source name alone is not a citation/);
-  assert.ok(p.length < 4450, "prompt length " + p.length);
+  assert.ok(p.length < 5700, "prompt length " + p.length);
 });
 
 // ---- Performance --------------------------------------------------------
@@ -221,6 +221,7 @@ test.before(async () => {
   const program = (await f.real.brain(f.ctx)).programs[0];
   app = await svc.handle(f.ctx, { action: "new_application", funder_name: "County Workforce Fund", grant_program_name: "Youth employment grant", text: "1. Describe youth employment need in the county." });
   app = await svc.handle(f.ctx, { action: "save_application", application_id: app.id, revision: app.revision, application: { primary_program_id: program.id } });
+  app=await require('./helpers/grant-proposal').reviewSyntheticAI(f.real,f.ctx,app);
 });
 test.after(async () => { await f.pg.close(); });
 

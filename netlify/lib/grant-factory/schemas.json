@@ -3,31 +3,58 @@
     "type": "object",
     "properties": {
       "funder_name": {
-        "type": ["string", "null"]
+        "type": [
+          "string",
+          "null"
+        ]
       },
       "grant_program_name": {
-        "type": ["string", "null"]
+        "type": [
+          "string",
+          "null"
+        ]
       },
       "application_cycle": {
-        "type": ["string", "null"]
+        "type": [
+          "string",
+          "null"
+        ]
       },
       "deadline": {
-        "type": ["string", "null"]
+        "type": [
+          "string",
+          "null"
+        ]
       },
       "funding_purpose": {
-        "type": ["string", "null"]
+        "type": [
+          "string",
+          "null"
+        ]
       },
       "award_min": {
-        "type": ["number", "null"]
+        "type": [
+          "number",
+          "null"
+        ]
       },
       "award_max": {
-        "type": ["number", "null"]
+        "type": [
+          "number",
+          "null"
+        ]
       },
       "grant_period": {
-        "type": ["string", "null"]
+        "type": [
+          "string",
+          "null"
+        ]
       },
       "match_requirement": {
-        "type": ["string", "null"]
+        "type": [
+          "string",
+          "null"
+        ]
       },
       "allowable_costs": {
         "type": "array",
@@ -42,7 +69,10 @@
         }
       },
       "rubric_or_scoring": {
-        "type": ["string", "null"]
+        "type": [
+          "string",
+          "null"
+        ]
       },
       "eligible_applicants": {
         "type": "array",
@@ -58,7 +88,11 @@
       },
       "parser_confidence": {
         "type": "string",
-        "enum": ["HIGH", "MEDIUM", "LOW"]
+        "enum": [
+          "HIGH",
+          "MEDIUM",
+          "LOW"
+        ]
       },
       "questions": {
         "type": "array",
@@ -66,10 +100,16 @@
           "type": "object",
           "properties": {
             "section": {
-              "type": ["string", "null"]
+              "type": [
+                "string",
+                "null"
+              ]
             },
             "question_number": {
-              "type": ["string", "null"]
+              "type": [
+                "string",
+                "null"
+              ]
             },
             "question_text": {
               "type": "string"
@@ -112,23 +152,40 @@
               ]
             },
             "limit_value": {
-              "type": ["integer", "null"]
+              "type": [
+                "integer",
+                "null"
+              ]
             },
             "spaces_count": {
-              "type": ["boolean", "null"]
+              "type": [
+                "boolean",
+                "null"
+              ]
             },
             "question_category": {
-              "type": ["string", "null"]
+              "type": [
+                "string",
+                "null"
+              ]
             },
             "rubric_text": {
-              "type": ["string", "null"]
+              "type": [
+                "string",
+                "null"
+              ]
             },
             "conditional_trigger": {
-              "type": ["string", "null"]
+              "type": [
+                "string",
+                "null"
+              ]
             },
             "options": {
               "type": "array",
-              "items": {"type": "string"}
+              "items": {
+                "type": "string"
+              }
             }
           },
           "required": [
@@ -156,20 +213,33 @@
               "type": "string"
             },
             "fact_key": {
-              "type": ["string", "null"]
+              "type": [
+                "string",
+                "null"
+              ]
             },
             "operator": {
               "type": "string",
-              "enum": ["EXACT", "REVIEW"]
+              "enum": [
+                "EXACT",
+                "REVIEW"
+              ]
             },
             "expected_value": {
-              "type": ["string", "null"]
+              "type": [
+                "string",
+                "null"
+              ]
             },
             "commitment": {
               "type": "boolean"
             }
           },
-          "required": ["rule", "source_locator", "source_quote"]
+          "required": [
+            "rule",
+            "source_locator",
+            "source_quote"
+          ]
         }
       },
       "attachments": {
@@ -190,7 +260,12 @@
               "type": "boolean"
             }
           },
-          "required": ["title", "source_locator", "source_quote", "required"]
+          "required": [
+            "title",
+            "source_locator",
+            "source_quote",
+            "required"
+          ]
         }
       },
       "warnings": {
@@ -235,37 +310,83 @@
         "description": "Source-grounded priorities, review criteria, exclusions, scope, funding and reporting requirements. Exact quote required."
       }
     },
-    "required": ["questions", "eligibility", "attachments", "warnings"]
+    "required": [
+      "questions",
+      "eligibility",
+      "attachments",
+      "warnings"
+    ]
   },
   "strategy": {
     "type": "object",
     "properties": {
       "primary_case": {
-        "type": "string", "description": "At most 200 words."
+        "type": "string",
+        "description": "At most 200 words."
       },
       "funder_priorities": {
-        "type": "string", "description": "At most 150 words."
+        "type": "string",
+        "description": "At most 150 words."
       },
       "alignment_points": {
-        "type": "string", "description": "At most 250 words. If a sentence says research, evidence, studies, surveys, literature or evaluation findings support a point, put the supporting record_id in that sentence; otherwise omit the attribution."
+        "type": "string",
+        "description": "At most 250 words. If a sentence says research, evidence, studies, surveys, literature or evaluation findings support a point, put the supporting record_id in that sentence; otherwise omit the attribution."
       },
       "themes_to_emphasize": {
-        "type": "string", "description": "At most 200 words."
+        "type": "string",
+        "description": "At most 200 words."
       },
       "themes_to_deemphasize": {
-        "type": "string", "description": "At most 150 words."
+        "type": "string",
+        "description": "At most 150 words."
       },
       "likely_funding_use": {
-        "type": "string", "description": "At most 200 words."
+        "type": "string",
+        "description": "At most 200 words."
       },
       "evidence_gaps": {
-        "type": "string", "description": "At most 350 words. If a sentence says research, evidence, studies, surveys, literature or evaluation findings support a point, put the supporting record_id in that sentence; otherwise omit the attribution."
+        "type": "string",
+        "description": "At most 350 words. If a sentence says research, evidence, studies, surveys, literature or evaluation findings support a point, put the supporting record_id in that sentence; otherwise omit the attribution."
       },
       "evidence_chain": {
-        "type": "string", "description": "At most 1000 words."
+        "type": "string",
+        "description": "At most 1000 words."
       },
       "budget_consistency": {
-        "type": "string", "description": "At most 350 words."
+        "type": "string",
+        "description": "At most 350 words."
+      },
+      "guidance_assessments": {
+        "type": "array",
+        "maxItems": 24,
+        "items": {
+          "type": "object",
+          "properties": {
+            "key": {
+              "type": "string"
+            },
+            "status": {
+              "type": "string",
+              "enum": [
+                "APPLIED",
+                "NOT_APPLICABLE",
+                "NEEDS_INPUT"
+              ]
+            },
+            "reason": {
+              "type": "string"
+            },
+            "answer_quote": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "key",
+            "status",
+            "reason",
+            "answer_quote"
+          ]
+        }
       }
     },
     "required": [
@@ -285,7 +406,10 @@
     "properties": {
       "status": {
         "type": "string",
-        "enum": ["DRAFTED", "NEEDS_USER_INPUT"]
+        "enum": [
+          "DRAFTED",
+          "NEEDS_USER_INPUT"
+        ]
       },
       "answer": {
         "type": "string",
@@ -308,6 +432,38 @@
         "description": "Any source, evidence or editorial concern requiring review; confidence in a proven result is not itself a concern.",
         "items": {
           "type": "string"
+        }
+      },
+      "guidance_assessments": {
+        "type": "array",
+        "maxItems": 24,
+        "items": {
+          "type": "object",
+          "properties": {
+            "key": {
+              "type": "string"
+            },
+            "status": {
+              "type": "string",
+              "enum": [
+                "APPLIED",
+                "NOT_APPLICABLE",
+                "NEEDS_INPUT"
+              ]
+            },
+            "reason": {
+              "type": "string"
+            },
+            "answer_quote": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "key",
+            "status",
+            "reason",
+            "answer_quote"
+          ]
         }
       }
     },
@@ -353,11 +509,51 @@
               }
             }
           },
-          "required": ["claim", "status", "reason", "evidence_ids"]
+          "required": [
+            "claim",
+            "status",
+            "reason",
+            "evidence_ids"
+          ]
+        }
+      },
+      "guidance_assessments": {
+        "type": "array",
+        "maxItems": 24,
+        "items": {
+          "type": "object",
+          "properties": {
+            "key": {
+              "type": "string"
+            },
+            "status": {
+              "type": "string",
+              "enum": [
+                "APPLIED",
+                "NOT_APPLICABLE",
+                "NEEDS_INPUT"
+              ]
+            },
+            "reason": {
+              "type": "string"
+            },
+            "answer_quote": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "key",
+            "status",
+            "reason",
+            "answer_quote"
+          ]
         }
       }
     },
-    "required": ["coverage_complete", "claims"]
+    "required": [
+      "coverage_complete",
+      "claims"
+    ]
   },
   "extract_facts": {
     "type": "object",
@@ -384,11 +580,20 @@
             },
             "confidence": {
               "type": "string",
-              "enum": ["HIGH", "MEDIUM", "LOW"]
+              "enum": [
+                "HIGH",
+                "MEDIUM",
+                "LOW"
+              ]
             },
             "temporal_context": {
               "type": "string",
-              "enum": ["CURRENT", "HISTORICAL", "PLANNED", "UNKNOWN"]
+              "enum": [
+                "CURRENT",
+                "HISTORICAL",
+                "PLANNED",
+                "UNKNOWN"
+              ]
             },
             "notes": {
               "type": "string"
@@ -412,7 +617,10 @@
         }
       }
     },
-    "required": ["facts", "warnings"]
+    "required": [
+      "facts",
+      "warnings"
+    ]
   },
   "funder_history": {
     "type": "object",

@@ -65,6 +65,7 @@ test('draft and audit receive canonical research and claim rules',async()=>{
  const bundle={packages:[{package_version:version,status:'active'}],records:[{...record,external_use_status:'VERIFIED'}],rules:[{package_version:version,rule_id:'CR-05',rule:'ALICE is not official poverty'}]};
  const brain={revision:1,voice:'Plain language',facts:researchFacts(bundle),programs:[],documents:[],research:bundle};
  const app={id:ORG,revision:1,content:{status:'PARSED',parser_reviewed:true,strategy:{approved:true},inputs:[]},questions:[{id:OWNER,question_text:'Explain ALICE household hardship',question_type:'NARRATIVE',limit_type:'NONE'}],answers:[]};
+ require("./helpers/grant-proposal").aiReview(app,brain);
  const calls=[];
  const repo={brain:async()=>brain,app:async()=>app,save:async()=>app,run:async(ctx,task,fn)=>(await fn()).data};
  const ai={call:async(task,data)=>{calls.push({task,data});return {data:task==='write'?{status:'DRAFTED',answer:record.approved_language,evidence_ids:[brain.facts[0].id],warnings:[]}:{coverage_complete:true,claims:[{claim:record.approved_language,status:'SUPPORTED',evidence_ids:[brain.facts[0].id]}]}};}};

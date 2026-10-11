@@ -491,6 +491,8 @@ test("application lifecycle audits evidence, requires executive review, freezes 
     revision: app.revision,
   });
   const stale = app.revision;
+  app=await require('./helpers/grant-proposal').reviewSyntheticAI(repo,owner,app);
+  app=await s.handle(owner,{action:'confirm_parser',...require('./helpers/grant-proposal').confirmation,application_id:app.id,revision:app.revision});
   app = await s.handle(owner, {
     action: "draft",
     application_id: appId,
@@ -713,6 +715,7 @@ test("AI prompt injection data cannot override the tool schema or introduce unkn
     application_id: a.id,
     revision: a.revision,
   });
+  a=await require('./helpers/grant-proposal').reviewSyntheticAI(repo,owner,a);
   await assert.rejects(
     s.handle(owner, {
       action: "draft",

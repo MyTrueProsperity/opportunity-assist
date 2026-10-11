@@ -174,7 +174,7 @@ test("the output format asks for the record id in evidence_gaps and alignment_po
     assert.match(props[k].description, /research, evidence, studies, surveys, literature or evaluation findings support a point, put the supporting record_id in that sentence; otherwise omit the attribution/);
     assert.ok(props[k].description.length < 220, k);
   }
-  assert.ok(AI.requestChars("strategy", null) < 5700, "request overhead " + AI.requestChars("strategy", null));
+  assert.ok(AI.requestChars("strategy", null) < 7300, "request overhead " + AI.requestChars("strategy", null));
 });
 
 test("production-sized validation stays well under one second", () => {

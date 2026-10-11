@@ -425,9 +425,9 @@ function auditValid(answer, evidence, brainRevision) {
   );
 }
 function requirementsSignature(app, brain) {
-  const c=app.content||{},fields=['source_document_id','additional_source_document_ids','funder_name','grant_program_name','funding_purpose','funder_priorities','rubric_or_scoring','eligible_applicants','eligible_geographies','allowable_costs','prohibited_costs','match_requirement','grant_period','award_min','award_max','request_amount','primary_program_id','secondary_program_ids','deadline','application_cycle','funder_requirements','eligibility','attachments','project_model'];
-  const ids=[c.source_document_id,...(c.additional_source_document_ids||[])].filter(Boolean);
-  return hash({application:Object.fromEntries(fields.map(k=>[k,k==='eligibility'?(c[k]||[]).map(({review,status,reason,evidence_id,hard_failure,applicability,...r})=>r):k==='attachments'?(c[k]||[]).map(({validation_review,condition_review,reviewed,...r})=>r):c[k]??null])),sources:ids.map(id=>{const d=brain.documents.find(d=>d.id===id);return d?[id,d.sha256,d.version,d.revision,d.status,d.extraction_status,d.sensitivity_level,d.internal_only,d.document_type,d.external_use_allowed,d.expiration_date]:[id,'MISSING'];}),questions:app.questions.map(q=>[q.id,q.question_text,q.question_type,q.limit_type,q.limit_value,q.required,q.section,q.question_category,q.rubric_text,q.source_quote,q.instruction_sources,q.options,q.conditional_trigger,q.condition,q.input_format])});
+  const c=app.content||{},fields=['source_document_id','additional_source_document_ids','funder_name','grant_program_name','funding_purpose','funder_priorities','rubric_or_scoring','eligible_applicants','eligible_geographies','allowable_costs','prohibited_costs','match_requirement','grant_period','award_min','award_max','request_amount','primary_program_id','secondary_program_ids','deadline','application_cycle','funder_requirements','eligibility','attachments','project_model','ai_conditions','revision_workflow'];
+  const ids=[c.source_document_id,...(c.additional_source_document_ids||[]),c.ai_conditions?.source_document_id,c.revision_workflow?.source_document_id].filter(Boolean);
+  return hash({application:Object.fromEntries(fields.map(k=>[k,k==='eligibility'?(c[k]||[]).map(({review,status,reason,evidence_id,hard_failure,applicability,...r})=>r):k==='attachments'?(c[k]||[]).map(({validation_review,condition_review,reviewed,...r})=>r):k==='ai_conditions'?(c[k]?Object.fromEntries(Object.entries(c[k]).filter(([key])=>!['signature','by','at'].includes(key))):null):k==='revision_workflow'?(c[k]?Object.fromEntries(['stage','source_document_id','source_locator','source_quote','invitation','invitation_status','contact_restrictions','stage_requirements'].map(key=>[key,c[k][key]])):null):c[k]??null])),sources:ids.map(id=>{const d=brain.documents.find(d=>d.id===id);return d?[id,d.sha256,d.version,d.revision,d.status,d.extraction_status,d.sensitivity_level,d.internal_only,d.document_type,d.external_use_allowed,d.expiration_date]:[id,'MISSING'];}),questions:app.questions.map(q=>[q.id,q.question_text,q.question_type,q.limit_type,q.limit_value,q.required,q.section,q.question_category,q.rubric_text,q.source_quote,q.instruction_sources,q.options,q.conditional_trigger,q.condition,q.input_format])});
 }
 function qa(app, brain) {
   const issues = [];
@@ -461,8 +461,12 @@ function qa(app, brain) {
   for(const raw of eligibility(app.content.eligibility,authorizedFacts(brain,app.id))){const E=require('./eligibility'),r=E.effective(raw,brain,app.id);if(!E.resolved(raw,brain,app.id))add(r.status==='FAIL'?'ELIGIBILITY_FAIL':'ELIGIBILITY_UNRESOLVED',r.rule+': '+r.reason);}
   issues.push(...require('./requirements').issues(app,brain));
   issues.push(...require('./project-model').validate(app.content.project_model,app.content).issues);
+  issues.push(...require('./project-model').sourceIssues(app.content.project_model,brain));
   issues.push(...require('./proposal-review').issues(app,brain));
   issues.push(...require('./attachment-review').issues(app,brain));
+  issues.push(...require('./ai-conditions').issues(app,brain));
+  issues.push(...require('./writing-guidance').issues(app,brain));
+  issues.push(...require('./reviewer-register').issues(app,brain));
   for (const q of app.questions) {
     const applies=require('./attachment-review').applicable(q,app,brain);
     if(applies===null){add('FIELD_CONDITION','Resolve this conditional field before submission.',q.id);continue;}
