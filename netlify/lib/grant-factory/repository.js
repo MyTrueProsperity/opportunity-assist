@@ -243,18 +243,37 @@ function repository(env = process.env, fetcher = fetch, db = createDb(env, fetch
       rejection: (ctx, appId) => db.rpc("gf_strategy_job_rejection", { p_org: ctx.org_id, p_actor: ctx.user_id, p_app: id(appId) }),
       };
     },
-    async pipelineCandidates(ctx, offset = 0) {
+    async pipelineCandidates(ctx, offset = 0, query = '', stage = '') {
       if (!Number.isInteger(offset) || offset < 0 || offset > 100000) fail("Invalid pipeline page");
+      const Entry = require('./application-entry');
+      query = require('./core').str(query, 200);
+      if (stage && !Entry.STAGES.includes(stage)) fail('Invalid Capture stage');
       const rows = await db.select("pipeline_items", {
-        org_id: "eq." + ctx.org_id, or: "(stage.eq.Qualified,stage.eq.Planning)",
+        org_id: "eq." + ctx.org_id,
+        ...(query ? {title:'ilike.%' + query.replace(/[\\%_*]/g, '\\$&') + '%'} : {}),
+        ...(stage ? {stage:'eq.' + stage} : {}),
         select: "id,title,stage,opportunity_id,updated_at", order: "updated_at.desc,id.asc", limit: 101, offset,
       });
-      return { items: rows.slice(0,100), has_more: rows.length > 100, offset };
+      const items = rows.slice(0,100), ids = [...new Set(items.map(p=>p.opportunity_id).filter(Boolean))];
+      const [opportunities, applications] = await Promise.all([
+        ids.length ? db.select('opportunities',{id:'in.(' + ids.map(id).join(',') + ')',select:'id,funding_program_id,deadline,source_active'}) : [],
+        items.length ? this.listApps(ctx) : [],
+      ]);
+      const programIds=[...new Set(opportunities.map(o=>o.funding_program_id).filter(Boolean))];
+      const programs=programIds.length?await db.select('funding_programs',{id:'in.('+programIds.map(id).join(',')+')',select:'id,source_name'}):[];
+      const Import = require('./application-import');
+      return { items: items.map(p=>{
+        const o=opportunities.find(o=>o.id===p.opportunity_id);
+        const a=applications.find(a=>a.id===Import.pipelineApplicationId(ctx.org_id,p.id)||a.pipeline_item_id===p.id||(p.opportunity_id&&a.opportunity_id===p.opportunity_id));
+        return {...p,funder_name:programs.find(f=>f.id===o?.funding_program_id)?.source_name||'',deadline:o?.deadline||null,...Entry.availability(p,o,a)};
+      }), has_more: rows.length > 100, offset, query, stage, org_id:ctx.org_id };
     },
-    async pipelineItem(ctx, pipelineId, { requireEligible = true } = {}) {
+    async pipelineItem(ctx, pipelineId, { requireEligible = true, metadataOnly = false } = {}) {
       const [item] = await db.select("pipeline_items", { org_id: "eq." + ctx.org_id, id: "eq." + id(pipelineId), limit: 1 });
       if (!item) fail("Pipeline item not found in this organization",404);
-      if (requireEligible && !["Qualified","Planning"].includes(item.stage)) fail("Import applications from Qualified or Planning.",409);
+      if(metadataOnly)return item;
+      if (requireEligible && !require('./application-entry').ACTIVE.includes(item.stage)) fail("Start applications from an active Capture stage. Completed captures keep their history.",409);
+      if (!item.opportunity_id) fail('The captured funding record is unavailable. Start a standalone grant or correct the capture record.',409);
       const [opportunity] = await db.select("opportunities", { id: "eq." + id(item.opportunity_id), limit: 1 });
       if (!opportunity) fail("The opportunity behind this pipeline item is unavailable",404);
       // Follow only the records linked to this organization's owned pipeline item.

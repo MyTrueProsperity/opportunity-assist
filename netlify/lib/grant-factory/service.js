@@ -208,6 +208,20 @@ function service(repo, ai, { dispatch = null, applicationFetch = null } = {}) {
       if (meta) Object.assign(meta, { model: r.model || null, usage: r.usage || {} });
       return r;
     });
+  async function existingApplication(ctx,appId){
+    try{const app=await repo.app(ctx,appId);if(app.content.deleted_at)C.fail('This application is in Deleted applications. Restore it there before continuing.',409);return app;}
+    catch(e){if(e.status===404)return null;throw e;}
+  }
+  async function saveNewApplication(ctx,app,brain,event){
+    try{return await repo.save(ctx,app,brain,event);}
+    catch(e){
+      // The existing RPC serializes creates and checks revision zero. A lost
+      // response or a simultaneous repeated request must not replace saved work.
+      const existing=await existingApplication(ctx,app.id);
+      if(existing)return existing;
+      throw e;
+    }
+  }
   async function importSource(ctx,brain,app,found,selection=null){
     const previous=app.content.application_import||{};
     const receipt={status:found.status,failure_code:found.failure_code||null,url:found.url,sha256:found.sha256||null,imported_at:C.now(),attempts:found.attempts,warnings:[...found.warnings],review_required:true};
@@ -662,7 +676,7 @@ function service(repo, ai, { dispatch = null, applicationFetch = null } = {}) {
         const matches = facts.filter(f => ready.has(f.id) && (!q || JSON.stringify([f.display_name, f.value, f.category, f.tags, f.source_locator]).toLowerCase().includes(q)));
         return { total: matches.length, offset, evidence: matches.slice(offset, offset + R.PAGE_LIMIT).map(ref) };
       }
-      if (action === "pipeline_candidates") return repo.pipelineCandidates(ctx,body.offset??0);
+      if (action === "pipeline_candidates") return repo.pipelineCandidates(ctx,body.offset??0,body.query??'',body.stage??'');
       // Bootstrap needs only a research summary, not every record.
       if (action === "bootstrap") {
         const brain = await repo.brain(ctx, { research: false });
@@ -916,12 +930,14 @@ function service(repo, ai, { dispatch = null, applicationFetch = null } = {}) {
         return proposeBatch(repo, call, ctx, brain, d, body);
       }
       if (action === "import_pipeline") {
-        const item=await repo.pipelineItem(ctx,body.pipeline_item_id);
+        // Saved work can be reopened after the capture moves to another stage.
+        let item=await repo.pipelineItem(ctx,body.pipeline_item_id,{metadataOnly:true});
         const appId=Import.pipelineApplicationId(ctx.org_id,item.id);
-        const existing=(await repo.listApps(ctx)).find(a=>a.id===appId||a.pipeline_item_id===item.id);
+        const existing=(await repo.listApps(ctx)).find(a=>a.id===appId||a.pipeline_item_id===item.id||(item.opportunity_id&&a.opportunity_id===item.opportunity_id));
         if(existing){if(existing.deleted_at)C.fail('This pipeline application is in Deleted applications. Restore it before reopening.',409);return repo.app(ctx,existing.id);}
-        const workflow=require('../../../assets/opportunity-workflow');
-        if(item.opportunity.source_active===false||workflow.daysUntil(item.opportunity.deadline,workflow.day(new Date(),'America/New_York'))<0)C.fail('This opportunity is closed or its deadline has passed. Verify a current cycle before importing its application.',409);
+        item=await repo.pipelineItem(ctx,body.pipeline_item_id,{requireEligible:false});
+        const available=require('./application-entry').availability(item,item.opportunity,null);
+        if(available.action!=='import')C.fail(available.explanation,409);
         const metadata=Import.metadata(item);
         const unresolved=!!item.funding_program&&!item.funding_program.canonical_program_name;
         const found=await Import.discover({...item.opportunity,application_url:metadata.source.application_url,identity_unresolved:unresolved},applicationFetch);
@@ -932,12 +948,23 @@ function service(repo, ai, { dispatch = null, applicationFetch = null } = {}) {
           application_import:null,
         },questions:[],answers:[]};
         ({brain}=await importSource(ctx,brain,app,found));
-        return repo.save(ctx,app,brain,'IMPORTED_FROM_PIPELINE');
+        return saveNewApplication(ctx,app,brain,'IMPORTED_FROM_PIPELINE');
       }
       if (action === "new_application") {
+        if(body.opportunity_id||body.pipeline_item_id)C.fail('Choose From Capture Pipeline to link a captured opportunity. Standalone grants do not use the Funding Radar list.');
+        const appId=body.creation_request_id?require('./application-entry').requestApplicationId(ctx.org_id,body.creation_request_id):C.randomUUID();
+        const existing=await existingApplication(ctx,appId);
+        if(existing)return existing;
+        const title=C.str(body.grant_program_name||'',300);
+        if(!title&&!body.source_document_id&&!body.text?.trim()&&!body.url)C.fail('Enter a grant / application name to start a workspace.');
+        const sourceCount=Number(!!body.source_document_id)+Number(!!body.text?.trim())+Number(!!body.url);
+        if(sourceCount>1)C.fail('Choose one application source: a saved document, pasted text, or an official link.');
+        const url=body.url?Import.safeUrl(C.str(body.url,2000)):null;
+        if(url&&body.source_reviewed!==true)C.fail('Confirm that the official source belongs to this grant program and cycle.');
         let source = brain.documents.find(
           (d) => d.id === body.source_document_id && C.visible(d, ctx.role),
         );
+        if(body.source_document_id&&!source)C.fail('The selected document is unavailable in this organization.',404);
         if (body.text?.trim()) {
           source = await upload(ctx, brain, {
             filename: "application.txt",
@@ -947,23 +974,26 @@ function service(repo, ai, { dispatch = null, applicationFetch = null } = {}) {
           });
           brain = await repo.brain(ctx);
         }
-        if (!source || source.extraction_status !== "COMPLETE")
-          C.fail("Upload a text-based application or paste its text first.");
-        if (!Array.isArray(source.blocks)) source = await repo.document(ctx, source.id);
-        if (source.sensitivity_level === "RESTRICTED")
-          C.fail("Restricted documents cannot be used as application sources.");
+        if(source){
+          if(source.extraction_status!=="COMPLETE")C.fail('The document is saved, but cannot yet be read. Retry reading it in Document Vault or start without a source.');
+          if(!Array.isArray(source.blocks))source=await repo.document(ctx,source.id);
+          if(source.sensitivity_level==='RESTRICTED'||source.internal_only)C.fail('Restricted or internal-only documents cannot be used as application sources.');
+        }
         const app = {
-          id: C.randomUUID(),
+          id: appId,
           org_id: ctx.org_id,
           revision: 0,
           content: {
             funder_name: C.str(body.funder_name || "", 300),
             grant_program_name: C.str(
-              body.grant_program_name || "Untitled application",
+              title || "Untitled application",
               300,
             ),
-            opportunity_id: body.opportunity_id || null,
-            source_document_id: source.id,
+            opportunity_id: null,
+            entry_path: 'STANDALONE',
+            application_cycle: C.str(body.application_cycle||'',300),
+            creation_request_id: body.creation_request_id || null,
+            source_document_id: source?.id || null,
             created_by: ctx.user_id,
             created_at: C.now(),
             status: "UPLOADED",
@@ -974,15 +1004,17 @@ function service(repo, ai, { dispatch = null, applicationFetch = null } = {}) {
           questions: [],
           answers: [],
         };
-        if (app.content.opportunity_id) {
-          C.id(app.content.opportunity_id);
-          const [opp] = await repo.db.select("opportunities", {
-            id: "eq." + app.content.opportunity_id,
-          });
-          if (!opp) C.fail("Opportunity not found");
+        if(source){
+          prepareParsed(app,P.basic(source.blocks.map(b=>({...b,source_document_id:source.id}))),brain);
+          if(!app.questions.length){const d=Import.diagnosis({failure_code:'NO_APPLICATION_FOUND'});app.content.status='NEEDS_INPUT';app.content.application_import={status:'NEEDS_SOURCE_REVIEW',failure_code:d.code,url:null,diagnosis:d,attempts:[],warnings:[d.message],review_required:true};app.content.inputs.push({id:C.randomUUID(),origin:'APPLICATION_IMPORT',status:'OPEN',prompt:d.message,reason:d.title});}
+        }else{
+          const found=await Import.discover(url?{application_url:url}:{},applicationFetch);
+          const selection=url?{url,grant_program_name:title,application_cycle:app.content.application_cycle,reviewed_by:ctx.user_id,reviewed_at:C.now()}:null;
+          ({brain}=await importSource(ctx,brain,app,found,selection));
+          if(selection)app.content.application_import.source_selection=selection;
+          if(found.status!=='PUBLIC_APPLICATION_FOUND')app.content.application_import.diagnosis=Import.diagnosis(app.content.application_import);
         }
-        prepareParsed(app, P.basic(source.blocks.map(b=>({...b,source_document_id:source.id}))), brain);
-        return repo.save(ctx, app, brain, "CREATED");
+        return saveNewApplication(ctx,app,brain,'CREATED');
       }
       if (action === "history") {
         const table = body.kind === "application" ? "gf_history" : "gf_history";

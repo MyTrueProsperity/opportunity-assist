@@ -1,5 +1,39 @@
 # Recover an application import
 
+## Start or reopen a grant
+
+In Grant Factory, choose **New application** (also available as **Start an
+application** on Start here). Choose one of these paths:
+
+- **From Capture Pipeline:** search your current organization's captured grant
+  names, or filter by stage. The list includes Ideas, Reviewing, Qualified,
+  Planning, Writing, Submitted, Awarded and Not Awarded. It does not use the
+  Funding Radar list. Select an active item to open its linked application.
+  An existing application reopens instead of creating another, even after a
+  stage change or when its old source is unavailable. Saved work is preserved.
+  Closed, expired and completed items explain why a new application cannot
+  start. Deleted applications direct you to the recoverable Deleted list.
+- **Grant not in pipeline:** name your grant, optionally enter its funder, and
+  choose an official program link, upload, saved application document, pasted
+  application, or **Add the application later**. The latter saves a named
+  **Needs input** workspace with no invented questions. Its Application source
+  card shows how to add the real application later.
+
+Starting a workspace does not change its Capture stage, qualify eligibility,
+prepare a paid AI draft, submit to a funder, or alter collection settings.
+Choosing a public link checks at most three pages and no AI allowance; a
+protected portal requires you to download the complete application yourself.
+Click **Prepare first draft** separately when the source and program are ready.
+
+Close or Back returns without saving. While saving, controls and dismissal are
+temporarily disabled to prevent repeated requests. A retry in the same open
+standalone form uses the same creation ID. If a connection is lost and you close
+the form, check **Applications** for the saved grant before starting again.
+Save answers before switching organizations. Changing organizations closes an
+idle dialog, reloads that organization's list, and discards stale responses.
+
+## Correct a source without losing work
+
 Open the existing application in Grant Factory and read **Application source**.
 The card shows the captured funder, program, cycle, deadline, verification status,
 and the URLs checked. Missing information stays **Unknown**.

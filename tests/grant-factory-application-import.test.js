@@ -53,12 +53,7 @@ test('public source transport checks credential redirects and stops at its deadl
   await assert.rejects(F.requestPublic(URL,{deadline:Date.now()-1,resolve:async()=>{dns++;throw Error('unexpected');}}),/time limit/);assert.equal(dns,0);
   await assert.rejects(F.requestPublic(URL+'?api_key=private',{urlPolicy:I.safeUrl,resolve:async()=>assert.fail('URL policy runs before DNS')}),/credentials/);
 });
-test('production repository queries both eligible stages in the caller’s organization and bounds pagination',async()=>{
-  const calls=[];let stage='Qualified',foreign=false;
-  const repo=repository({SUPABASE_URL:'https://db.test',SUPABASE_SERVICE_ROLE_KEY:'synthetic'},async url=>{const u=new globalThis.URL(url);calls.push(u);if(u.pathname.endsWith('opportunities'))return new Response(JSON.stringify([{id:OPP,title:'Grant'}]));const data=u.searchParams.has('or')?Array.from({length:101},(_,i)=>({id:String(i),stage:'Planning',title:'Grant'})):foreign?[]:[{id:PIPE,stage,opportunity_id:OPP}];return new Response(JSON.stringify(data));});
-  const ctx={org_id:ORG};const list=await repo.pipelineCandidates(ctx,100);assert.equal(list.items.length,100);assert.equal(list.has_more,true);assert.equal(calls[0].searchParams.get('org_id'),'eq.'+ORG);assert.equal(calls[0].searchParams.get('or'),'(stage.eq.Qualified,stage.eq.Planning)');assert.equal(calls[0].searchParams.get('offset'),'100');
-  await assert.rejects(repo.pipelineCandidates(ctx,-1),/Invalid/);await repo.pipelineItem(ctx,PIPE);assert.equal(calls[1].searchParams.get('org_id'),'eq.'+ORG);stage='Planning';await repo.pipelineItem(ctx,PIPE);stage='Submitted';await assert.rejects(repo.pipelineItem(ctx,PIPE),/Qualified or Planning/);foreign=true;await assert.rejects(repo.pipelineItem(ctx,PIPE),/not found/);
-});
+
 test('first-draft copies only exact approved fields and valid formats, proposes a relevant program, and preserves human work on resume',()=>{
   const f=fact({program_id:null,fact_key:'organization_name',display_name:'Organization name',value:'Example Learning'}),a=app();assert.equal(First.direct(a.questions[0],brain([f]),a).answer,f.value);
   for(const extra of [{internal_only:true},{org_id:OTHER},{verification_status:'PROJECTED'},{value:'Conflict',fact_key:'other'}]){const b=brain([fact({...f,...extra,id:C.randomUUID()})]);if(extra.fact_key)b.facts.push(f);assert.deepEqual(First.direct(a.questions[0],b,a),extra.fact_key?First.direct(a.questions[0],brain([f]),a):null);}

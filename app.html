@@ -766,7 +766,7 @@ window.OA_CONFIG = {
     if (state.view === "radar") return renderRadar(main);
       if (state.view === "foundations") return renderFoundationLeads(main);
     if (state.view === "pipeline") return renderPipeline(main);
-    if (state.view === "grant-factory") { var intent=state.grantFactoryIntent||{orgId:state.org.id}; state.grantFactoryIntent=null; return window.OAGrantFactory.mount(main,sb,state.opps,intent); }
+    if (state.view === "grant-factory") { var intent=state.grantFactoryIntent||{orgId:state.org.id}; state.grantFactoryIntent=null; return window.OAGrantFactory.mount(main,sb,[],intent); }
     if (state.view === "contracts") return renderContracts(main);
     if (state.view === "alerts") return renderAlerts(main);
     if (state.view === "assistant") return renderAssistant(main);

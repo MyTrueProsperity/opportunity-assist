@@ -153,7 +153,13 @@
     main.innerHTML =
       '<section class="gf"><p>Loading Grant Factory…</p></section>';
     async function api(action, payload = {}) {
+      const org = s.orgId, root = s.root;
+      const current = () => {
+        if(session!==s||s.orgId!==org||(root&&!root.isConnected))
+          throw Error('The organization or page changed. Reopen this action in the current workspace.');
+      };
       const auth = await sb.auth.getSession();
+      current();
       const token = auth.data.session?.access_token;
       if (!token) throw Error("Sign in again to continue.");
       let r;
@@ -163,7 +169,7 @@
           "Content-Type": "application/json",
           Authorization: "Bearer " + token,
         },
-        body: JSON.stringify({ action, org_id: s.orgId, ...payload }),
+        body: JSON.stringify({ action, ...payload, org_id: payload.org_id || org }),
       }); } catch {
         throw Object.assign(Error("The connection was interrupted. Check saved progress before trying again."), { responseLost: true });
       }
@@ -175,6 +181,7 @@
           "The server returned an unreadable response. Check the deployment and try again.",
         ), { responseLost: true });
       }
+      current();
       if (!r.ok) throw Error(data.error || "Request failed");
       return data;
     }
@@ -267,23 +274,32 @@
           : "") +
         "</form>";
       document.body.append(d);
-      d.querySelector("[data-close]").onclick = () => d.close();
+      const dialogOrg=s.orgId;
+      let saving=false;
+      d.querySelector("[data-close]").onclick = () => {if(!saving)d.close();};
+      d.addEventListener('cancel',e=>{if(saving)e.preventDefault();});
       d.addEventListener("close", () => d.remove());
       if (save)
         d.querySelector("form").onsubmit = async (e) => {
           e.preventDefault();
+          if(saving||s.busy)return;
           const form = e.currentTarget;
           const submit = form.querySelector("[type=submit]");
+          const values=new FormData(form);
+          const error=d.querySelector('[role=alert]');
+          if(session!==s||s.orgId!==dialogOrg||!s.root?.isConnected){error.hidden=false;error.textContent='The organization or page changed. Reopen this action in the current workspace.';return;}
+          saving=true;s.busy=true;error.hidden=true;
           submit.disabled = true;
+          const controls=[...form.querySelectorAll('input,select,textarea,button')].filter(c=>!c.disabled);
+          controls.forEach(c=>c.disabled=true);
           try {
-            await save(new FormData(form), form);
+            await save(values, form);
             d.close();
           } catch (e) {
-            const error = d.querySelector("[role=alert]");
             error.hidden = false;
             error.textContent = e.message;
           } finally {
-            submit.disabled = false;
+            saving=false;s.busy=false;controls.forEach(c=>c.disabled=false);submit.disabled=false;
           }
         };
       d.querySelectorAll('[data-action="history"]').forEach(
@@ -349,6 +365,9 @@
         }
         s.busy = true;
         target.disabled = true;
+        document.querySelector('#gf-dialog')?.close();
+        main.querySelector('#gf-content').innerHTML='<p role="status">Loading the selected organization…</p>';
+        message('');
         try {
           const next = await api("bootstrap", { org_id: target.value });
           s.data = next;
@@ -366,6 +385,7 @@
           render();
         } catch (e) {
           target.value = s.orgId;
+          render();
           message(e.message, true);
         } finally {
           s.busy = false;
@@ -441,14 +461,14 @@
         '<div class="gf-grid">' +
         card('1', 'Add your documents', 'Keep the originals in Document Vault. Choose Read & suggest facts to process a document. You can pause and resume without losing completed sections.', 'go-vault', 'Open Document Vault', uploaded.length + ' originals saved') +
         card('2', 'Review suggested facts', 'Compare each fact with its source. Approve accurate information for grants, keep it private, or leave it for later. Plans must stay labeled as plans.', 'go-truth', 'Review facts', ready.length + ' facts usable for drafting · ' + pending.length + ' need attention') +
-        card('3', 'Start a grant application', 'Upload or paste the funder’s actual questions. The application will guide you through choosing a program, drafting answers, checking claims, and exporting.', 'new', 'Start an application', s.data.applications.filter(a=>!a.deleted_at).length + ' active applications') + '</div>' +
+        card('3', 'Start a grant application', 'Choose a captured opportunity or start a grant that is not in your pipeline. Add the funder’s actual questions now or save a named workspace and add them later.', 'new', 'Start an application', s.data.applications.filter(a=>!a.deleted_at).length + ' active applications') + '</div>' +
         '<section class="gf-card"><h3>What does each step mean?</h3><p><strong>Saved:</strong> the original file is in your private vault. <strong>Read:</strong> its text is available. <strong>Suggested:</strong> facts have been pulled out for you to check. <strong>Ready for drafting:</strong> both the fact and its source meet the grant-use rules.</p><p>Research Library contains community statistics and research. Organization Brain contains facts about your organization. Grant Factory can use relevant approved information from both.</p><p>It prepares drafts and downloads. You make the final decisions and submit through the funder’s process.</p><details><summary>Existing setup and advanced tools</summary><p>Your saved documents, facts, programs and writing voice remain in place. The seed import is only for an initial setup or missing seed records.</p>' + (s.data.role === 'OWNER' ? btn('seed', 'Import Institute seed data') + btn('voice', 'Writing voice') : '') + '</details></section>';
     }
     function renderApplications(el) {
       const apps = s.data.applications.filter(a=>!a.deleted_at),deleted=s.data.applications.filter(a=>a.deleted_at);
       el.innerHTML =
         '<div class="gf-row"><h2>Your applications</h2>' +
-        btn("pipeline-picker", "Import from Qualified or Planning", "", true) + btn("new", "Upload / paste application") +
+        btn("new", "New application", "", true) +
         '</div><div class="gf-steps"><span>1 Import application</span><span>2 Prepare first draft</span><span>3 Review & audit</span><span>4 Approve & export</span></div>' +
         (apps.length
           ? '<div class="gf-grid">' +
@@ -920,7 +940,8 @@
       const publicLink=value=>{try{const u=new URL(value);if(!/^https?:$/.test(u.protocol)||u.username||u.password||[...u.searchParams.keys()].some(k=>/^(?:access_token|token|api_key|key|secret|session|authorization|auth|code|signature|sig)$/i.test(k)))return '';return '<a href="'+esc(u.href)+'" target="_blank" rel="noopener">Open captured source</a>';}catch{return '';}};
       const receipt=(r,retry=false)=>'<div><strong>'+esc(retry?'Latest retry: ':'')+esc(r.diagnosis?.title||label(r.status))+'</strong> '+publicLink(r.url)+(r.diagnosis?'<p>'+esc(r.diagnosis.message)+'</p>':(r.warnings||[]).map(w=>'<p class="gf-note">'+esc(w)+'</p>').join(''))+((r.attempts||[]).length?'<details open><summary>Sources checked</summary>'+r.attempts.map(x=>'<p>'+esc(x.url||'Source URL withheld')+'<br>'+esc(x.reason||label(x.code))+'</p>').join('')+'</details>':'')+'</div>';
       const source=a.source_metadata||{};
-      return '<section class="gf-card"><h3>Application source</h3>'+receipt(m)+(m.last_retry?receipt(m.last_retry,true):'')+'<p class="gf-note">Captured funder: '+esc(source.fields?.funder_name||'Unknown')+' · Program: '+esc(source.fields?.grant_program_name||'Unknown')+' · Cycle: '+esc(source.fields?.application_cycle||'Unknown')+' · Deadline: '+esc(source.fields?.deadline||'Unknown')+'</p><p class="gf-note">Source review: '+esc(label(source.review_status||'UNVERIFIED'))+' · Last verified: '+esc(source.verified_at||'Not recorded')+'</p>'+(source.warnings||[]).map(w=>'<p class="gf-note">'+esc(w)+'</p>').join('')+(!locked?btn('retry-application-import','Retry with corrected source')+btn('attach-application','Upload complete application'):'')+'<p class="gf-note">Retry checks at most three public pages. It uses no AI calls, preserves saved answers, and asks you to review changes to existing questions.</p></section>';
+      const identity=a.entry_path==='STANDALONE'?'<p class="gf-note">Standalone grant: '+esc(a.grant_program_name)+' · Funder: '+esc(a.funder_name||'Not entered')+' · Cycle: '+esc(a.application_cycle||'Not entered')+'. Compare your entries with the actual funder requirements.</p>':'<p class="gf-note">Captured funder: '+esc(source.fields?.funder_name||'Unknown')+' · Program: '+esc(source.fields?.grant_program_name||'Unknown')+' · Cycle: '+esc(source.fields?.application_cycle||'Unknown')+' · Deadline: '+esc(source.fields?.deadline||'Unknown')+'</p><p class="gf-note">Source review: '+esc(label(source.review_status||'UNVERIFIED'))+' · Last verified: '+esc(source.verified_at||'Not recorded')+'</p>';
+      return '<section class="gf-card"><h3>Application source</h3>'+receipt(m)+(m.last_retry?receipt(m.last_retry,true):'')+identity+(source.warnings||[]).map(w=>'<p class="gf-note">'+esc(w)+'</p>').join('')+(!locked?btn('retry-application-import','Retry with corrected source')+btn('attach-application','Upload complete application'):'')+'<p class="gf-note">Retry checks at most three public pages. It uses no AI calls, preserves saved answers, and asks you to review changes to existing questions.</p></section>';
     }
     function renderApplication(el) {
       const app = s.app,
@@ -1454,66 +1475,8 @@
           s.strategyWatch++;
           render();
           checkStrategy();
-        } else if (action === "new")
-          dialog(
-            "New application",
-            field("funder", "Funder name") +
-              field("title", "Grant / application name") +
-              '<label>Upload application (PDF, DOCX or text; maximum 3 MB)<input type="file" name="file" accept=".pdf,.docx,.txt"></label>' +
-              select(
-                "source",
-                "Or use an uploaded application",
-                [
-                  ["", "Select a document"],
-                  ...s.data.brain.documents
-                    .filter(
-                      (d) =>
-                        d.document_type === "GRANT_APPLICATION" &&
-                        d.extraction_status === "COMPLETE",
-                    )
-                    .map((d) => [d.id, d.title]),
-                ],
-                "",
-              ) +
-              area("text", "Or paste application text") +
-              select(
-                "opportunity",
-                "Related funding opportunity (optional)",
-                [
-                  ["", "No linked opportunity"],
-                  ...opportunities.map((o) => [o.id, o.title]),
-                ],
-                "",
-              ),
-            async (f) => {
-              let source = f.get("source");
-              const file = f.get("file");
-              if (file?.size) {
-                const payload = await filePayload(file);
-                const upload = await api("upload_document", {
-                  ...payload,
-                  title: f.get("title") || file.name,
-                  document_type: "GRANT_APPLICATION",
-                });
-                if (upload.extraction_status !== "COMPLETE")
-                  throw Error(
-                    "Original saved in the vault, but text extraction failed: " +
-                      upload.extraction_error,
-                  );
-                source = upload.id;
-              }
-              s.app = await api("new_application", {
-                funder_name: f.get("funder"),
-                grant_program_name: f.get("title"),
-                source_document_id: source,
-                text: f.get("text"),
-                opportunity_id: f.get("opportunity") || null,
-              });
-              s.tab = 'applications';
-              s.appTab = "questions";
-              await refresh();
-            },
-          );
+        } else if (action === "new") startApplication();
+        else if (action === "standalone-new") standaloneApplication();
         else if (action === "voice")
           dialog(
             "Organization writing voice",
@@ -2279,24 +2242,82 @@
         if (button?.isConnected) button.disabled = false;
       }
     }
-    async function openPipeline(itemId, draft=true) {
+    function startApplication() {
+      const d=dialog('New application','<p>How would you like to start?</p><div class="gf-entry-choices"><section class="gf-card"><h3>From Capture Pipeline</h3><p>Use a grant your organization already tracks. See its stage, check its source, or reopen its saved application.</p>'+btn('choose-capture','From Capture Pipeline','',true)+'</section><section class="gf-card"><h3>Grant not in pipeline</h3><p>Name a grant you found elsewhere. Upload, paste or link its application now, or add the source later.</p>'+btn('choose-standalone','Start a standalone grant')+'</section></div><p class="gf-note">Choosing a starting path does not draft answers or use your AI allowance.</p>',null);
+      d.querySelector('[data-action="choose-capture"]').onclick=()=>{d.close();perform('pipeline-picker');};
+      d.querySelector('[data-action="choose-standalone"]').onclick=()=>{d.close();perform('standalone-new');};
+    }
+    function standaloneApplication() {
+      const request=crypto.randomUUID();let uploadedSource=null;
+      const d=dialog('Start a standalone grant','<p>This grant will not be linked to Capture Pipeline. You can save its name now and add the complete application later.</p>'+field('funder','Funder name (if known)')+field('title','Grant / application name')+select('source_kind','Application source',[['later','Add the application later'],['link','Official program / application link'],['upload','Upload a new application file'],['saved','Use an application in Document Vault'],['paste','Paste the complete application']],'later')+'<div data-source-kind="link">'+field('url','Official application / specific program link','','url')+field('cycle','Application cycle (leave blank if unknown)')+check('source_reviewed','I checked that this link belongs to the intended grant program and cycle.')+'</div><div data-source-kind="upload"><label>Application file (PDF, DOCX or text; maximum 3 MB)<input type="file" name="file" accept=".pdf,.docx,.txt"></label></div><div data-source-kind="saved">'+select('source','Saved application',[['','Select an application document'],...s.data.brain.documents.filter(d=>d.document_type==='GRANT_APPLICATION'&&d.extraction_status==='COMPLETE'&&d.sensitivity_level!=='RESTRICTED'&&!d.internal_only).map(d=>[d.id,d.title])],'')+'</div><div data-source-kind="paste">'+area('text','Complete application questions, instructions and attachments')+'</div><p class="gf-note" data-source-help>No questions or answers will be invented. Your workspace will ask you to add the actual application before drafting.</p>'+btn('entry-back','Back to starting choices'),async f=>{
+        const title=String(f.get('title')||'').trim();if(!title)throw Error('Enter a grant / application name.');
+        const kind=f.get('source_kind'),payload={creation_request_id:request,funder_name:f.get('funder'),grant_program_name:title};
+        if(kind==='upload'){
+          const file=f.get('file');if(!file?.size)throw Error('Choose an application file, or select Add the application later.');
+          if(!uploadedSource){uploadedSource=await api('upload_document',{...await filePayload(file),title,document_type:'GRANT_APPLICATION'});}
+          if(uploadedSource.extraction_status!=='COMPLETE')throw Error('Original saved in Document Vault, but it cannot yet be read. Retry reading it there or choose Add the application later.');
+          payload.source_document_id=uploadedSource.id;
+        }else if(kind==='saved'){payload.source_document_id=f.get('source');if(!payload.source_document_id)throw Error('Select an application document.');}
+        else if(kind==='paste'){payload.text=f.get('text');if(!payload.text?.trim())throw Error('Paste the complete application, or select Add the application later.');}
+        else if(kind==='link'){payload.url=f.get('url');payload.source_reviewed=f.has('source_reviewed');payload.application_cycle=f.get('cycle');if(!payload.url)throw Error('Enter the official application link.');}
+        try{
+          s.app=await api('new_application',payload);s.strategyJob=null;s.strategyWatch++;s.tab='applications';s.appTab='questions';s.unsaved={};await refresh();
+        }catch(e){if(e.responseLost)e.message='The response was interrupted. Your workspace may already be saved. Retry here to reopen it safely, or close and check Applications before starting again.';throw e;}
+        message(s.app.questions.length?'Application saved. Compare its questions with the complete original before drafting.':'Workspace saved. Add the complete application using Application source.');
+      });
+      d.querySelector('[name="title"]').required=true;
+      const choose=d.querySelector('[name="source_kind"]');
+      const update=()=>{d.querySelectorAll('[data-source-kind]').forEach(p=>{p.hidden=p.dataset.sourceKind!==choose.value;p.querySelectorAll('input,select,textarea').forEach(c=>c.disabled=p.hidden);});};
+      choose.onchange=()=>{uploadedSource=null;update();};update();
+      d.querySelector('[name="file"]').onchange=()=>{uploadedSource=null;};
+      d.querySelector('[data-action="entry-back"]').onclick=()=>{d.close();startApplication();};
+      d.querySelector('[type="submit"]').textContent='Save and open workspace';
+    }
+    async function openPipeline(itemId, draft=false) {
       message('Finding the public application and its questions…');
       s.app=await api('import_pipeline',{pipeline_item_id:itemId});
+      s.strategyJob=null;s.strategyWatch++;
       s.tab='applications';s.appTab='questions';s.unsaved={};await refresh();
       if(draft&&s.app.questions.length&&!s.app.answers.some(a=>a.draft_text?.trim()))await prepareFirstDraft();
       else message(!s.app.questions.length?'Application workspace opened. Review the source result, then correct its link or upload the complete application.':'Application workspace opened. Your saved answers are preserved.');
     }
-    async function pipelinePicker(offset=0) {
-      const page=await api('pipeline_candidates',{offset});
-      const d=dialog('Import a pipeline application', '<p>Choose an opportunity from Qualified or Planning. OA looks for its public application and opens a linked workspace.</p>'+select('pipeline','Opportunity', [['','Select an opportunity'],...page.items.map(p=>[p.id,p.stage+' · '+p.title])])+check('draft','Prepare a first draft after import using the workspace’s AI allowance.',true)+(page.has_more?btn('pipeline-more','More opportunities',String(offset+100)):'')+'<p class="gf-note">Protected portals require you to upload or paste the full application. OA never signs in or submits an application.</p>',async f=>{
-        if(!f.get('pipeline'))throw Error('Choose an opportunity first.');
-        if(s.busy)throw Error('Finish the current action first.');
-        const itemId=f.get('pipeline'),draft=f.has('draft');
-        d.close();d.remove();
-        s.busy=true;try{await openPipeline(itemId,draft);}catch(e){message(e.message,true);}finally{s.busy=false;}
+    async function pipelinePicker() {
+      let items=[],pageOffset=0,request=0,loading=false;
+      const name=s.data.workspaces.find(w=>w.org_id===s.orgId)?.name||'this organization';
+      const d=dialog('Choose from Capture Pipeline','<p>Only opportunities tracked by <strong>'+esc(name)+'</strong> appear here. Every Capture stage is available to review. An existing application reopens with its saved work.</p>'+field('search','Search captured grant names')+select('stage','Capture stage',[['','All stages'],...['Ideas','Reviewing','Qualified','Planning','Writing','Submitted','Awarded','Not Awarded']],'')+'<div class="gf-row">'+btn('pipeline-search','Search')+'</div><p class="gf-note" data-pipeline-status role="status">Loading your Capture Pipeline…</p><div data-pipeline-results></div><div class="gf-row">'+btn('pipeline-prev','Previous page')+btn('pipeline-next','Next page')+'</div><p class="gf-note">Opening a workspace does not change the Capture stage or prepare an AI draft. If the public source is incomplete, you can correct its link or upload the full application.</p>'+btn('entry-back','Back to starting choices'),async f=>{
+        if(loading)throw Error('Wait for the Capture list to finish loading.');
+        const item=items.find(p=>p.id===f.get('pipeline'));
+        if(!item)throw Error('Select a captured opportunity first.');
+        if(item.action==='open'){
+          const r=await api('get_application',{application_id:item.application_id});s.app=r.app;s.strategyJob=null;s.strategyWatch++;s.data.brain=r.brain;s.snapshots=r.snapshots;setRefs(r.brain);s.tab='applications';s.appTab='questions';s.unsaved={};render();message('Your existing application is open. Saved work is preserved.');
+        }else if(item.action==='import')await openPipeline(item.id,false);
+        else throw Error(item.explanation);
       });
-      d.querySelector('button[type="submit"]').textContent='Import application';
-      const more=d.querySelector('[data-action="pipeline-more"]');if(more)more.onclick=()=>{d.close();pipelinePicker(offset+100).catch(e=>message(e.message,true));};
+      const submit=d.querySelector('[type="submit"]');submit.textContent='Open application';submit.disabled=true;
+      const status=d.querySelector('[data-pipeline-status]'),results=d.querySelector('[data-pipeline-results]');
+      const prev=d.querySelector('[data-action="pipeline-prev"]'),next=d.querySelector('[data-action="pipeline-next"]');prev.disabled=next.disabled=true;
+      const load=async(offset=0)=>{
+        const version=++request;loading=true;submit.disabled=true;status.textContent='Loading your Capture Pipeline…';
+        try{
+          const page=await api('pipeline_candidates',{offset,query:d.querySelector('[name="search"]').value.trim(),stage:d.querySelector('[name="stage"]').value});
+          if(!d.isConnected||version!==request)return;
+          items=page.items;pageOffset=offset;
+          status.textContent=items.length?'Showing '+(offset+1)+'–'+(offset+items.length)+' captured opportunities.':'No captured opportunities match. Change the search or stage, add a lead to Capture Pipeline, or start a standalone grant.';
+          results.innerHTML=items.map(p=>'<section class="gf-card gf-pipeline-choice"><label class="gf-check"><input type="radio" name="pipeline" value="'+esc(p.id)+'" '+(!['open','import'].includes(p.action)?'disabled':'')+'><strong>'+esc(p.title)+'</strong></label><p>'+pill(p.stage)+(p.application_status?' '+pill(p.application_status):'')+'</p><p class="gf-meta">'+esc(p.funder_name||'Funder unknown')+' · Deadline: '+esc(p.deadline||'Not recorded')+'</p><p class="gf-note">'+esc(p.explanation)+'</p>'+(p.action==='deleted'?btn('view-deleted','View deleted applications'):'')+'</section>').join('');
+          results.querySelectorAll('[name="pipeline"]').forEach(c=>c.onchange=()=>{submit.disabled=false;submit.textContent=items.find(p=>p.id===c.value)?.action==='open'?'Open existing application':'Open linked application';});
+          results.querySelectorAll('[data-action="view-deleted"]').forEach(c=>c.onclick=()=>{d.close();s.app=null;s.tab='applications';render();message('Open Deleted applications below to restore your saved workspace.');});
+          prev.disabled=offset===0;next.disabled=!page.has_more;
+        }catch(e){if(d.isConnected&&version===request){items=[];results.innerHTML='';status.textContent=e.message;prev.disabled=next.disabled=true;}}
+        finally{if(version===request)loading=false;}
+      };
+      d.querySelector('[data-action="pipeline-search"]').onclick=()=>load(0);
+      d.querySelector('[name="search"]').onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();load(0);}};
+      d.querySelector('[name="stage"]').onchange=()=>load(0);
+      prev.onclick=()=>load(Math.max(0,pageOffset-100));next.onclick=()=>load(pageOffset+100);
+      d.querySelector('[data-action="entry-back"]').onclick=()=>{d.close();startApplication();};
+      // Navigation remains available while this read-only list is loading.
+      // A closed picker ignores late responses without holding the action lock.
+      void load();
     }
     async function prepareFirstDraft() {
       try {
@@ -2349,7 +2370,7 @@
       setTimeout(() => URL.revokeObjectURL(url), 1500);
     }
     refresh().then(async()=>{
-      if(launchOptions.pipelineItemId){s.busy=true;try{await openPipeline(launchOptions.pipelineItemId,launchOptions.prepareDraft!==false);}finally{s.busy=false;}}
+      if(launchOptions.pipelineItemId){s.busy=true;try{await openPipeline(launchOptions.pipelineItemId,launchOptions.prepareDraft===true);}finally{s.busy=false;}}
     }).catch((e) => {
       if(s.data){s.firstDraftProgress=null;render();message(e.message,true);return;}
       main.innerHTML =

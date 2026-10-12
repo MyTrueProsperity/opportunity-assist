@@ -257,6 +257,11 @@
 .gf-dialog::backdrop {
   background: #0c263d70;
 }
+.gf-entry-choices { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 14px; }
+.gf-entry-choices .btn { white-space: normal; width: 100%; min-height: 44px; }
+.gf-pipeline-choice .gf-check { align-items: flex-start; }
+.gf-pipeline-choice strong { overflow-wrap: anywhere; }
+.gf-dialog input[type=radio] { flex: 0 0 auto; width: 20px; height: 20px; margin-top: 2px; }
 .gf-pre {
   white-space: pre-wrap;
   word-break: break-word;
@@ -335,6 +340,8 @@
   display: none !important;
 }
 @media (max-width: 700px) {
+  .gf-entry-choices { grid-template-columns: 1fr; }
+  .gf-dialog .btn { min-height: 44px; white-space: normal; }
   .gf-form .two {
     grid-template-columns: 1fr;
   }
