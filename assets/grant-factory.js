@@ -1359,9 +1359,9 @@
         else if(action==='foundation-matches')await foundationMatches();
         else if(action==='delete-application'||action==='restore-application'){
           const target=s.data.applications.find(a=>a.id===id);if(!target)throw Error('Application not found. Refresh the list.');
-          if(action==='delete-application')dialog('Delete application workspace','<p>Delete <strong>'+esc(target.grant_program_name)+'</strong> from active applications? Its answers, documents and history remain recoverable under Deleted applications. Your Capture Pipeline is unchanged.</p>',async()=>{
+          if(action==='delete-application'){const deletion=dialog('Delete application workspace','<p>Delete <strong>'+esc(target.grant_program_name)+'</strong> from active applications? Its answers, documents and history remain recoverable under Deleted applications. Your Capture Pipeline is unchanged.</p>',async()=>{
             await api('delete_application',{application_id:id,revision:target.revision,confirmation:'DELETE_APPLICATION_WORKSPACE'});if(s.app?.id===id){s.app=null;s.unsaved={};}s.tab='applications';await refresh();message('Application deleted. You can restore it under Deleted applications.');
-          });
+          });deletion.querySelector('[type="submit"]').textContent='Delete application';}
           else{await api('restore_application',{application_id:id,revision:target.revision});await refresh();message('Application restored with its saved answers and sources.');}
         }
         else if(action==='pipeline-picker'){
