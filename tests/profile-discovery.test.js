@@ -12,6 +12,8 @@ test("foundation shortlist uses programs/populations/keywords and evidenced geog
  assert.ok(matched[0].matched_topics.includes("financial capability"));
  assert.ok(!JSON.stringify(matched).includes("Students ages"));
  assert.deepEqual(D.topicsFor({programs:"",past_performance:"Private outcome: youth",keywords:[]}),[]);
+ assert.deepEqual(D.startingUrls({items:matched},['COMMUNITY_FOUNDATION']),[]);
+ assert.deepEqual(D.startingUrls({items:matched},['PRIVATE_FOUNDATION']),[source.source_url]);
 });
 test("profile discovery is bounded, read-only and sends no original profile prose to a provider",async()=>{
  const calls=[];const db={select:async(table,params)=>{calls.push({table,params});return[source];}};
@@ -54,6 +56,13 @@ test("manual profile-based collection uses actual matched approved URLs, stays f
     await db.patch("funding_programs",{id:"eq."+source.id},{review_status:"APPROVED"});
     await db.pg.exec("delete from org_memberships");await assert.rejects(discover(db,provider,job,fetcher),/membership changed/);assert.equal(fetches,1);
     await db.pg.query("insert into org_memberships values($1,$2)",[ORG,ACTOR]);
+    await db.patch('source_state_settings',{state_code:'eq.FL'},{categories:['COMMUNITY_FOUNDATION']});
+    await assert.rejects(discover(db,provider,job,fetcher),/No matching/);assert.equal(fetches,1);
+    await db.patch('source_state_settings',{state_code:'eq.FL'},{categories:['PRIVATE_FOUNDATION']});
+    await db.patch('organizations',{id:'eq.'+ORG},{service_areas:'Florida; New York'});
+    await db.patch('funding_programs',{id:'eq.'+source.id},{search_state:'FL',applicable_states:['NY'],geography:'New York'});
+    await assert.rejects(discover(db,provider,job,fetcher),/No matching/);assert.equal(fetches,1);
+    await db.patch('funding_programs',{id:'eq.'+source.id},{applicable_states:['FL'],geography:'Florida'});
   });
   await db.pg.exec("update source_daily_usage set pages=200");
   await assert.rejects(discover(db,provider,job,fetcher),e=>e instanceof Paused&&/budget reached/.test(e.message));assert.equal(fetches,1);

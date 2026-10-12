@@ -189,10 +189,11 @@ async function handle(event,db=createDb()) {
       if(!membership)throw new HttpError(403,'Organization membership required');
       const [profile]=await db.select('organizations',{id:'eq.'+b.organization_id,select:'id,programs,target_populations,service_areas,keywords'});
       if(!profile)throw new HttpError(404,'Organization not found');
-      const {findProfileSources}=require('../lib/source-intelligence/profile-discovery');
-      const matches=await findProfileSources(db,profile);
-      if(matches.states.length&&!matches.states.includes(b.state))throw new HttpError(409,'Choose a state in this organization’s reviewed service areas');
-      const urls=[...new Set(matches.items.filter(r=>r.geographic_match!=='Geography needs review').map(r=>r.source_url))].slice(0,3);
+      const {findProfileSources,statesFor,startingUrls}=require('../lib/source-intelligence/profile-discovery');
+      const states=statesFor(profile);
+      if(states.length&&!states.includes(b.state))throw new HttpError(409,'Choose a state in this organization’s reviewed service areas');
+      const matches=await findProfileSources(db,{...profile,service_areas:STATES[b.state]});
+      const urls=startingUrls(matches,s.categories);
       if(!urls.length)throw new HttpError(409,'No matching approved source URLs. Review the profile or source registry first.');
       // Existing manual action, existing queue and page budget. No paid provider.
       return json(202,{job:await enqueue(db,{kind:'DISCOVER',state:b.state,actor,category:cell.category,geographyId:cell.geography_id,key:'profile:'+b.organization_id+':'+b.state,payload:{coverage_id:cell.id,organization_id:b.organization_id,urls,zero_token_only:true}})});

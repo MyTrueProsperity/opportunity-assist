@@ -11,6 +11,10 @@ const TOPICS={
   "financial capability":/\bfinancial (capability|literacy|education)|\bmoney management/i,
 };
 const FOUNDATION_TYPES=["COMMUNITY_FOUNDATION_GRANT","PRIVATE_FOUNDATION_GRANT","CORPORATE_FOUNDATION_GRANT","BANK_FOUNDATION_GRANT","CREDIT_UNION_FOUNDATION_GRANT","HOSPITAL_COMMUNITY_BENEFIT_GRANT"];
+const CATEGORY_FOR={COMMUNITY_FOUNDATION_GRANT:"COMMUNITY_FOUNDATION",PRIVATE_FOUNDATION_GRANT:"PRIVATE_FOUNDATION",CORPORATE_FOUNDATION_GRANT:"CORPORATE_GIVING",BANK_FOUNDATION_GRANT:"BANK_CREDIT_UNION",CREDIT_UNION_FOUNDATION_GRANT:"BANK_CREDIT_UNION",HOSPITAL_COMMUNITY_BENEFIT_GRANT:"HOSPITAL_HEALTH"};
+function startingUrls(matches,categories){
+  return [...new Set(matches.items.filter(r=>r.geographic_match!=="Geography needs review"&&categories.includes(CATEGORY_FOR[r.source_type])).map(r=>r.source_url))].slice(0,3);
+}
 function topicsFor(profile){
   const text=[profile.programs,profile.target_populations,...(Array.isArray(profile.keywords)?profile.keywords:[])].join(" ");
   return Object.entries(TOPICS).filter(([,pattern])=>pattern.test(text)).map(([topic])=>topic);
@@ -31,7 +35,7 @@ function rankSources(profile,rows){
       const national=!evidencedStates.length&&!geoStates.length&&/\bnationwide|\bnational|\bunited states|\ball states\b/i.test(r.geography||"");
       if (!matched.length || (states.length&&!regional&&!national&&(evidencedStates.length||geoStates.length))) return null;
       let url;try{url=new URL(r.source_url);if(!["http:","https:"].includes(url.protocol)||url.username||url.password)return null;}catch{return null;}
-      return {id:r.id,source_name:r.source_name,program_name:r.canonical_program_name,source_url:url.href,
+      return {id:r.id,source_name:r.source_name,program_name:r.canonical_program_name,source_url:url.href,source_type:r.source_type,
         current_status:r.current_status,last_verified_at:r.last_verified_at||null,matched_topics:matched,
         geographic_match:regional?"State match":national?"National source":"Geography needs review",
         score:matched.length*3+(regional?2:national?1:0)};
@@ -47,4 +51,4 @@ async function findProfileSources(db,profile){
   const rows=await db.select("funding_programs",params);
   return {items:rankSources(profile,rows.slice(0,400)).slice(0,20),topics,states,examined:Math.min(rows.length,400),limited:rows.length>400,paid_calls:0};
 }
-module.exports={topicsFor,statesFor,rankSources,findProfileSources};
+module.exports={topicsFor,statesFor,rankSources,findProfileSources,startingUrls};
