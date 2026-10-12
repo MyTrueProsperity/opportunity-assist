@@ -14,10 +14,11 @@ create table funder_watchlist(id bigint primary key,name text,url text,created_a
  function where(params,args,alias='t'){
    function one(k,v){const dot=v.indexOf('.'),op=v.slice(0,dot),value=v.slice(dot+1),col=alias+'.'+ident(k);
      if(op==='is')return col+(value==='null'?' is null':value==='true'?' is true':' is false');
+     if(op==='ov'){args.push(value);return col+' && $'+args.length+'::text[]';}
      if(op==='in'){const list=value.slice(1,-1).split(',').filter(Boolean);if(!list.length)return 'false';return col+' in ('+list.map(x=>{args.push(x);return '$'+args.length;}).join(',')+')';}
      const ops={eq:'=',gt:'>',gte:'>=',lt:'<',lte:'<=',ilike:'ilike'};if(!ops[op])throw new Error('Unsupported test filter '+op);args.push(op==='ilike'?value.replace(/\*/g,'%'):value);return col+' '+ops[op]+' $'+args.length;
    }
-   const filters=[];for(const [k,v]of Object.entries(params)){if(['select','order','offset','limit'].includes(k))continue;if(k==='or'){const parts=String(v).slice(1,-1).match(/[^,]+\.in\.\([^)]*\)|[^,]+/g)||[];filters.push('('+parts.map(p=>{const i=p.indexOf('.');return one(p.slice(0,i),p.slice(i+1));}).join(' or ')+')');}else filters.push(one(k,String(v)));}
+   const filters=[];for(const [k,v]of Object.entries(params)){if(['select','order','offset','limit'].includes(k))continue;if(k==='or'){const parts=String(v).slice(1,-1).match(/[^,]+\.in\.\([^)]*\)|[^,]+\.ov\.\{[^}]*\}|[^,]+/g)||[];filters.push('('+parts.map(p=>{const i=p.indexOf('.');return one(p.slice(0,i),p.slice(i+1));}).join(' or ')+')');}else filters.push(one(k,String(v)));}
    return filters.length?' where '+filters.join(' and '):'';
  }
  const db={pg,actor:ACTOR,async admin(event){if(event.headers?.authorization!=='Bearer local-test')throw Object.assign(new Error('Administrator access required'),{status:403});return ACTOR;},

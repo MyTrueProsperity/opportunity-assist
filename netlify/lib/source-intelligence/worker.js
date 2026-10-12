@@ -98,6 +98,24 @@ async function inspect(db,provider,job,url,name,program,fetcher=fetchPage) {
   }
 }
 async function discover(db,provider,job,fetcher) {
+  if(job.payload.organization_id){
+    const settings=await gate(db,job,'discovery');
+    // Re-rank current approved sources at execution, without putting any
+    // organization facts in shared source/candidate history or search queries.
+    const [run]=await db.select('source_discovery_runs',{id:'eq.'+job.run_id,select:'requested_by'});
+    const [member]=await db.select('org_memberships',{org_id:'eq.'+job.payload.organization_id,user_id:'eq.'+run?.requested_by,select:'org_id'});
+    if(!member)throw new Paused('Organization membership changed; review this discovery request');
+    const [profile]=await db.select('organizations',{id:'eq.'+job.payload.organization_id,select:'id,programs,target_populations,service_areas,keywords'});
+    if(!profile)throw new Paused('Organization profile unavailable');
+    const {findProfileSources,statesFor,startingUrls}=require('./profile-discovery');
+    const states=statesFor(profile);
+    if(states.length&&!states.includes(job.state_code))throw new Paused('Organization service areas changed; review the discovery state');
+    const matches=await findProfileSources(db,{...profile,service_areas:STATES[job.state_code]});
+    const urls=startingUrls(matches,settings.categories);
+    if(!urls.length)throw new Paused('No matching approved source URLs; review the organization profile');
+    job={...job,payload:{...job.payload,urls}};provider=null;
+  }
+  if(job.payload.zero_token_only)provider=null;
   if(!provider){
     await gate(db,job,'discovery');
     const urls=job.payload.urls;

@@ -160,7 +160,7 @@ label{display:block;font-weight:600;font-size:.85rem;margin:0 0 .3rem;color:var(
   <link rel="stylesheet" href="/assets/grant-factory.css?v=20260923">
   <script src="/assets/grant-factory-limits.js?v=20260917"></script>
   <script src="/assets/grant-factory-reading.js?v=20260923"></script>
-  <script src="/assets/grant-factory.js?v=20261011a"></script>
+  <script src="/assets/grant-factory.js?v=20261011b"></script>
   <script src="/assets/matching.js?v=20260925"></script>
   <script>
 // Opportunity Assist — Supabase client config
@@ -207,6 +207,14 @@ window.OA_CONFIG = {
     fincapShares: {}      // opportunity_id -> {status, needs_review}: this org's Pass & Share requests
   };
 
+  window.addEventListener('oa:search-profile-updated', function (event) {
+    var orgId=event.detail && event.detail.orgId;
+    if(!state.org || state.org.id!==orgId) return;
+    sb.from('organizations').select('*').eq('id',orgId).single().then(function(r){
+      if(!r.error && state.org && state.org.id===orgId){state.org=r.data;state.fit={};}
+    });
+    // Scores are invalidated; this review does not initiate paid scoring.
+  });
   // Stripe Payment Links -- fill these in once created in the Stripe Dashboard.
   // Each link should have "client_reference_id" and "prefilled_email" passed as
   // URL params at click time (handled in billingLinkFor() below) so the webhook
@@ -1613,8 +1621,28 @@ window.OA_CONFIG = {
     });
     main.innerHTML =
       '<div class="topbar"><div><h1>Foundation Leads</h1><p class="sub">Website-sourced opportunities from the shared Funding Radar, with per-organization Fit Scoring.</p></div></div>' +
-      '<div class="card" style="margin-bottom:18px"><p class="hint" style="margin:0">Claude reads each funder\u2019s page directly and reports what it finds \u2014 genuinely useful, but not the same as an official government posting. \u201cVerified\u201d means the exact deadline or amount text was found on the page; unverified means double-check before you rely on it.</p></div>' +
+      '<div class="card" style="margin-bottom:18px"><p class="hint">Sources are reviewed and monitored within the existing limits. Check the official application, current dates and eligibility before pursuing a lead.</p><button class="btn btn-ghost btn-sm" id="foundationProfileBtn">Find sources matching our profile — free</button><div id="foundationProfileMatches"></div></div>' +
       (state.foundationLeads.length ? '<div class="opp-list" id="foundationList"></div>' : '<div class="empty">No current foundation opportunities. Approved sources are monitored according to the Admin state settings.</div>');
+    main.querySelector('#foundationProfileBtn').onclick=async function(){
+      var button=this,box=main.querySelector('#foundationProfileMatches'),orgId=state.org.id;button.disabled=true;
+      try{
+        var session=await sb.auth.getSession();
+        var response=await fetch('/.netlify/functions/grant-factory',{method:'POST',headers:{'Content-Type':'application/json',Authorization:'Bearer '+session.data.session.access_token},body:JSON.stringify({action:'foundation_profile_matches',org_id:orgId})});
+        var data=await response.json();if(!response.ok)throw Error(data.error||'Could not load matching sources.');
+        if(!main.isConnected||state.org.id!==orgId)return;
+        box.innerHTML='<p>Matching topics: '+esc(data.topics.join(', ')||'None — review your search profile')+'. No AI call or live search.</p>'+data.items.map(function(r){return '<p><a href="'+esc(r.source_url)+'" target="_blank" rel="noopener">'+esc(r.source_name)+'</a> — '+esc(r.matched_topics.join(', '))+' · '+esc(r.geographic_match)+' · '+esc(r.current_status||'Check status')+'</p>';}).join('')+(!data.items.length?'<p>No matches in this bounded lookup.</p>':'')+'<p class="hint">Leads require eligibility and application review. '+data.examined+' approved sources checked'+(data.limited?' (lookup limit reached)':'')+'.</p>'+(state.isAdmin&&data.items.length&&data.states.length?'<label>Discovery state <select id="foundationDiscoveryState">'+data.states.map(function(s){return '<option>'+esc(s)+'</option>';}).join('')+'</select></label> <button class="btn btn-ghost btn-sm" id="foundationCollectBtn">Collect from matching sources — free</button><p class="hint">Queue up to three approved starting URLs. Uses the existing engine, state and daily page limits. Does not enable research or publish new candidates.</p><div id="foundationCollectStatus" role="status"></div>':'');
+        var collect=box.querySelector('#foundationCollectBtn');if(collect)collect.onclick=async function(){
+          var status=box.querySelector('#foundationCollectStatus');collect.disabled=true;
+          try{
+            if(state.org.id!==orgId)throw Error('Organization changed. Refresh the source lookup.');
+            var current=await sb.auth.getSession();
+            var queued=await fetch('/.netlify/functions/source-intelligence-admin',{method:'POST',headers:{'Content-Type':'application/json',Authorization:'Bearer '+current.data.session.access_token},body:JSON.stringify({action:'discover',state:box.querySelector('#foundationDiscoveryState').value,organization_id:orgId})});
+            var result=await queued.json();if(!queued.ok)throw Error(result.error||'Could not queue collection.');
+            status.textContent='Collection queued under the existing limits. New findings still require source review.';
+          }catch(e){status.textContent=e.message;}finally{collect.disabled=false;}
+        };
+      }catch(e){if(box.isConnected)box.textContent=e.message;}finally{button.disabled=false;}
+    };
     if (state.foundationLeads.length) {
       var wrap = main.querySelector("#foundationList");
       state.foundationLeads.forEach(function (lead) { wrap.appendChild(foundationRow(lead)); });
