@@ -1129,8 +1129,11 @@ function service(repo, ai, { dispatch = null, applicationFetch = null } = {}) {
         const packet=await Guidance.load(repo,ctx,brain,app,null,q);a.guidance_trace=Guidance.assess(packet,app,brain,q,a.draft_text,body.assessments,ctx);
       }else if(action==='find_funder_history'){
         if(app.content.funder_history?.status&& !body.refresh_confirmed)return Feedback.visible(app,brain,ctx.role);
-        let url=app.content.application_import?.url;
-        if(app.content.opportunity_id){const [opp]=await repo.db.select('opportunities',{id:'eq.'+C.id(app.content.opportunity_id),limit:1});url=opp?.source_url||url;}
+        // An accepted corrected source takes precedence over a stale capture.
+        // Failed retry selections never replace the accepted source identity.
+        let url=Import.publicUrl(app.content.source_identity_review?.url);
+        if(!url&&app.content.opportunity_id){const [opp]=await repo.db.select('opportunities',{id:'eq.'+C.id(app.content.opportunity_id),limit:1});url=Import.publicUrl(opp?.source_url);}
+        url=url||Import.publicUrl(app.content.application_import?.url);
         if(body.url)url=Import.safeUrl(C.str(body.url,2000));
         const found=url?await History.discover(url,applicationFetch):{sources:[],attempts:[{url:null,reason:'Add the official funder page or upload an award history document.'}]};
         const sources=[];
