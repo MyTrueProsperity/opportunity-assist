@@ -26,7 +26,7 @@ Bill's [shared Young Futures questions](https://chatgpt.com/share/6ac84f46-e720-
 
 ## Database prerequisite and rollout
 
-The atomic transfer RPC is versioned in [20261012025223_organization_search_profile.sql](../supabase/migrations/20261012025223_organization_search_profile.sql), generated with Supabase CLI 2.120.0. It updates the existing Organization row and writes provenance to existing `gf_history` in one transaction, using workspace/profile locks and optimistic comparisons. It is SECURITY INVOKER and executable only by the existing server service role; it additionally requires GF executive + OA organization membership. It does not expand browser permissions or alter existing RLS policies.
+The atomic transfer RPC is versioned in [20261012025458_organization_search_profile.sql](../supabase/migrations/20261012025458_organization_search_profile.sql), generated with Supabase CLI 2.120.0. It updates the existing Organization row and writes provenance to existing `gf_history` in one transaction, using workspace/profile locks and optimistic comparisons. It is SECURITY INVOKER and executable only by the existing server service role; it additionally requires GF executive + OA organization membership. It does not expand browser permissions or alter existing RLS policies.
 
 Install that migration before publishing the application code. It replaces the original review proposal and requests a Data API schema-cache refresh. The transfer tests load the exact migration, including its role permissions and idempotent function definition. If code runs before the RPC is installed, transfer returns a clear setup-needed error with no profile writes. Cached matching and manual collection use existing schema.
 

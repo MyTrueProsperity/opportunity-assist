@@ -1,2 +1,2 @@
--- Superseded by ../../supabase/migrations/20261012025223_organization_search_profile.sql.
+-- Superseded by ../../supabase/migrations/20261012025458_organization_search_profile.sql.
 -- Tests and deployments use that CLI-generated migration as the canonical SQL.
