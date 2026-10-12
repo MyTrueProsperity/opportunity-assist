@@ -298,7 +298,7 @@
         b = d.brain;
       const pending = b.facts.filter(f => !f.research && !allowed(f) && !f.internal_only && !["INTERNAL_ONLY", "SUPERSEDED"].includes(f.verification_status)).length;
       main.innerHTML =
-        '<section class="gf"><header class="gf-head"><div><div class="gf-eyebrow">Opportunity Assist / Funding operations</div><h1>Grant Factory</h1><p class="gf-sub">Add your documents. Review the facts. Build your grant application.</p></div><div>' +
+        '<section class="gf"><header class="gf-head"><div><div class="gf-eyebrow">Opportunity Assist / Grant applications</div><h1>Grant Factory</h1><p class="gf-sub">Build persuasive applications from the funder’s requirements and your organization’s documented strengths.</p></div><div>' +
         '<label>Organization<select id="gf-workspace" aria-label="Grant Factory organization">' +
         options(
           d.workspaces.map((w) => [w.org_id, w.name]),
@@ -381,6 +381,7 @@
       else if (s.tab === "research") renderResearch(content);
       else if (s.tab === "vault") renderVault(content);
       else renderInputs(content);
+      if (!s.app || s.tab !== 'applications') content.insertAdjacentHTML('afterbegin', pageGuide('gf-' + s.tab));
       main.querySelectorAll("[data-tab]").forEach(
         (b) =>
           (b.onclick = () => {
@@ -427,6 +428,7 @@
           }),
       );
     }
+    function pageGuide(key) { return window.OAPageGuidance ? window.OAPageGuidance.render(key) : ''; }
     function renderStart(el) {
       const brain = s.data.brain;
       const uploaded = brain.documents.filter(d => d.storage_path);
@@ -434,7 +436,7 @@
       const ready = brain.facts.filter(f => !f.research && allowed(f));
       const pending = brain.facts.filter(f => !f.research && !allowed(f) && !f.internal_only && !["INTERNAL_ONLY", "SUPERSEDED"].includes(f.verification_status));
       const card = (number, title, text, action, button, detail) => '<article class="gf-card gf-start-card"><span class="gf-step-number">' + number + '</span><h3>' + title + '</h3><p>' + text + '</p><p class="gf-meta">' + detail + '</p>' + btn(action, button, "", true) + '</article>';
-      el.innerHTML = '<section class="gf-welcome"><div class="gf-eyebrow">Your next steps</div><h2>Start with what you already have.</h2><p>Upload a business plan, impact report, or other source document. Grant Factory reads it in sections and suggests facts. You check those suggestions before they can appear in a grant.</p><p><strong>You do not need to enter every fact by hand or finish the whole library before starting an application.</strong></p></section>' +
+      el.innerHTML = '<section class="gf-welcome"><h2>Start with what you already have.</h2></section>' +
         (failed.length ? '<div class="gf-callout"><h3>' + failed.length + ' saved document' + (failed.length === 1 ? ' needs' : 's need') + ' another reading attempt</h3><p>Your original files are safe. Long documents are now supported up to 1,000,000 characters; there is no need to split a supported document yourself.</p>' + failed.map(d => '<p>' + esc(d.title) + ' ' + btn('prepare-document', 'Read saved document', d.id) + '</p>').join('') + '</div>' : '') +
         '<div class="gf-grid">' +
         card('1', 'Add your documents', 'Keep the originals in Document Vault. Choose Read & suggest facts to process a document. You can pause and resume without losing completed sections.', 'go-vault', 'Open Document Vault', uploaded.length + ' originals saved') +
@@ -518,7 +520,7 @@
       el.innerHTML =
         '<div class="gf-row"><div><h2>' +
         (s.tab === "truth" ? "Truth Review" : "Organization Brain") +
-        '</h2><p class="gf-note">Check a fact against its source, then choose whether it can be used in grants. You can leave unrelated gaps for later. Planned programs remain plans.</p></div>' +
+        '</h2></div>' +
         btn("fact", "Add fact", "", true) +
         (s.data.role === "OWNER" ? btn("voice", "Writing voice") + btn("search-profile", "Review search profile") : "") + btn("foundation-matches", "Find matching foundations") +
         '</div>' + (s.reviewDocument ? '<p>Showing facts from one document. ' + btn('go-truth', 'Show all facts') + '</p>' : '') + '<input id="gf-search" class="gf-search" aria-label="Search organization facts" placeholder="Search enrollment, John Doe, theater, board…" value="' +
@@ -753,7 +755,7 @@
     }
     function renderResearch(el) {
       const summary = s.data.brain.research || { packages: [], counts: {} };
-      const head = '<div class="gf-row"><div><h2>Research Library</h2><p class="gf-note">Community context and intervention research. Only verified records are eligible for drafting. Every claim still requires review.</p></div></div>';
+      const head = '<div class="gf-row"><div><h2>Research Library</h2></div></div>';
       if (!summary.packages.length) {
         el.innerHTML = head + '<p>No active research package is assigned to this workspace.</p>' + methodologyCards();
         return;
@@ -831,7 +833,7 @@
       const uploaded = documents.filter(d => d.storage_path);
       const checklist = documents.filter(d => !d.storage_path);
       el.innerHTML =
-        '<div class="gf-row"><div><h2>Document Vault</h2><p class="gf-note">1. Upload a file. 2. Read & suggest facts. 3. Review those facts. Your original stays private.</p></div>' +
+        '<div class="gf-row"><div><h2>Document Vault</h2></div>' +
         btn("upload", "Upload document", "", true) +
         '</div><p class="gf-note">PDF, Word (DOCX), or text · up to 3 MB per file · long documents up to 1,000,000 characters and 500 PDF pages. Large documents are read in small sections with saved progress.</p><input id="gf-search" class="gf-search" aria-label="Search documents" placeholder="Find a saved document…" value="' + esc(s.query) + '"><div class="gf-card gf-scroll"><table><thead><tr><th>Your saved documents</th><th>Reading progress</th><th>Suggested facts</th><th>Next step</th></tr></thead><tbody>' +
         uploaded
@@ -857,7 +859,7 @@
         (a.inputs || []).some((i) => i.status !== "RESOLVED"),
       );
       el.innerHTML =
-        '<h2>Needs My Input</h2><p class="gf-note">Your response can be used only for one application or saved to the Organization Brain. New information needs approval before drafting uses it.</p>' +
+        '<h2>Needs My Input</h2>' +
         apps
           .map(
             (a) =>
@@ -1253,6 +1255,7 @@
           btn("history", "View edit history", app.id) +
           "</div>";
       }
+      box.insertAdjacentHTML('afterbegin', pageGuide('gf-app-' + s.appTab));
     }
     async function prepareDocument(id) {
       // Progress checks use the lightweight status, never the full extracted text.

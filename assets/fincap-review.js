@@ -221,6 +221,7 @@
     main.innerHTML = '<div class="topbar"><div><h1>FinCap Review</h1><p class="sub">Grants passed by an organization and offered to NationalFinCap.org. Nothing is public until you approve it.</p></div></div>' +
       '<div class="row" role="group" aria-label="Review views" style="gap:6px;flex-wrap:wrap;margin-bottom:12px">' +
       TABS.map(function (t) { return '<button class="btn ' + (t[0] === tab ? 'btn-primary' : 'btn-ghost') + ' btn-sm" data-t="' + t[0] + '" aria-pressed="' + (t[0] === tab) + '">' + t[1] + '</button>'; }).join('') + '</div>' +
+      (window.OAPageGuidance ? window.OAPageGuidance.render('fincap-' + tab) : '') +
       '<p class="warn-note" id="fc-notice" role="status" hidden></p><div id="fc-list"></div>';
     main.querySelectorAll('[data-t]').forEach(function (b) { b.addEventListener('click', function () { tab = b.getAttribute('data-t'); mount(main, sb); }); });
     if (tab === 'newsletter') drawNewsletter(); else load();
