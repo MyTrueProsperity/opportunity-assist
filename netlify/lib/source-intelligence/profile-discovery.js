@@ -12,8 +12,8 @@ const TOPICS={
 };
 const FOUNDATION_TYPES=["COMMUNITY_FOUNDATION_GRANT","PRIVATE_FOUNDATION_GRANT","CORPORATE_FOUNDATION_GRANT","BANK_FOUNDATION_GRANT","CREDIT_UNION_FOUNDATION_GRANT","HOSPITAL_COMMUNITY_BENEFIT_GRANT"];
 const CATEGORY_FOR={COMMUNITY_FOUNDATION_GRANT:"COMMUNITY_FOUNDATION",PRIVATE_FOUNDATION_GRANT:"PRIVATE_FOUNDATION",CORPORATE_FOUNDATION_GRANT:"CORPORATE_GIVING",BANK_FOUNDATION_GRANT:"BANK_CREDIT_UNION",CREDIT_UNION_FOUNDATION_GRANT:"BANK_CREDIT_UNION",HOSPITAL_COMMUNITY_BENEFIT_GRANT:"HOSPITAL_HEALTH"};
-function startingUrls(matches,categories){
-  return [...new Set(matches.items.filter(r=>r.geographic_match!=="Geography needs review"&&categories.includes(CATEGORY_FOR[r.source_type])).map(r=>r.source_url))].slice(0,3);
+function startingUrls(matches,categories,sourceIds=null){
+  return [...new Set(matches.items.filter(r=>(!sourceIds||sourceIds.includes(r.id))&&r.geographic_match!=="Geography needs review"&&categories.includes(CATEGORY_FOR[r.source_type])).map(r=>r.source_url))].slice(0,3);
 }
 function topicsFor(profile){
   const text=[profile.programs,profile.target_populations,...(Array.isArray(profile.keywords)?profile.keywords:[])].join(" ");
@@ -49,6 +49,12 @@ async function findProfileSources(db,profile){
     order:"last_verified_at.desc.nullslast,id.asc",limit:401};
   if(states.length)params.or="(search_state.in.("+states.join(",")+"),applicable_states.ov.{"+states.join(",")+"},"+states.map(s=>"geography.ilike.*"+STATES[s]+"*").join(",")+",geography.ilike.*national*,geography.ilike.*nationwide*,geography.ilike.*all states*,geography.ilike.*United States*)";
   const rows=await db.select("funding_programs",params);
-  return {items:rankSources(profile,rows.slice(0,400)).slice(0,20),topics,states,examined:Math.min(rows.length,400),limited:rows.length>400,paid_calls:0};
+  const items=rankSources(profile,rows.slice(0,400)).slice(0,20);
+  if(items.length){
+    const W=require('../../../assets/opportunity-workflow'),asOf=W.day(new Date(),'America/New_York');
+    const opportunities=await db.select('opportunities',{funding_program_id:'in.('+items.map(r=>r.id).join(',')+')',select:'id,title,funding_program_id,deadline,geography,source_url,source_active,source_cycle_id',order:'deadline.asc.nullslast,id.asc',limit:201});
+    for(const item of items)item.opportunities=opportunities.filter(o=>o.funding_program_id===item.id&&W.current(profile,o,null,asOf)).slice(0,5).map(({id,title,deadline,source_url})=>({id,title,deadline,source_url}));
+  }
+  return {items,topics,states,examined:Math.min(rows.length,400),limited:rows.length>400,paid_calls:0};
 }
 module.exports={topicsFor,statesFor,rankSources,findProfileSources,startingUrls};

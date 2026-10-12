@@ -3,7 +3,7 @@ const {createDb,HttpError}=require('../lib/source-intelligence/db');
 const {STATES,CATEGORIES,SOURCE_TYPES,REASONS}=require('../lib/source-intelligence/config');
 const {parsePipe,parseJson,exportRegistry}=require('../lib/source-intelligence/imports');
 const {uuid,registry,enqueue,reviewPayload,publish}=require('../lib/source-intelligence/service');
-const {normalizeUrl,compareCandidate}=require('../lib/source-intelligence/identity');
+const {normalizeUrl,compareCandidate,hash}=require('../lib/source-intelligence/identity');
 const json=(statusCode,data)=>({statusCode,headers:{'Content-Type':'application/json','Cache-Control':'no-store'},body:JSON.stringify(data)});
 // The Trusted External Ingestion API's TRUSTED_AUTOMATION mode (see
 // netlify/functions/source-intelligence-import.js) requires a credential to
@@ -172,6 +172,7 @@ async function handle(event,db=createDb()) {
     return json(200,{ok:true,permissions:row.permissions});
   }
   if(b.action==='discover'){
+    if(b.source_ids!==undefined&&!b.organization_id)throw new HttpError(400,'Selected-source collection requires an organization');
     checkState(b.state);const [s]=await db.select('source_state_settings',{state_code:'eq.'+b.state});const [e]=await db.select('source_engine_settings',{id:'eq.true'});
     if(!e.seed_completed_at)throw new HttpError(409,'Import and reconcile the existing corpus first');
     if(!e.engine_enabled||!s?.discovery_enabled||(b.state!=='FL'&&!e.florida_validated_at))throw new HttpError(409,'Enable the engine and this state first');
@@ -193,10 +194,13 @@ async function handle(event,db=createDb()) {
       const states=statesFor(profile);
       if(states.length&&!states.includes(b.state))throw new HttpError(409,'Choose a state in this organization’s reviewed service areas');
       const matches=await findProfileSources(db,{...profile,service_areas:STATES[b.state]});
-      const urls=startingUrls(matches,s.categories);
+      const ids=b.source_ids;
+      if(ids!==undefined&&(!Array.isArray(ids)||!ids.length||ids.length>3||ids.some(id=>!uuid(id))||new Set(ids).size!==ids.length))throw new HttpError(400,'Select one to three valid source IDs');
+      if(ids&&ids.some(id=>!matches.items.some(r=>r.id===id)))throw new HttpError(409,'A selected source no longer matches the approved profile. Refresh the source list.');
+      const urls=startingUrls(matches,s.categories,ids);
       if(!urls.length)throw new HttpError(409,'No matching approved source URLs. Review the profile or source registry first.');
       // Existing manual action, existing queue and page budget. No paid provider.
-      return json(202,{job:await enqueue(db,{kind:'DISCOVER',state:b.state,actor,category:cell.category,geographyId:cell.geography_id,key:'profile:'+b.organization_id+':'+b.state,payload:{coverage_id:cell.id,organization_id:b.organization_id,urls,zero_token_only:true}})});
+      return json(202,{job:await enqueue(db,{kind:'DISCOVER',state:b.state,actor,category:cell.category,geographyId:cell.geography_id,key:'profile:'+b.organization_id+':'+b.state+(ids?':'+hash([...ids].sort()).slice(0,16):''),payload:{coverage_id:cell.id,organization_id:b.organization_id,urls,...(ids?{source_ids:ids}:{}),zero_token_only:true}})});
     }
     return json(202,{job:await enqueue(db,{kind:'DISCOVER',state:b.state,actor,cleanRoom:b.clean_room===true,category:cell.category,geographyId:cell.geography_id,key:'coverage:'+cell.id,payload:{coverage_id:cell.id}})});
   }

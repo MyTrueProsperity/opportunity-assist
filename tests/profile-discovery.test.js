@@ -17,9 +17,9 @@ test("foundation shortlist uses programs/populations/keywords and evidenced geog
 });
 test("profile discovery is bounded, read-only and sends no original profile prose to a provider",async()=>{
  const calls=[];const db={select:async(table,params)=>{calls.push({table,params});return[source];}};
- const result=await D.findProfileSources(db,profile);assert.equal(result.paid_calls,0);assert.equal(result.items.length,1);assert.equal(calls.length,1);
+ const result=await D.findProfileSources(db,profile);assert.equal(result.paid_calls,0);assert.equal(result.items.length,1);assert.equal(calls.length,2);
  assert.equal(calls[0].params.limit,401);assert.ok(!JSON.stringify(calls).includes("independent thinking"));
- assert.equal((await D.findProfileSources(db,{programs:""})).examined,0);assert.equal(calls.length,1);
+ assert.equal((await D.findProfileSources(db,{programs:""})).examined,0);assert.equal(calls.length,2);
 });
 test("manual profile-based collection uses actual matched approved URLs, stays free, stages findings and respects quotas",async t=>{
  const db=await localDb();try{
@@ -40,6 +40,12 @@ test("manual profile-based collection uses actual matched approved URLs, stays f
     await assert.rejects(handle({...event,body:JSON.stringify({action:"discover",state:"FL",organization_id:"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"})},db),/membership/);
   });
   let job=await request();assert.equal(job.payload.zero_token_only,true);assert.deepEqual(job.payload.urls,[source.source_url]);
+  const selectedEvent={...event,body:JSON.stringify({action:'discover',state:'FL',organization_id:ORG,source_ids:[source.id]})};
+  const selected=JSON.parse((await handle(selectedEvent,db)).body).job;assert.deepEqual(selected.payload.source_ids,[source.id]);assert.deepEqual(selected.payload.urls,[source.source_url]);assert.equal(selected.payload.zero_token_only,true);
+  assert.equal(JSON.parse((await handle(selectedEvent,db)).body).job.id,selected.id);
+  await assert.rejects(handle({...event,body:JSON.stringify({action:'discover',state:'FL',organization_id:ORG,source_ids:['bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb']})},db),/no longer matches/);
+  await assert.rejects(handle({...event,body:JSON.stringify({action:'discover',state:'FL',organization_id:ORG,source_ids:[source.id,source.id]})},db),/valid source IDs/);
+  await db.pg.query('delete from source_jobs where id=$1',[selected.id]);
   assert.equal((await request()).id,job.id);assert.equal((await db.select("source_jobs")).length,1);
   const provider={search(){throw Error("Paid search called");},extract(){throw Error("Paid extraction called");}};
   const raw=JSON.stringify({opportunities:[{title:"Youth Education Grant",url:"https://example.org/grant/1",agency:"Public Youth Foundation",description:"Youth education funding. Applications are now open.",deadline:"2027-06-01",eligibility:"Nonprofit organizations",geography:"Florida",amount:{minValue:1000,maxValue:5000}}]});

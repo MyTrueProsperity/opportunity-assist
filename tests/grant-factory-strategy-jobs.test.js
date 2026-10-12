@@ -47,6 +47,18 @@ const status = async (ctx = f.ctx) => (await s.handle(ctx, { action: "strategy_s
 const jobRow = async (id) => (await f.pg.query("select * from gf_strategy_jobs where id=$1", [id])).rows[0];
 const aiRuns = async () => (await f.pg.query("select task,status,input_tokens,output_tokens,error,created_at from gf_ai_runs where org_id=$1 order by created_at", [f.ORG])).rows;
 const reset = async () => { ai.behavior = null; dispatched.length = 0; await f.pg.query("delete from gf_strategy_jobs"); };
+test('a queued strategy cannot spend AI allowance or overwrite a recoverably deleted workspace',async()=>{
+  await reset();let a=await s.handle(f.ctx,{action:'new_application',grant_program_name:'Disposable planning draft',text:'1. Describe youth work.'});
+  a=await s.handle(f.ctx,{action:'save_application',application_id:a.id,revision:a.revision,application:{primary_program_id:program.id}});a=await require('./helpers/grant-proposal').reviewSyntheticAI(f.real,f.ctx,a);
+  const queued=await s.handle(f.ctx,{action:'strategy',application_id:a.id,revision:a.revision});const calls=ai.calls;
+  a=await s.handle(f.ctx,{action:'delete_application',application_id:a.id,revision:a.revision,confirmation:'DELETE_APPLICATION_WORKSPACE'});
+  const result=await s.runStrategyJob(f.ctx,queued.job.id);assert.equal(result.status,'FAILED');assert.equal(result.failure_code,'LOCKED');assert.equal(ai.calls,calls);assert.ok((await f.real.app(f.ctx,a.id)).content.deleted_at);
+  a=await s.handle(f.ctx,{action:'restore_application',application_id:a.id,revision:a.revision});
+  const requeued=await s.handle(f.ctx,{action:'strategy',application_id:a.id,revision:a.revision});
+  a=await s.handle(f.ctx,{action:'delete_application',application_id:a.id,revision:a.revision,confirmation:'DELETE_APPLICATION_WORKSPACE'});
+  a=await s.handle(f.ctx,{action:'restore_application',application_id:a.id,revision:a.revision});
+  const stale=await s.runStrategyJob(f.ctx,requeued.job.id);assert.equal(stale.status,'FAILED');assert.equal(stale.failure_code,'STALE_INPUTS');assert.equal(ai.calls,calls);
+});
 async function saveApprovedStrategy(text) {
   const a = await fresh();
   return s.handle(f.ctx, { action: "save_application", application_id: a.id, revision: a.revision, application: { strategy: { ...STRATEGY, primary_case: text }, strategy_approved: true } });

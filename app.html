@@ -137,6 +137,8 @@ label{display:block;font-weight:600;font-size:.85rem;margin:0 0 .3rem;color:var(
 
 .empty{color:var(--muted);text-align:center;padding:40px;background:var(--card);border:1px dashed var(--line);border-radius:var(--radius)}
 .row{display:flex;gap:10px;flex-wrap:wrap}
+input[type="checkbox"]{width:auto;flex:0 0 auto}
+.lead-filter{display:flex;align-items:center;gap:8px;margin:14px 0}
 .two-col{display:grid;grid-template-columns:1fr 1fr;gap:14px}
 
 @media (max-width:820px){
@@ -160,8 +162,10 @@ label{display:block;font-weight:600;font-size:.85rem;margin:0 0 .3rem;color:var(
   <link rel="stylesheet" href="/assets/grant-factory.css?v=20260923">
   <script src="/assets/grant-factory-limits.js?v=20260917"></script>
   <script src="/assets/grant-factory-reading.js?v=20260923"></script>
-  <script src="/assets/grant-factory.js?v=20261011b"></script>
+  <script src="/assets/source-matches.js?v=20261012"></script>
+  <script src="/assets/grant-factory.js?v=20261012b"></script>
   <script src="/assets/matching.js?v=20260925"></script>
+  <script src="/assets/opportunity-workflow.js?v=20261012"></script>
   <script>
 // Opportunity Assist — Supabase client config
 // These are PUBLIC client keys (safe to expose). All data access is protected
@@ -197,6 +201,7 @@ window.OA_CONFIG = {
     foundationLeads: [],
     chat: [],       // {role, content} -- AI Assistant conversation, in memory only
     currentOpp: null,
+    screenDay: null,
     requirements: [],   // all requirement rows for this org's pipeline items
     pursueDecisions: {},// opportunity_id -> latest {decision, system_recommendation, decided_at, reason}
     currentPipelineItem: null,
@@ -242,8 +247,26 @@ window.OA_CONFIG = {
     return "$" + Number(n).toLocaleString();
   }
   function daysUntil(d) {
-    if (!d) return null;
-    return Math.ceil((new Date(d) - new Date()) / 86400000);
+    return window.OAOpportunityWorkflow.daysUntil(d);
+  }
+  function currentFit(o){return window.OAOpportunityWorkflow.fit(state.org,o,state.fit[o.id]);}
+  function currentLeads(){return window.OAOpportunityWorkflow.candidates(state.org,state.opps,state.fit,state.pursueDecisions);}
+  async function openMatchedOpportunity(id,orgId){
+    if(!state.org||state.org.id!==orgId)return;
+    var o=state.opps.filter(function(x){return x.id===id;})[0];
+    if(!o){var r=await sb.from('opportunities').select('*').eq('id',id).maybeSingle();if(r.error)return toast(r.error.message,true);o=r.data;}
+    if(!o||state.org.id!==orgId)return toast('This opportunity is no longer available. Refresh the source list.',true);
+    if(!state.opps.some(function(x){return x.id===id;}))state.opps.push(o);
+    state.currentPipelineItem=null;state.currentOpp=o;state.view='radar';paint();
+  }
+  window.addEventListener('oa:open-opportunity',function(e){if(e.detail)openMatchedOpportunity(e.detail.opportunityId,e.detail.orgId).catch(function(err){toast(err.message,true);});});
+  window.addEventListener('focus',function(){if(state.org&&state.screenDay!==window.OAOpportunityWorkflow.day()&&['dashboard','radar','foundations','pipeline'].indexOf(state.view)!==-1)paint();});
+  function refreshOpportunityLists(button){
+    var orgId=state.org.id;if(button)button.disabled=true;
+    return Promise.all([loadOpps(),loadFitScores(),loadPipeline(),loadPursueDecisions()]).then(function(){
+      if(state.org.id!==orgId)return;
+      applyLocalFitEstimates();paint();toast('Lists refreshed. No AI scoring or research was started.');
+    }).catch(function(e){toast('Could not refresh: '+e.message,true);}).finally(function(){if(button)button.disabled=false;});
   }
   function scoreClass(v) { return v >= 75 ? "s-good" : v >= 55 ? "s-mid" : "s-low"; }
   function el(html) { var t = document.createElement("template"); t.innerHTML = html.trim(); return t.content.firstChild; }
@@ -288,16 +311,18 @@ window.OA_CONFIG = {
         if (r.error) throw r.error;
         rows = rows.concat(r.data || []);
         if ((r.data || []).length === 500) return page(from + 500);
-        state.opps = rows.filter(function (o) { return o.source_active !== false; }).sort(function (a, b) { return (a.deadline || "9999").localeCompare(b.deadline || "9999"); });
+        state.opps = rows.sort(function (a, b) { return (a.deadline || "9999").localeCompare(b.deadline || "9999"); });
       });
     }
     return page(0);
   }
   function loadPipeline() {
+    var orgId=state.org.id;
     return sb.from("pipeline_items")
       .select("*, opportunities(funding_amount, funding_amount_label, deadline, category)")
+      .eq("org_id",orgId)
       .order("sort_order", { ascending: true })
-      .then(function (r) { state.pipeline = r.data || []; });
+      .then(function (r) { if(r.error)throw r.error;if(state.org.id===orgId)state.pipeline = r.data || []; });
   }
   function loadSubscription() {
     // Read-only to the client by RLS -- only the Stripe webhook (service role) can write this.
@@ -324,10 +349,12 @@ window.OA_CONFIG = {
       .then(function (r) { state.requirements = r.data || []; });
   }
   function loadPursueDecisions() {
+    var orgId=state.org.id;
     // One row per decision (append-only log -- see migration notes), newest first;
     // keep only the latest decision per opportunity for dashboard/gate purposes.
-    return sb.from("pursue_decisions").select("*").order("decided_at", { ascending: false })
+    return sb.from("pursue_decisions").select("*").eq("org_id",orgId).order("decided_at", { ascending: false })
       .then(function (r) {
+        if(r.error)throw r.error;if(state.org.id!==orgId)return;
         var latest = {};
         (r.data || []).forEach(function (row) { if (!latest[row.opportunity_id]) latest[row.opportunity_id] = row; });
         state.pursueDecisions = latest;
@@ -350,12 +377,12 @@ window.OA_CONFIG = {
   function applyLocalFitEstimates() {
     var missingIds = [];
     state.opps.forEach(function (o) {
-      if (state.fit[o.id]) return;
-      var screen = window.OAMatching.eligibility(state.org, o);
+      var screen = window.OAOpportunityWorkflow.screen(state.org, o);
       if (screen.status === "INELIGIBLE") {
         state.fit[o.id] = { ineligible: true, headline: null, rec: "Not eligible", reasons: screen.reasons, factors: [] };
         return;
       }
+      if (state.fit[o.id]) return;
       state.fit[o.id] = computeFit(state.org, o);
       missingIds.push(o.id);
     });
@@ -441,7 +468,9 @@ window.OA_CONFIG = {
     });
   }
   function loadFitScores() {
-    return sb.from("fit_scores").select("*").then(function (r) {
+    var orgId=state.org.id;
+    return sb.from("fit_scores").select("*").eq("org_id",orgId).then(function (r) {
+      if(r.error)throw r.error;if(state.org.id!==orgId)return;
       (r.data || []).forEach(function (row) {
         // Stale scores (profile or opportunity changed) and scores from an older
         // rubric are not shown as current; they are re-scored.
@@ -720,6 +749,7 @@ window.OA_CONFIG = {
   }
 
   function paint() {
+    state.screenDay=window.OAOpportunityWorkflow.day();
     document.querySelectorAll(".nav-link").forEach(function (b) { b.classList.toggle("active", b.dataset.v === state.view && !state.currentOpp && !state.currentPipelineItem); });
     var main = document.getElementById("main");
     if (state.view === "setup") return renderOnboarding();
@@ -746,13 +776,7 @@ window.OA_CONFIG = {
   // still exists in pursue_decisions and stays visible/reconsiderable from
   // Funding Radar, it's just no longer asking for attention here.
   function needsDecisionList() {
-    return state.opps.filter(function (o) {
-      var f = state.fit[o.id];
-      if (!f || f.pending || f.estimate || f.ineligible || f.headline == null || f.headline < 60) return false;
-      if (state.pipeline.some(function (p) { return p.opportunity_id === o.id; })) return false;
-      if (state.pursueDecisions[o.id]) return false;
-      return true;
-    }).sort(function (a, b) { return (state.fit[b.id].headline || 0) - (state.fit[a.id].headline || 0); }).slice(0, 5);
+    return window.OAOpportunityWorkflow.decisionQueue(state.org,state.opps,state.fit,state.pipeline,state.pursueDecisions).slice(0,5);
   }
 
   function renderDashboard(main) {
@@ -762,24 +786,26 @@ window.OA_CONFIG = {
       return s + (p.opportunities && p.opportunities.funding_amount ? Number(p.opportunities.funding_amount) : 0);
     }, 0);
     var awarded = byStage["Awarded"] || 0;
-    var strong = state.opps.filter(function (o) { return window.OAMatching.isStrong(state.fit[o.id]); }).length;
-    var eligibleCount = state.opps.filter(function (o) { return !(state.fit[o.id] && state.fit[o.id].ineligible); }).length;
+    var leads=currentLeads();
+    var strong = leads.filter(function (o) { return window.OAMatching.isStrong(currentFit(o)); }).length;
+    var eligibleCount = leads.length;
     var needsDecision = needsDecisionList();
-    var closing = state.opps.filter(function (o) { var d = daysUntil(o.deadline); return d != null && d >= 0 && d <= 30; })
+    var closing = leads.filter(function (o) { var d = daysUntil(o.deadline); return d != null && d >= 0 && d <= 30; })
       .sort(function (a, b) { return new Date(a.deadline) - new Date(b.deadline); }).slice(0, 5);
     var renewing = state.contracts.filter(function (c) { var d = daysUntil(c.renewal_date); return d != null && d >= 0 && d <= 60; }).length;
     var alertMatches = state.alertRules.reduce(function (sum, rule) { return sum + state.opps.filter(function (o) { return matchesRule(rule, o); }).length; }, 0);
 
     main.innerHTML =
-      '<div class="topbar"><div><h1>Dashboard</h1><p class="sub">What needs your attention</p></div></div>' +
+      '<div class="topbar"><div><h1>Dashboard</h1><p class="sub">What needs your attention</p></div><button class="btn btn-ghost btn-sm" id="refreshLeads">Refresh lists — free</button></div>' +
       '<div class="grid tiles">' +
-      tile(eligibleCount, "Opportunities on radar (not ruled out)") +
+      tile(eligibleCount, "Current leads on Funding Radar") +
       tile(strong, "Strong matches (75%+)") +
       tile(state.pipeline.length, "In capture pipeline") +
       tile(money(pipelineValue), "Pipeline value") +
       "</div>" +
-      '<h2 class="section-title">Needs your decision</h2>' +
-      (needsDecision.length ? '<div class="opp-list" id="needsDecision"></div>' : '<div class="empty">Nothing new to decide on right now.</div>') +
+      '<p class="hint">These are leads to review, not confirmed eligible grants. Passed, expired and known ineligible opportunities are excluded. Unknown dates still need verification. Funding Radar and Foundation Leads draw from the same catalog.</p>' +
+      '<h2 class="section-title">Needs your decision</h2><p class="hint">Current, undecided leads that are not already in your pipeline. You can review free estimates without buying an AI score. The next lead appears after each decision.</p>' +
+      (needsDecision.length ? '<div class="opp-list" id="needsDecision"></div>' : '<div class="empty">No current leads need a first decision. Existing decisions, captured opportunities, and low scored matches remain available in Funding Radar. Refresh the lists to check for new published grants.</div>') +
       (state.alertRules.length || state.contracts.length
         ? '<div class="row" style="margin-top:14px">' +
           (state.alertRules.length ? '<div class="card" style="flex:1;min-width:220px">🔔 <strong>' + alertMatches + '</strong> opportunit' + (alertMatches === 1 ? "y matches" : "ies match") + ' your alert rules</div>' : "") +
@@ -788,6 +814,7 @@ window.OA_CONFIG = {
         : "") +
       '<h2 class="section-title">Closing soon</h2>' +
       (closing.length ? '<div class="opp-list" id="closing"></div>' : '<div class="empty">No deadlines in the next 30 days.</div>');
+    main.querySelector('#refreshLeads').onclick=function(){refreshOpportunityLists(this);};
 
     if (needsDecision.length) {
       var dwrap = main.querySelector("#needsDecision");
@@ -803,29 +830,40 @@ window.OA_CONFIG = {
   // 11, Gate A): the row is still clickable through to full detail, and the
   // two action buttons stop that click from also firing.
   function decisionRow(o) {
-    var f = state.fit[o.id] || { headline: 0, rec: "—" };
-    var row = oppRow(o);
+    return oppRow(o);
+  }
+  function opportunityActions(o){
+    var f=currentFit(o),p=state.pipeline.filter(function(x){return x.opportunity_id===o.id;})[0];
+    var actionable=window.OAOpportunityWorkflow.current(state.org,o,state.fit[o.id]);
     var actions = el(
       '<div class="row" style="grid-column:1/-1;margin-top:10px;gap:8px">' +
-      '<button class="btn btn-primary btn-sm" data-act="pursue">Pursue</button>' +
+      '<button class="btn btn-primary btn-sm" data-act="pursue"'+(!actionable&&!p?' disabled':'')+'>'+(p?'Open Capture Pipeline':'Pursue · add to Capture Pipeline')+'</button>' +
       '<button class="btn btn-ghost btn-sm" data-act="pass">Pass</button>' +
       '<button class="btn btn-ghost btn-sm" data-act="share" title="Pass for your organization and offer it to FinCap editors for review. Nothing is published automatically.">Pass &amp; Share with FinCap</button>' +
-      "</div>"
+      (actionable?'<button class="btn btn-ghost btn-sm" data-act="factory">'+(p&&['Qualified','Planning'].indexOf(p.stage)!==-1?'Open in Grant Factory':'Review for Grant Factory')+'</button>':'<span class="hint">Closed or known ineligible. Review a current cycle before pursuing.</span>')+'</div>'
     );
-    row.appendChild(actions);
     actions.querySelector('[data-act="pursue"]').addEventListener("click", function (e) {
       e.stopPropagation();
-      recordDecision(o, f, "pursue", { addToPipeline: true });
+      if(p){state.currentOpp=null;state.currentPipelineItem=p;state.view='pipeline';paint();return;}
+      recordDecision(o, f, "pursue", { addToPipeline: true }).catch(function(err){toast(err.message,true);});
     });
     actions.querySelector('[data-act="pass"]').addEventListener("click", function (e) {
       e.stopPropagation();
-      recordDecision(o, f, "pass", { addToPipeline: false });
+      if(p){state.currentOpp=null;state.currentPipelineItem=p;state.view='pipeline';paint();toast('Use the pipeline review to pass on a captured opportunity.');return;}
+      recordDecision(o, f, "pass", { addToPipeline: false }).catch(function(err){toast(err.message,true);});
     });
     actions.querySelector('[data-act="share"]').addEventListener("click", function (e) {
       e.stopPropagation();
+      if(p){state.currentOpp=null;state.currentPipelineItem=p;state.view='pipeline';paint();return;}
       passAndShare(o, f, {}, this);
     });
-    return row;
+    var factory=actions.querySelector('[data-act="factory"]');if(factory)factory.onclick=function(e){
+      e.stopPropagation();
+      function open(item){if(['Qualified','Planning'].indexOf(item.stage)!==-1)openPipelineInGrantFactory(item,false);else{state.currentOpp=null;state.currentPipelineItem=item;state.view='pipeline';paint();toast('Review eligibility and dates, then choose Qualify & open Grant Factory.');}}
+      if(p)return open(p);
+      recordDecision(o,f,'pursue',{addToPipeline:true},function(item){open(item);}).catch(function(err){toast(err.message,true);});
+    };
+    return actions;
   }
 
   // Writes the durable decision row, optionally creates the pipeline card,
@@ -841,26 +879,26 @@ window.OA_CONFIG = {
       system_recommendation: f.rec || null, system_confidence: f.headline || null,
       decision: decision, decided_by: state.user.id
     };
-    var chain = sb.from("pursue_decisions").insert(decisionPayload).select().single().then(function (r) {
-      if (r.error) { alert(r.error.message); return; }
-      state.pursueDecisions[o.id] = r.data;
+    var orgId=state.org.id,key=orgId+':'+o.id;
+    if(recordDecision.pending[key])return recordDecision.pending[key];
+    if(opts&&opts.addToPipeline&&!window.OAOpportunityWorkflow.current(state.org,o,state.fit[o.id]))return Promise.reject(Error('This opportunity is closed or known ineligible. Verify a current cycle before pursuing.'));
+    var pipelineItem=state.pipeline.filter(function(p){return p.opportunity_id===o.id;})[0];
+    var chain = Promise.resolve();
+    if(opts&&opts.addToPipeline&&!pipelineItem)chain=chain.then(function(){
+      return sb.from('pipeline_items').insert({org_id:orgId,opportunity_id:o.id,title:o.title,stage:'Reviewing'}).select('*, opportunities(funding_amount, funding_amount_label, deadline, category)').single().then(function(r){
+        if(r.error)throw Error(r.error.message);pipelineItem=r.data;if(state.org.id===orgId)state.pipeline.push(r.data);
+      });
     });
-    if (opts && opts.addToPipeline) {
-      chain = chain.then(function () {
-        return sb.from("pipeline_items").insert({ org_id: state.org.id, opportunity_id: o.id, title: o.title, stage: "Reviewing" })
-          .select("*, opportunities(funding_amount, funding_amount_label, deadline, category)").single().then(function (r) {
-            if (r.error) { alert(r.error.message); return; }
-            state.pipeline.push(r.data);
-            return logActivity({ opportunity_id: o.id, pipeline_item_id: r.data.id, action: "pursue_decision", detail: "Marked Pursue \u2014 added to Capture Pipeline" });
-          });
+    chain=chain.then(function(){
+      return sb.from('pursue_decisions').insert(decisionPayload).select().single().then(function(r){
+        if(r.error)throw Error((pipelineItem?'The pipeline item was saved, but its decision could not be recorded. Open Capture Pipeline to review it. ':'')+r.error.message);
+        if(state.org.id===orgId)state.pursueDecisions[o.id]=r.data;
+        return logActivity({org_id:orgId,opportunity_id:o.id,pipeline_item_id:pipelineItem?.id||null,action:'pursue_decision',detail:decision==='pursue'?'Marked Pursue — added to Capture Pipeline':'Marked Pass'});
       });
-    } else {
-      chain = chain.then(function () {
-        return logActivity({ opportunity_id: o.id, action: "pursue_decision", detail: "Marked Pass" });
-      });
-    }
-    chain.then(function () { if (onDone) onDone(); else paint(); });
+    }).then(function(){if(state.org.id===orgId){if(onDone)onDone(pipelineItem);else paint();}return pipelineItem;}).finally(function(){delete recordDecision.pending[key];});
+    recordDecision.pending[key]=chain;return chain;
   }
+  recordDecision.pending={};
   /* ---------- Pass & Share with FinCap ---------- */
   // Declining an opportunity for this organization is not a verdict on its
   // value to other practitioners. This records the private Pass and offers a
@@ -931,12 +969,13 @@ window.OA_CONFIG = {
   /* ---------- funding radar ---------- */
   function renderRadar(main) {
     main.innerHTML =
-      '<div class="topbar"><div><h1>Funding Radar</h1><p class="sub">' + state.opps.length + ' opportunities · scored for ' + esc(state.org.name) + '</p></div></div>' +
+      '<div class="topbar"><div><h1>Funding Radar</h1><p class="sub">'+currentLeads().length+' current leads for '+esc(state.org.name)+' · '+state.opps.length+' catalog records including closed and historical sources</p></div><button class="btn btn-ghost btn-sm" id="refreshLeads">Refresh lists — free</button></div>' +
       '<div class="filters">' +
       '<input id="q" placeholder="Search opportunities…" />' +
       '<select id="cat"><option value="">All categories</option></select>' +
       '<select id="sort"><option value="fit">Sort: Best fit</option><option value="deadline">Sort: Deadline</option><option value="amount">Sort: Amount</option></select>' +
       '<label class="hint" style="display:flex;align-items:center;gap:6px"><input type="checkbox" id="showIneligible" /> Show not eligible (' + state.opps.filter(function (o) { return state.fit[o.id] && state.fit[o.id].ineligible; }).length + ")</label>" +
+      '<label class="hint lead-filter"><input type="checkbox" id="showPassed"> Show passed leads</label>'+
       "</div>" +
       '<div class="opp-list" id="list"></div>';
 
@@ -951,7 +990,8 @@ window.OA_CONFIG = {
       var sort = main.querySelector("#sort").value;
       var showIneligible = main.querySelector("#showIneligible").checked;
       var rows = state.opps.filter(function (o) {
-        if (!showIneligible && state.fit[o.id] && state.fit[o.id].ineligible) return false;
+        if (!showIneligible && !window.OAOpportunityWorkflow.current(state.org,o,state.fit[o.id])) return false;
+        if(!main.querySelector('#showPassed').checked&&state.pursueDecisions[o.id]?.decision==='pass')return false;
         var hay = (o.title + " " + (o.summary || "") + " " + (o.category || "") + " " + (o.geography || "")).toLowerCase();
         return (!q || hay.indexOf(q) !== -1) && (!cat || o.category === cat);
       });
@@ -971,6 +1011,8 @@ window.OA_CONFIG = {
     catSel.addEventListener("change", draw);
     main.querySelector("#sort").addEventListener("change", draw);
     main.querySelector("#showIneligible").addEventListener("change", draw);
+    main.querySelector('#showPassed').onchange=draw;
+    main.querySelector('#refreshLeads').onclick=function(){refreshOpportunityLists(this);};
     draw();
   }
 
@@ -983,7 +1025,7 @@ window.OA_CONFIG = {
   }
   function scoreNum(f) { return f.ineligible || f.headline == null ? "—" : f.headline + "%"; }
   function oppRow(o) {
-    var f = state.fit[o.id] || { headline: null, rec: "—" };
+    var f = currentFit(o);
     var d = daysUntil(o.deadline);
     var row = el(
       '<div class="opp">' +
@@ -992,13 +1034,14 @@ window.OA_CONFIG = {
       (state.fincapShares[o.id] ? '<span class="tag">FinCap: ' + esc({ pending_review: "pending review", approved: "published", rejected: "not accepted", withdrawn: "withdrawn" }[state.fincapShares[o.id].status] || state.fincapShares[o.id].status) + "</span>" : "") +
       "<span>" + esc(o.funding_amount_label || money(o.funding_amount)) + "</span>" +
       "<span>" + esc(o.geography || "") + "</span>" +
-      (d != null ? "<span>" + (d < 0 ? "Closed" : "Due in " + d + " days") + "</span>" : "") +
+      (d != null ? "<span>" + (d < 0 ? "Closed · "+esc(o.deadline) : d===0?'Due today':"Due in " + d + " days") + "</span>" : "<span>Deadline unknown — verify current cycle</span>") +
       "</div>" +
       '<p class="summary">' + esc(o.summary || "") + "</p></div>" +
       '<div class="score-badge ' + (f.ineligible || f.headline == null ? "s-low" : scoreClass(f.headline)) + '"><div class="score-num">' + scoreNum(f) + "</div><div class=\"score-rec\">" + esc(scoreLabel(f)) + "</div></div>" +
       "</div>"
     );
     row.addEventListener("click", function () { state.currentOpp = o; paint(); });
+    row.appendChild(opportunityActions(o));
     return row;
   }
 
@@ -1029,7 +1072,7 @@ window.OA_CONFIG = {
   }
   function renderOppDetail(main) {
     var o = state.currentOpp;
-    var f = state.fit[o.id] || computeFit(state.org, o);
+    var f = currentFit(o);
     var inPipeline = state.pipeline.some(function (p) { return p.opportunity_id === o.id; });
     var qa = summaryQa(o);
 
@@ -1043,7 +1086,7 @@ window.OA_CONFIG = {
       "</div></div>" +
       '<div class="card score-side"><h2>AI Fit Score</h2>' +
       fitDetailHtml(f) +
-      '<button class="btn ' + (inPipeline ? "btn-ghost" : "btn-primary") + '" style="width:100%" id="addPipe"' + (inPipeline ? " disabled" : "") + ">" + (inPipeline ? "Already in pipeline" : "Add to Capture Pipeline") + "</button>" +
+      '<div id="oppActions"></div>'+
       (f.paywalled
         ? '<p class="hint" style="margin-top:.6rem">This is a free estimate. <a href="#" data-nav="profile">Upgrade your plan</a> for the full AI Fit Score and Opportunity Summary.</p>'
         : '<p class="hint" style="margin-top:.6rem">The model rates each factor from your organization profile and this opportunity; the score is calculated from those ratings. Unknown factors are left out rather than scored as zero. Scores refresh when the profile or opportunity changes.</p>') +
@@ -1052,20 +1095,12 @@ window.OA_CONFIG = {
     main.querySelector("#back").addEventListener("click", function () { state.currentOpp = null; paint(); });
     var upgradeLink = main.querySelector('[data-nav="profile"]');
     if (upgradeLink) upgradeLink.addEventListener("click", function (e) { e.preventDefault(); state.view = "profile"; state.currentOpp = null; paint(); });
-    var addBtn = main.querySelector("#addPipe");
-    if (addBtn && !inPipeline) {
-      addBtn.addEventListener("click", function () {
-        addBtn.disabled = true;
-        recordDecisionThen(o, f, "pursue", { addToPipeline: true }, function () {
-          state.view = "pipeline"; state.currentOpp = null; paint();
-        });
-      });
-    }
+    main.querySelector('#oppActions').appendChild(opportunityActions(o));
   }
 
   /* ---------- capture pipeline (kanban) ---------- */
-  function openPipelineInGrantFactory(p) {
-    state.grantFactoryIntent={orgId:state.org.id,pipelineItemId:p.id,prepareDraft:true};
+  function openPipelineInGrantFactory(p,prepareDraft) {
+    state.grantFactoryIntent={orgId:state.org.id,pipelineItemId:p.id,prepareDraft:prepareDraft===true};
     state.currentPipelineItem=null;state.currentOpp=null;state.view='grant-factory';paint();
   }
   function renderPipeline(main) {
@@ -1088,7 +1123,7 @@ window.OA_CONFIG = {
         c.addEventListener("dragend", function () { c.classList.remove("drag"); });
         c.addEventListener("click", function (e) { if (c.classList.contains("drag")) return; state.currentPipelineItem = p; paint(); });
         if(['Qualified','Planning'].indexOf(p.stage)!==-1){
-          var launch=el('<button type="button" class="btn btn-ghost btn-sm" title="Find the application and prepare a draft using your workspace AI allowance">Open in Grant Factory</button>');
+          var launch=el('<button type="button" class="btn btn-ghost btn-sm" title="Open the application workspace. Importing does not start paid drafting.">Open in Grant Factory</button>');
           launch.addEventListener('click',function(e){e.stopPropagation();openPipelineInGrantFactory(p);});c.appendChild(launch);
         }
         col.appendChild(c);
@@ -1148,10 +1183,7 @@ window.OA_CONFIG = {
   // eligibility barrier, else the local estimate (labelled as an estimate).
   function pipelineFit(o) {
     if (!o || !o.id) return null;
-    if (state.fit[o.id]) return state.fit[o.id];
-    var screen = window.OAMatching.eligibility(state.org, o);
-    if (screen.status === "INELIGIBLE") return { ineligible: true, headline: null, rec: "Not eligible", reasons: screen.reasons, factors: [] };
-    return computeFit(state.org, o);
+    return window.OAOpportunityWorkflow.fit(state.org,o,state.fit[o.id]||computeFit(state.org,o));
   }
   // Deadlines are calendar dates. Read them as local midnight so the count
   // matches the date shown; new Date("YYYY-MM-DD") is UTC midnight, which
@@ -1159,8 +1191,7 @@ window.OA_CONFIG = {
   function localMidnight(d) { return new Date(String(d).slice(0, 10) + "T00:00:00"); }
   function localDate(d) { return localMidnight(d).toLocaleDateString(); }
   function localDaysUntil(d) {
-    var today = new Date(); today.setHours(0, 0, 0, 0);
-    return Math.round((localMidnight(d) - today) / 86400000);
+    return daysUntil(d);
   }
 
   function renderPipelineItemDetail(main) {
@@ -1203,6 +1234,7 @@ window.OA_CONFIG = {
       '<div class="card"><h2>Review decision</h2>' +
       '<p class="hint" style="margin:0 0 .8rem">Read the summary and the fit reasoning, then qualify this for planning or pass on it.</p>' +
       '<div class="row" style="gap:8px"><button class="btn btn-primary btn-sm" id="qualifyItem">Qualify: move to Qualified</button>' +
+      '<button class="btn btn-ghost btn-sm" id="qualifyFactory">Qualify &amp; open Grant Factory</button>'+
       '<button class="btn btn-ghost btn-sm" id="passItem">Pass: remove from pipeline</button>' +
       '<button class="btn btn-ghost btn-sm" id="shareItem" title="Pass for your organization and offer it to FinCap editors for review. Nothing is published automatically.">Pass &amp; Share with FinCap</button></div>' +
       '<p class="hint" style="margin:.7rem 0 0">Pass stays private to your organization. Pass &amp; Share also offers a neutral listing to FinCap editors, who review it before anything is published. You are declining it for your organization, not saying it has no value to others.</p>' +
@@ -1223,7 +1255,7 @@ window.OA_CONFIG = {
       '<div class="detail-grid">' +
       '<div class="stack">' +
       reviewCard +
-      (['Qualified','Planning'].indexOf(p.stage)!==-1 ? '<div class="card"><h2>Prepare this application</h2><p class="hint">Bring the full application into Grant Factory and prepare supported answers using your workspace AI allowance.</p><button type="button" class="btn btn-primary" id="pipelineToGrantFactory">Import application &amp; prepare draft</button></div>' : '') +
+      (['Qualified','Planning'].indexOf(p.stage)!==-1 ? '<div class="card"><h2>Prepare this application</h2><p class="hint">Find or upload the complete current application in Grant Factory. Importing does not start paid drafting; choose Prepare first draft when ready.</p><button type="button" class="btn btn-primary" id="pipelineToGrantFactory">Open in Grant Factory</button></div>' : '') +
       summaryCard +
       '<div class="card"><h2>Requirements' + (readiness != null ? ' <span class="tag">' + readiness + '% ready</span>' : "") + '</h2>' +
       '<div id="reqList" style="margin-top:10px"></div>' +
@@ -1247,6 +1279,13 @@ window.OA_CONFIG = {
     main.querySelector("#stageSel").addEventListener("change", function (e) { moveCard(p.id, e.target.value); state.currentPipelineItem = state.pipeline.filter(function (x) { return x.id === p.id; })[0]; });
     if (inReview) {
       main.querySelector("#qualifyItem").addEventListener("click", function () { moveCard(p.id, "Qualified"); });
+      var qualifyFactory=main.querySelector('#qualifyFactory');if(qualifyFactory)qualifyFactory.onclick=async function(){
+        var o=pipelineOpp(p);if(!o||!window.OAOpportunityWorkflow.current(state.org,o,state.fit[o.id]))return toast('Verify a current eligible cycle before opening Grant Factory.',true);
+        qualifyFactory.disabled=true;var orgId=state.org.id;
+        var r=await sb.from('pipeline_items').update({stage:'Qualified',updated_at:new Date().toISOString()}).eq('id',p.id).eq('org_id',orgId);
+        if(r.error){qualifyFactory.disabled=false;return toast(r.error.message,true);}if(state.org.id!==orgId)return;p.stage='Qualified';
+        await logActivity({org_id:orgId,opportunity_id:p.opportunity_id,pipeline_item_id:p.id,action:'stage_changed',detail:'Qualified after review — opening Grant Factory'});openPipelineInGrantFactory(p,false);
+      };
       main.querySelector("#passItem").addEventListener("click", function () { passPipelineItem(p, f, this); });
       main.querySelector("#shareItem").addEventListener("click", function () {
         if (!window.confirm("Pass on “" + p.title + "” for your organization and offer it to FinCap editors?\n\nIt leaves your Capture Pipeline and your decision is kept. FinCap reviews it before anything is published. Only neutral facts about the grant are shared, never your notes or reasons.")) return;
@@ -1601,52 +1640,21 @@ window.OA_CONFIG = {
       : ' <span style="color:var(--warn);font-size:.78rem">\u26a0 unverified \u2014 check source</span>';
   }
   function foundationRow(lead) {
-    return el(
-      '<div class="opp">' +
-      '<div><h3>' + esc(lead.funder_name) + (lead.program_name ? ": " + esc(lead.program_name) : "") + '</h3>' +
-      (lead.relevance_note ? '<p class="summary" style="font-style:italic;color:var(--muted)">' + esc(lead.relevance_note) + '</p>' : "") +
-      (lead.summary ? '<p class="summary">' + esc(lead.summary) + '</p>' : "") +
-      '<div class="meta">' +
-      (lead.deadline_mentioned ? "<span>Deadline: " + esc(lead.deadline_mentioned) + verifyBadge(lead.deadline_mentioned, lead.deadline_verified) + "</span>" : "") +
-      (lead.amount_mentioned ? "<span>Amount: " + esc(lead.amount_mentioned) + verifyBadge(lead.amount_mentioned, lead.amount_verified) + "</span>" : "") +
-      (lead.requires_loi ? "<span>LOI required</span>" : "") +
-      "</div></div>" +
-      '<div><a class="btn btn-ghost btn-sm" href="' + esc(lead.application_url || lead.source_url) + '" target="_blank" rel="noopener">View source \u2197</a></div>' +
-      "</div>"
-    );
+    var row=oppRow(lead),source=window.OASourceMatches.url(lead.source_url);
+    var detail=el('<div class="meta" style="grid-column:1/-1">'+(lead.deadline_mentioned?'Source deadline: '+esc(lead.deadline_mentioned)+verifyBadge(lead.deadline_mentioned,lead.deadline_verified):'')+(source?' · <a href="'+esc(source)+'" target="_blank" rel="noopener">View source ↗</a>':'')+'</div>');
+    detail.addEventListener('click',function(e){e.stopPropagation();});row.appendChild(detail);return row;
   }
-  function renderFoundationLeads(main) {
-    state.foundationLeads = state.opps.filter(function (o) { return o.source === "Foundation Scan"; }).map(function (o) {
-      return Object.assign({}, o, { funder_name: o.title, program_name: null, scanned_at: o.source_verified_at || o.created_at });
-    });
-    main.innerHTML =
-      '<div class="topbar"><div><h1>Foundation Leads</h1><p class="sub">Website-sourced opportunities from the shared Funding Radar, with per-organization Fit Scoring.</p></div></div>' +
-      '<div class="card" style="margin-bottom:18px"><p class="hint">Sources are reviewed and monitored within the existing limits. Check the official application, current dates and eligibility before pursuing a lead.</p><button class="btn btn-ghost btn-sm" id="foundationProfileBtn">Find sources matching our profile — free</button><div id="foundationProfileMatches"></div></div>' +
-      (state.foundationLeads.length ? '<div class="opp-list" id="foundationList"></div>' : '<div class="empty">No current foundation opportunities. Approved sources are monitored according to the Admin state settings.</div>');
+  function renderFoundationLeads(main){
+    var foundations=state.opps.filter(function(o){return o.source==='Foundation Scan';});
+    main.innerHTML='<div class="topbar"><div><h1>Foundation Leads</h1><p class="sub">Current website-sourced grants from the same Funding Radar catalog. Use Pursue, Pass, or Pass &amp; Share; review a pursued lead for Grant Factory.</p></div><button class="btn btn-ghost btn-sm" id="refreshLeads">Refresh lists — free</button></div><div class="card"><button class="btn btn-ghost btn-sm" id="foundationProfileBtn">Find sources matching our profile — free</button><div id="foundationProfileMatches"></div></div><label class="hint lead-filter"><input type="checkbox" id="foundationClosed"> Include closed, passed and known ineligible leads</label><div class="opp-list" id="foundationList"></div>';
+    function draw(){var rows=foundations.filter(function(o){return main.querySelector('#foundationClosed').checked||(window.OAOpportunityWorkflow.current(state.org,o,state.fit[o.id])&&state.pursueDecisions[o.id]?.decision!=='pass');});var list=main.querySelector('#foundationList');list.innerHTML='';if(!rows.length)list.innerHTML='<div class="empty">No current foundation leads. Refresh published opportunities or collect from a matching approved source within the existing limits.</div>';rows.forEach(function(o){list.appendChild(foundationRow(o));});}
+    main.querySelector('#foundationClosed').onchange=draw;main.querySelector('#refreshLeads').onclick=function(){refreshOpportunityLists(this);};draw();
     main.querySelector('#foundationProfileBtn').onclick=async function(){
       var button=this,box=main.querySelector('#foundationProfileMatches'),orgId=state.org.id;button.disabled=true;
-      try{
-        var session=await sb.auth.getSession();
-        var response=await fetch('/.netlify/functions/grant-factory',{method:'POST',headers:{'Content-Type':'application/json',Authorization:'Bearer '+session.data.session.access_token},body:JSON.stringify({action:'foundation_profile_matches',org_id:orgId})});
-        var data=await response.json();if(!response.ok)throw Error(data.error||'Could not load matching sources.');
-        if(!main.isConnected||state.org.id!==orgId)return;
-        box.innerHTML='<p>Matching topics: '+esc(data.topics.join(', ')||'None — review your search profile')+'. No AI call or live search.</p>'+data.items.map(function(r){return '<p><a href="'+esc(r.source_url)+'" target="_blank" rel="noopener">'+esc(r.source_name)+'</a> — '+esc(r.matched_topics.join(', '))+' · '+esc(r.geographic_match)+' · '+esc(r.current_status||'Check status')+'</p>';}).join('')+(!data.items.length?'<p>No matches in this bounded lookup.</p>':'')+'<p class="hint">Leads require eligibility and application review. '+data.examined+' approved sources checked'+(data.limited?' (lookup limit reached)':'')+'.</p>'+(state.isAdmin&&data.items.length&&data.states.length?'<label>Discovery state <select id="foundationDiscoveryState">'+data.states.map(function(s){return '<option>'+esc(s)+'</option>';}).join('')+'</select></label> <button class="btn btn-ghost btn-sm" id="foundationCollectBtn">Collect from matching sources — free</button><p class="hint">Queue up to three approved starting URLs. Uses the existing engine, state and daily page limits. Does not enable research or publish new candidates.</p><div id="foundationCollectStatus" role="status"></div>':'');
-        var collect=box.querySelector('#foundationCollectBtn');if(collect)collect.onclick=async function(){
-          var status=box.querySelector('#foundationCollectStatus');collect.disabled=true;
-          try{
-            if(state.org.id!==orgId)throw Error('Organization changed. Refresh the source lookup.');
-            var current=await sb.auth.getSession();
-            var queued=await fetch('/.netlify/functions/source-intelligence-admin',{method:'POST',headers:{'Content-Type':'application/json',Authorization:'Bearer '+current.data.session.access_token},body:JSON.stringify({action:'discover',state:box.querySelector('#foundationDiscoveryState').value,organization_id:orgId})});
-            var result=await queued.json();if(!queued.ok)throw Error(result.error||'Could not queue collection.');
-            status.textContent='Collection queued under the existing limits. New findings still require source review.';
-          }catch(e){status.textContent=e.message;}finally{collect.disabled=false;}
-        };
+      try{var session=await sb.auth.getSession();var r=await fetch('/.netlify/functions/grant-factory',{method:'POST',headers:{'Content-Type':'application/json',Authorization:'Bearer '+session.data.session.access_token},body:JSON.stringify({action:'foundation_profile_matches',org_id:orgId})});var data=await r.json();if(!r.ok)throw Error(data.error||'Could not load sources.');if(!main.isConnected||state.org.id!==orgId)return;
+        box.innerHTML=window.OASourceMatches.render(data,state.isAdmin);window.OASourceMatches.bind(box,{orgId:orgId,currentOrg:function(){return state.org.id;},session:function(){return sb.auth.getSession();},openOpportunity:function(id){openMatchedOpportunity(id,orgId);}});
       }catch(e){if(box.isConnected)box.textContent=e.message;}finally{button.disabled=false;}
     };
-    if (state.foundationLeads.length) {
-      var wrap = main.querySelector("#foundationList");
-      state.foundationLeads.forEach(function (lead) { wrap.appendChild(foundationRow(lead)); });
-    }
   }
 
 /* ---------- AI assistant ---------- */

@@ -129,6 +129,7 @@ function prepareParsed(app, parsed, brain) {
 const STRATEGY_FIELDS = ["funder_name", "grant_program_name", "funding_purpose", "funder_priorities", "allowable_costs", "prohibited_costs", "match_requirement", "primary_program_id", "secondary_program_ids", "request_amount", "award_min", "award_max", "grant_period", "rubric_or_scoring", "eligible_applicants", "eligible_geographies", "source_document_id", "additional_source_document_ids", "funder_history", "project_model", "deadline", "application_cycle"];
 function strategyInputHash(app, brain) {
   return C.hash({
+    ...(app.content.lifecycle_revision?{lifecycle_revision:app.content.lifecycle_revision}:{}),
     application: Object.fromEntries(STRATEGY_FIELDS.map((k) => [k, app.content[k] ?? null])),
     questions: (app.questions || []).map((q) => [q.id, q.question_text, q.question_category ?? null, q.question_type ?? null, q.limit_type, q.limit_value, q.required, q.rubric_text, q.source_quote]),
     brain_revision: brain.revision,
@@ -207,6 +208,56 @@ function service(repo, ai, { dispatch = null, applicationFetch = null } = {}) {
       if (meta) Object.assign(meta, { model: r.model || null, usage: r.usage || {} });
       return r;
     });
+  async function importSource(ctx,brain,app,found,selection=null){
+    const previous=app.content.application_import||{};
+    const receipt={status:found.status,failure_code:found.failure_code||null,url:found.url,sha256:found.sha256||null,imported_at:C.now(),attempts:found.attempts,warnings:[...found.warnings],review_required:true};
+    const hasWork=!!(app.content.source_document_id||app.questions.length||app.answers.length);
+    let candidate=null;
+    if(found.status==='PUBLIC_APPLICATION_FOUND'){
+      const source=await upload(ctx,brain,{filename:found.filename,title:app.content.grant_program_name+' — original application',document_type:'GRANT_APPLICATION',base64:found.bytes.toString('base64')});
+      brain=await repo.brain(ctx);receipt.document_id=source.id;
+      try{
+        if(source.extraction_status!=='COMPLETE')C.fail('The original was saved, but text extraction failed. Review it in the Document Vault.',422);
+        const marker=source.blocks.findIndex(b=>b.text==='ORIGINAL PUBLIC PAGE');
+        if(found.text.startsWith('APPLICATION FIELDS\n')&&marker<0)C.fail('The original form could not be mapped completely. Upload the complete application.',422);
+        const fieldBlocks=(marker>=0?source.blocks.slice(0,marker):source.blocks).map(b=>({...b,source_document_id:source.id}));
+        const parsed=P.basic(fieldBlocks);
+        if(!parsed.questions.length)C.fail('The original was saved, but its questions could not be mapped. Upload the complete application.',422);
+        if(found.filename!=='application.pdf'&&found.parsed.questions.length===parsed.questions.length)parsed.questions=parsed.questions.map((q,i)=>({...q,...Object.fromEntries(['question_type','required','input_format','input_min','input_max'].map(k=>[k,found.parsed.questions[i][k]]))}));
+        candidate=structuredClone(app);
+        if(selection){
+          for(const key of ['funder_name','deadline','application_cycle'])if(!candidate.content[key]&&candidate.content.source_metadata?.fields?.[key])candidate.content[key]=candidate.content.source_metadata.fields[key];
+          if(selection.grant_program_name)candidate.content.grant_program_name=selection.grant_program_name;
+          if(selection.application_cycle)candidate.content.application_cycle=selection.application_cycle;
+          candidate.content.source_identity_review=selection;
+        }
+        if(candidate.content.source_document_id&&candidate.content.source_document_id!==source.id)candidate.content.original_source_document_ids=[...new Set([...(candidate.content.original_source_document_ids||[]),candidate.content.source_document_id])];
+        candidate.content.source_document_id=source.id;
+        if(!candidate.questions.length&&!candidate.answers.length)prepareParsed(candidate,parsed,brain);
+        else candidate.content.reconciliation_preview=Requirements.preview(candidate,parsed,await G.load(repo,ctx,brain,candidate),brain);
+        candidate.content.parser_reviewed=false;candidate.content.requirements_review=null;
+        candidate.content.inputs=(candidate.content.inputs||[]).filter(i=>i.origin!=='APPLICATION_IMPORT');
+        receipt.warnings.push(...(source.warnings||[]));
+      }catch(e){
+        receipt.status='NEEDS_SOURCE_REVIEW';receipt.failure_code='INCOMPLETE_APPLICATION';receipt.warnings.push(e.message);candidate=null;
+      }
+    }
+    if(candidate){
+      Object.assign(app,candidate);
+      if(hasWork)invalidate(app);
+      app.content.application_import={...receipt,previous_attempts:[...(previous.previous_attempts||[]),...(previous.status?[{status:previous.status,failure_code:previous.failure_code,url:Import.publicUrl(previous.url),imported_at:previous.imported_at}]:[])].slice(-5)};
+    }else if(hasWork){
+      // A failed retry records its result without replacing a usable source,
+      // questions, answers, review state or a pending reconciliation.
+      app.content.application_import={...previous,last_retry:receipt};
+    }else{
+      app.content.status='NEEDS_INPUT';app.content.application_import=receipt;
+      if(receipt.document_id)app.content.source_document_id=receipt.document_id;
+      const d=Import.diagnosis(receipt);
+      app.content.inputs=[...(app.content.inputs||[]).filter(i=>i.origin!=='APPLICATION_IMPORT'),{id:C.randomUUID(),origin:'APPLICATION_IMPORT',status:'OPEN',prompt:receipt.warnings[0],reason:d.title}];
+    }
+    return {brain,accepted:!!candidate};
+  }
   async function draftQuestion(ctx,brain,app,q,existing,preliminary=false) {
         const reading = await G.load(repo,ctx,brain,app);
         const selected = W.select(q,brain,app);
@@ -352,10 +403,10 @@ function service(repo, ai, { dispatch = null, applicationFetch = null } = {}) {
     try {
       const brain = await repo.brain(ctx);
       let app = await repo.app(ctx, job.application_id);
-      if (strategyInputHash(app, brain) !== job.input_hash)
-        return await fail("STALE_INPUTS", "The application's program, funder details, questions or approved facts changed after strategy generation was requested. Nothing was saved; generate again.");
-      if (["SUBMITTED", "ARCHIVED"].includes(app.content.status))
+      if (app.content.deleted_at || ["SUBMITTED", "ARCHIVED"].includes(app.content.status))
         return await fail("LOCKED", "Submitted applications are immutable.");
+      if (strategyInputHash(app, brain) !== job.input_hash)
+        return await fail("STALE_INPUTS", "The application was deleted/restored or its program, funder details, questions or approved facts changed after strategy generation was requested. Nothing was saved; generate again.");
       const built = await strategyRequest(ctx, brain, app);
       Object.assign(result, {
         research_eligible: built.eligible, research_ranked: built.ranked, research_selected: built.selected.length,
@@ -647,7 +698,7 @@ function service(repo, ai, { dispatch = null, applicationFetch = null } = {}) {
       }
       if (action==="foundation_profile_matches") {
         const org=await repo.searchProfile(ctx);
-        return require("../source-intelligence/profile-discovery").findProfileSources(repo.db,org);
+        return {...await require("../source-intelligence/profile-discovery").findProfileSources(repo.db,org),can_collect_sources:repo.canCollectSources?await repo.canCollectSources(ctx):false};
       }
       let brain = await repo.brain(ctx);
       if (action === "seed") return seed(repo, ctx, brain, body.pack);
@@ -868,41 +919,19 @@ function service(repo, ai, { dispatch = null, applicationFetch = null } = {}) {
         const item=await repo.pipelineItem(ctx,body.pipeline_item_id);
         const appId=Import.pipelineApplicationId(ctx.org_id,item.id);
         const existing=(await repo.listApps(ctx)).find(a=>a.id===appId||a.pipeline_item_id===item.id);
-        if(existing)return repo.app(ctx,existing.id);
-        const found=await Import.discover(item.opportunity,applicationFetch);
+        if(existing){if(existing.deleted_at)C.fail('This pipeline application is in Deleted applications. Restore it before reopening.',409);return repo.app(ctx,existing.id);}
+        const workflow=require('../../../assets/opportunity-workflow');
+        if(item.opportunity.source_active===false||workflow.daysUntil(item.opportunity.deadline,workflow.day(new Date(),'America/New_York'))<0)C.fail('This opportunity is closed or its deadline has passed. Verify a current cycle before importing its application.',409);
+        const metadata=Import.metadata(item);
+        const unresolved=!!item.funding_program&&!item.funding_program.canonical_program_name;
+        const found=await Import.discover({...item.opportunity,application_url:metadata.source.application_url,identity_unresolved:unresolved},applicationFetch);
         const app={id:appId,org_id:ctx.org_id,revision:0,content:{
-          funder_name:"",grant_program_name:C.str(item.title||item.opportunity.title||"Pipeline application",300),
+          ...metadata.fields,source_metadata:metadata.source,
           opportunity_id:item.opportunity_id,pipeline_item_id:item.id,pipeline_stage_at_import:item.stage,
           created_by:ctx.user_id,created_at:C.now(),status:"UPLOADED",inputs:[],attachments:[],strategy:null,
-          application_import:{status:found.status,url:found.url,sha256:found.sha256||null,imported_at:C.now(),attempts:found.attempts,warnings:found.warnings,review_required:true},
+          application_import:null,
         },questions:[],answers:[]};
-        if(found.status==="PUBLIC_APPLICATION_FOUND"){
-          const source=await upload(ctx,brain,{filename:found.filename,title:app.content.grant_program_name+' — original application',document_type:"GRANT_APPLICATION",base64:found.bytes.toString('base64')});
-          brain=await repo.brain(ctx);app.content.source_document_id=source.id;
-          try {
-          if(source.extraction_status!=="COMPLETE")C.fail("The original application was saved but extraction failed. Open the Document Vault to review it.",422);
-          // PDF questions use the original PDF's page locators. HTML controls
-          // use their saved worksheet with every field and visible source text.
-          const marker=source.blocks.findIndex(b=>b.text==='ORIGINAL PUBLIC PAGE');
-          if(found.text.startsWith('APPLICATION FIELDS\n')&&marker<0)C.fail('The original form could not be mapped completely. Upload the complete application.',422);
-          const fieldBlocks=marker>=0?source.blocks.slice(0,marker):source.blocks;
-          prepareParsed(app,P.basic(fieldBlocks),brain);
-          if(!app.questions.length)C.fail("The original application was saved but its questions could not be mapped. Upload or review the full application.",422);
-          if(found.filename!=='application.pdf'){
-            const canonical=found.parsed.questions;
-            // Re-anchor parsed form labels to the stored text file's real lines.
-            if(canonical.length===app.questions.length)app.questions=app.questions.map((q,i)=>({...q,question_type:canonical[i].question_type,required:canonical[i].required,input_format:canonical[i].input_format,input_min:canonical[i].input_min,input_max:canonical[i].input_max}));
-          }
-          app.content.application_import.warnings.push(...(source.warnings||[]));
-          } catch(e) {
-            app.questions=[];app.answers=[];app.content.status='NEEDS_INPUT';
-            app.content.application_import.status='NEEDS_SOURCE_REVIEW';
-            app.content.application_import.warnings.push(e.message);
-            app.content.inputs=[{id:C.randomUUID(),origin:'APPLICATION_IMPORT',status:'OPEN',prompt:'The original was saved. Upload a readable complete application or review and enter every question before drafting.',reason:e.message}];
-          }
-        }else{
-          app.content.status='NEEDS_INPUT';app.content.inputs=[{id:C.randomUUID(),origin:'APPLICATION_IMPORT',status:'OPEN',prompt:found.warnings[0],reason:'The complete application is not publicly accessible.'}];
-        }
+        ({brain}=await importSource(ctx,brain,app,found));
         return repo.save(ctx,app,brain,'IMPORTED_FROM_PIPELINE');
       }
       if (action === "new_application") {
@@ -967,7 +996,37 @@ function service(repo, ai, { dispatch = null, applicationFetch = null } = {}) {
         return rows;
       }
       const app = await repo.app(ctx, body.application_id);
+      if(['delete_application','restore_application'].includes(action)){
+        owner(ctx);checkRevision(body,app);
+        if(['SUBMITTED','ARCHIVED'].includes(app.content.status))C.fail('Submitted and archived application records are permanent. Their history cannot be deleted.',409);
+        if(action==='delete_application'){
+          if(body.confirmation!=='DELETE_APPLICATION_WORKSPACE')C.fail('Confirm deleting this application workspace.');
+          if(app.content.deleted_at)return Feedback.visible(app,brain,ctx.role);
+          app.content.deleted_at=C.now();app.content.deleted_by=ctx.user_id;
+          app.content.lifecycle_revision=(app.content.lifecycle_revision||0)+1;
+        }else{
+          if(!app.content.deleted_at)return Feedback.visible(app,brain,ctx.role);
+          app.content.deleted_at=null;app.content.deleted_by=null;app.content.restored_at=C.now();app.content.restored_by=ctx.user_id;
+        }
+        return Feedback.visible(await repo.save(ctx,app,brain,action==='delete_application'?'APPLICATION_DELETED_RECOVERABLY':'APPLICATION_RESTORED'),brain,ctx.role);
+      }
+      if(app.content.deleted_at&&action!=='get_application')C.fail('Restore this deleted application before working on it.',409);
       if (action === "get_application") {
+        // Backfill the display of legacy failed imports from owned source records;
+        // GET never writes application data or fetches a funder page.
+        if(app.content.pipeline_item_id&&!app.content.source_metadata){
+          try{const item=await repo.pipelineItem(ctx,app.content.pipeline_item_id,{requireEligible:false});
+            if(item.opportunity_id===app.content.opportunity_id){const metadata=Import.metadata(item);app.content.source_metadata=metadata.source;}
+          }catch{ /* A removed pipeline record does not make saved work inaccessible. */ }
+        }
+        if(app.content.application_import?.status==='NEEDS_UPLOAD'){
+          const d=Import.diagnosis(app.content.application_import);
+          app.content.application_import={...app.content.application_import,diagnosis:d,warnings:[d.message]};
+          app.content.inputs=(app.content.inputs||[]).map(i=>i.origin==='APPLICATION_IMPORT'?{...i,prompt:d.message,reason:d.title}:i);
+        }
+        if(app.content.application_import?.last_retry){const r=app.content.application_import.last_retry;
+          if(r.status!=='PUBLIC_APPLICATION_FOUND')r.diagnosis=Import.diagnosis(r);
+        }
         let reading;
         try {reading = await G.load(repo,ctx,brain,app);} catch(e) {reading=G.read([],app);reading.warnings.push(e.message);}
         return {
@@ -1045,6 +1104,26 @@ function service(repo, ai, { dispatch = null, applicationFetch = null } = {}) {
       }
       if(action==='first_draft_status')return {app:Feedback.visible(app,brain,ctx.role),pending:First.pending(app,brain).map(q=>q.id)};
       checkRevision(body, app);
+      if(action==='retry_application_import'){
+        if(['SUBMITTED','ARCHIVED'].includes(app.content.status))C.fail('Submitted applications are immutable. Create a new application for a new cycle.',409);
+        if(body.source_reviewed!==true)C.fail('Confirm that this source belongs to the intended grant program and cycle.');
+        let url;try{url=Import.safeUrl(C.str(body.url,2000));}catch{C.fail('Use a public official URL without credentials.');}
+        if(app.content.pipeline_item_id){
+          const item=await repo.pipelineItem(ctx,app.content.pipeline_item_id,{requireEligible:false});
+          if(item.opportunity_id!==app.content.opportunity_id)C.fail('The pipeline opportunity changed. Review it before retrying.',409);
+          const metadata=Import.metadata(item);app.content.source_metadata=metadata.source;
+        }
+        const program=C.str(body.grant_program_name||'',300).trim(),cycle=C.str(body.application_cycle||'',300).trim();
+        if(app.content.source_metadata?.program_identity_unresolved&&!program&&!app.content.source_identity_review)C.fail('Enter the specific funder grant program before retrying this unresolved overview.');
+        const selection={url,grant_program_name:program||app.content.grant_program_name,application_cycle:cycle||app.content.application_cycle||null,reviewed_by:ctx.user_id,reviewed_at:C.now()};
+        const found=await Import.discover({application_url:url},applicationFetch);
+        const outcome=await importSource(ctx,brain,app,found,selection);brain=outcome.brain;
+        if(app.content.application_import.last_retry)app.content.application_import.last_retry.source_selection=selection;
+        else app.content.application_import.source_selection=selection;
+        // User-selected identity is kept separate from source verification;
+        // importSource applies it only to an accepted candidate before reconciliation.
+        return Feedback.visible(await repo.save(ctx,app,brain,'APPLICATION_SOURCE_RETRIED'),brain,ctx.role);
+      }
       // A completed attempt is a real no-op: keep its stored review state.
       if(['first_draft_question','first_draft_failure'].includes(action)){
         if(!app.content.first_draft)C.fail('Start Prepare first draft first.');
@@ -1068,8 +1147,11 @@ function service(repo, ai, { dispatch = null, applicationFetch = null } = {}) {
         const packet=await Guidance.load(repo,ctx,brain,app,null,q);a.guidance_trace=Guidance.assess(packet,app,brain,q,a.draft_text,body.assessments,ctx);
       }else if(action==='find_funder_history'){
         if(app.content.funder_history?.status&& !body.refresh_confirmed)return Feedback.visible(app,brain,ctx.role);
-        let url=app.content.application_import?.url;
-        if(app.content.opportunity_id){const [opp]=await repo.db.select('opportunities',{id:'eq.'+C.id(app.content.opportunity_id),limit:1});url=opp?.source_url||url;}
+        // An accepted corrected source takes precedence over a stale capture.
+        // Failed retry selections never replace the accepted source identity.
+        let url=Import.publicUrl(app.content.source_identity_review?.url);
+        if(!url&&app.content.opportunity_id){const [opp]=await repo.db.select('opportunities',{id:'eq.'+C.id(app.content.opportunity_id),limit:1});url=Import.publicUrl(opp?.source_url);}
+        url=url||Import.publicUrl(app.content.application_import?.url);
         if(body.url)url=Import.safeUrl(C.str(body.url,2000));
         const found=url?await History.discover(url,applicationFetch):{sources:[],attempts:[{url:null,reason:'Add the official funder page or upload an award history document.'}]};
         const sources=[];

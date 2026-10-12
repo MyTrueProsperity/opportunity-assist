@@ -439,11 +439,11 @@
         '<div class="gf-grid">' +
         card('1', 'Add your documents', 'Keep the originals in Document Vault. Choose Read & suggest facts to process a document. You can pause and resume without losing completed sections.', 'go-vault', 'Open Document Vault', uploaded.length + ' originals saved') +
         card('2', 'Review suggested facts', 'Compare each fact with its source. Approve accurate information for grants, keep it private, or leave it for later. Plans must stay labeled as plans.', 'go-truth', 'Review facts', ready.length + ' facts usable for drafting · ' + pending.length + ' need attention') +
-        card('3', 'Start a grant application', 'Upload or paste the funder’s actual questions. The application will guide you through choosing a program, drafting answers, checking claims, and exporting.', 'new', 'Start an application', s.data.applications.length + ' saved application' + (s.data.applications.length === 1 ? '' : 's')) + '</div>' +
+        card('3', 'Start a grant application', 'Upload or paste the funder’s actual questions. The application will guide you through choosing a program, drafting answers, checking claims, and exporting.', 'new', 'Start an application', s.data.applications.filter(a=>!a.deleted_at).length + ' active applications') + '</div>' +
         '<section class="gf-card"><h3>What does each step mean?</h3><p><strong>Saved:</strong> the original file is in your private vault. <strong>Read:</strong> its text is available. <strong>Suggested:</strong> facts have been pulled out for you to check. <strong>Ready for drafting:</strong> both the fact and its source meet the grant-use rules.</p><p>Research Library contains community statistics and research. Organization Brain contains facts about your organization. Grant Factory can use relevant approved information from both.</p><p>It prepares drafts and downloads. You make the final decisions and submit through the funder’s process.</p><details><summary>Existing setup and advanced tools</summary><p>Your saved documents, facts, programs and writing voice remain in place. The seed import is only for an initial setup or missing seed records.</p>' + (s.data.role === 'OWNER' ? btn('seed', 'Import Institute seed data') + btn('voice', 'Writing voice') : '') + '</details></section>';
     }
     function renderApplications(el) {
-      const apps = s.data.applications;
+      const apps = s.data.applications.filter(a=>!a.deleted_at),deleted=s.data.applications.filter(a=>a.deleted_at);
       el.innerHTML =
         '<div class="gf-row"><h2>Your applications</h2>' +
         btn("pipeline-picker", "Import from Qualified or Planning", "", true) + btn("new", "Upload / paste application") +
@@ -463,13 +463,14 @@
                   esc(a.deadline || "Not confirmed") +
                   "</p>" +
                   btn("open", "Open workspace", a.id) +
+                  (s.data.role==='OWNER'&&!['SUBMITTED','ARCHIVED'].includes(a.status)?btn('delete-application','Delete application',a.id):'')+
                   "</article>",
               )
               .join("") +
             "</div>"
           : '<div class="gf-card gf-empty"><h3>Start with the funder’s application</h3><p>Upload a PDF, DOCX or text file, or paste the questions. Every extracted requirement stays reviewable.</p>' +
             btn("new", "Create your first application", "", true) +
-            "</div>");
+            "</div>")+(deleted.length?'<details class="gf-card"><summary>Deleted applications ('+deleted.length+')</summary><p>These workspaces are hidden from active applications. Their answers, original documents and history are retained. Restoring keeps the same workspace.</p>'+deleted.map(a=>'<p><strong>'+esc(a.grant_program_name)+'</strong> · Deleted '+esc(a.deleted_at)+(s.data.role==='OWNER'?btn('restore-application','Restore application',a.id):'<span>Executive access is required to restore.</span>')+'</p>').join('')+'</details>':'');
     }
     function renderBrain(el) {
       let facts = s.data.brain.facts.filter(f => !f.research);
@@ -912,17 +913,24 @@
     }
     function proposalView(locked){const r=s.app.proposal_analysis||{},saved=s.app.content.proposal_review;return '<section class="gf-card"><h3>Review the whole proposal</h3><p>Check the funding case across all answers, the shared budget and actual funder criteria. This review does not calculate eligibility, a funder score or funding probability.</p>'+(!locked&&s.data.role==='OWNER'?btn('proposal-review','Review criteria & complete proposal'):'')+'<p>'+esc(saved?.reviewed&&saved.signature===r.signature?'Whole-proposal review is current.':'Whole-proposal review is unresolved or stale.')+'</p>'+[...(r.issues||[]),...(r.warnings||[])].map(i=>'<p class="gf-note">'+esc(i.message)+'</p>').join('')+'<h4>Supplied funder criteria</h4>'+(r.criteria||[]).map(c=>'<blockquote>'+esc(c.text)+'</blockquote><p>'+esc(c.source_locator||'Compare with original')+'</p>').join('')+(!(r.criteria||[]).length?'<p>No funder rubric supplied. The following is an editorial checklist, not invented funder scoring.</p>':'')+(r.editorial_checklist||[]).map(x=>'<p>'+esc(x)+'</p>').join('')+'</section>';}
     function showProposalReview(){const r=s.app.proposal_analysis||{};dialog('Whole-proposal review','<p>Read the complete proposal and original criteria. A suggested match is not proof that a criterion is answered.</p>'+(r.criteria||[]).map((c,i)=>'<section class="gf-card"><blockquote>'+esc(c.text)+'</blockquote><label>Answers addressing this criterion<select multiple name="criterion'+i+'">'+options(s.app.questions.map(q=>[q.id,q.question_text.split('\n')[0]]),'')+'</select></label>'+area('criterion_note'+i,'How the answers satisfy this criterion')+'</section>').join('')+(r.issues||[]).map(i=>'<p class="gf-note">'+esc(i.message)+'</p>').join('')+area('note','Whole-proposal finding, evidence applicability and remaining limitations')+check('reviewed','I reviewed the whole proposal, costed scope and applicable funder criteria'),async f=>mutate('review_proposal',{reviewed:f.has('reviewed'),note:f.get('note'),criteria:(r.criteria||[]).map((c,i)=>({id:c.id,status:'COVERED',question_ids:f.getAll('criterion'+i),note:f.get('criterion_note'+i)}))}));}
+    function applicationImportView(locked){
+      const a=s.app.content,m=a.application_import;if(!m)return '';
+      const publicLink=value=>{try{const u=new URL(value);if(!/^https?:$/.test(u.protocol)||u.username||u.password||[...u.searchParams.keys()].some(k=>/^(?:access_token|token|api_key|key|secret|session|authorization|auth|code|signature|sig)$/i.test(k)))return '';return '<a href="'+esc(u.href)+'" target="_blank" rel="noopener">Open captured source</a>';}catch{return '';}};
+      const receipt=(r,retry=false)=>'<div><strong>'+esc(retry?'Latest retry: ':'')+esc(r.diagnosis?.title||label(r.status))+'</strong> '+publicLink(r.url)+(r.diagnosis?'<p>'+esc(r.diagnosis.message)+'</p>':(r.warnings||[]).map(w=>'<p class="gf-note">'+esc(w)+'</p>').join(''))+((r.attempts||[]).length?'<details open><summary>Sources checked</summary>'+r.attempts.map(x=>'<p>'+esc(x.url||'Source URL withheld')+'<br>'+esc(x.reason||label(x.code))+'</p>').join('')+'</details>':'')+'</div>';
+      const source=a.source_metadata||{};
+      return '<section class="gf-card"><h3>Application source</h3>'+receipt(m)+(m.last_retry?receipt(m.last_retry,true):'')+'<p class="gf-note">Captured funder: '+esc(source.fields?.funder_name||'Unknown')+' · Program: '+esc(source.fields?.grant_program_name||'Unknown')+' · Cycle: '+esc(source.fields?.application_cycle||'Unknown')+' · Deadline: '+esc(source.fields?.deadline||'Unknown')+'</p><p class="gf-note">Source review: '+esc(label(source.review_status||'UNVERIFIED'))+' · Last verified: '+esc(source.verified_at||'Not recorded')+'</p>'+(source.warnings||[]).map(w=>'<p class="gf-note">'+esc(w)+'</p>').join('')+(!locked?btn('retry-application-import','Retry with corrected source')+btn('attach-application','Upload complete application'):'')+'<p class="gf-note">Retry checks at most three public pages. It uses no AI calls, preserves saved answers, and asks you to review changes to existing questions.</p></section>';
+    }
     function renderApplication(el) {
       const app = s.app,
         a = app.content;
-      const locked = ["SUBMITTED", "ARCHIVED"].includes(a.status);
+      const locked = !!a.deleted_at || ["SUBMITTED", "ARCHIVED"].includes(a.status);
       el.innerHTML =
         '<div class="gf-row"><div>' +
         btn("back", "← All applications") +
         '<h2 style="margin-top:12px">' +
         esc(a.grant_program_name) +
         '</h2><p class="gf-meta">' +
-        esc(a.funder_name || "Funder not entered") +
+        esc(a.funder_name || a.source_metadata?.fields?.funder_name || "Funder not entered") +
         " · Revision " +
         app.revision +
         " · " +
@@ -931,7 +939,7 @@
         btn("export-docx", "Export DOCX") +
         btn("export-zip", "Funder package") +
         (s.data.role==="OWNER"?btn("export-internal_zip", "Internal review package") + btn("export-json", "Internal evidence JSON"):"") +
-        '</div></div>' + (!locked ? '<div class="gf-callout"><strong>Prepare the application: </strong>Import the complete questions, then let OA propose the best supported program and prepare the answers together. '+(s.app.ai_condition_review?.can_generate?btn('prepare-first-draft',s.firstDraftProgress?'Preparing '+s.firstDraftProgress.done+' / '+s.firstDraftProgress.total:'Prepare first draft','',true):btn('ai-conditions','Review AI conditions before drafting'))+'<p class="gf-note">Uses your workspace’s AI allowance. Saved answers are preserved. OA fills supported fields and drafts narratives; signatures, commitments and unsupported details stay in Needs My Input. Review the original questions, proposed strategy and claims before approval.</p></div>' : '') + (a.program_selection?.status==='PROPOSED'?'<div class="gf-card"><strong>Proposed program: '+esc(s.data.brain.programs.find(p=>p.id===a.primary_program_id)?.name||'Review program selection')+'</strong><p>'+esc(a.program_selection.reason)+'</p><p class="gf-note">Review this choice in Strategy &amp; eligibility before approval.</p></div>':'') + (a.application_import?'<div class="gf-card"><strong>'+esc(label(a.application_import.status))+'</strong>'+(a.application_import.url&&/^https?:\/\//i.test(a.application_import.url)?' · <a href="'+esc(a.application_import.url)+'" target="_blank" rel="noopener">Open funder application</a>':'')+(a.application_import.warnings||[]).map(w=>'<p class="gf-note">'+esc(w)+'</p>').join('')+'</div>':'') + '<div class="gf-tabs">' +
+        '</div></div>' + (!locked ? '<div class="gf-callout"><strong>Prepare the application: </strong>Import the complete questions, then let OA propose the best supported program and prepare the answers together. '+(s.app.ai_condition_review?.can_generate?btn('prepare-first-draft',s.firstDraftProgress?'Preparing '+s.firstDraftProgress.done+' / '+s.firstDraftProgress.total:'Prepare first draft','',true):btn('ai-conditions','Review AI conditions before drafting'))+'<p class="gf-note">Uses your workspace’s AI allowance. Saved answers are preserved. OA fills supported fields and drafts narratives; signatures, commitments and unsupported details stay in Needs My Input. Review the original questions, proposed strategy and claims before approval.</p></div>' : '') + (a.program_selection?.status==='PROPOSED'?'<div class="gf-card"><strong>Proposed program: '+esc(s.data.brain.programs.find(p=>p.id===a.primary_program_id)?.name||'Review program selection')+'</strong><p>'+esc(a.program_selection.reason)+'</p><p class="gf-note">Review this choice in Strategy &amp; eligibility before approval.</p></div>':'') + applicationImportView(locked) + '<div class="gf-tabs">' +
         [
           ["questions", "Questions & drafts"],
           ["requirements", "Source checklist"],
@@ -1311,9 +1319,13 @@
       }:null);
       const submit=first.querySelector('[type="submit"]');if(submit)submit.textContent='Preview profile changes';
     }
-    async function foundationMatches() {
-      const result=await api('foundation_profile_matches');
-      dialog('Foundations matching your search profile','<p>Free matching against saved, approved sources. No AI call or live search. These are leads to review, not confirmed eligibility or open applications.</p><p>Topics: '+esc(result.topics.join(', ')||'None found — review Programs, Target populations and Keywords')+'</p>'+result.items.map(r=>'<article class="gf-card"><h3>'+esc(r.source_name)+'</h3><p>'+esc(r.program_name||'')+'</p><p>Matched: '+esc(r.matched_topics.join(', '))+' · '+esc(r.geographic_match)+'</p><p class="gf-meta">'+esc(r.current_status||'Status needs review')+' · Last verified '+esc(r.last_verified_at||'not recorded')+'</p><a href="'+esc(r.source_url)+'" target="_blank" rel="noopener">Review source ↗</a></article>').join('')+(!result.items.length?'<p>No matching approved sources found in this bounded lookup. This does not mean there are no suitable grants.</p>':'')+'<p class="gf-meta">Checked '+result.examined+' saved sources'+(result.limited?' (lookup limit reached)':'')+'.</p>');
+    async function foundationMatches(){
+      const result=await api('foundation_profile_matches'),orgId=s.orgId;
+      const modal=dialog('Foundations matching your search profile',window.OASourceMatches.render(result,result.can_collect_sources));
+      window.OASourceMatches.bind(modal,{orgId,currentOrg:()=>s.orgId,session:()=>sb.auth.getSession(),openOpportunity:id=>{
+        if(Object.keys(s.unsaved).some(key=>s.unsaved[key]!==s.app?.answers.find(a=>a.question_id===key)?.draft_text)){message('Save your changed answers before opening another opportunity.',true);return;}
+        modal.close();window.dispatchEvent(new CustomEvent('oa:open-opportunity',{detail:{orgId,opportunityId:id}}));
+      }});
     }
     async function perform(action, id, button) {
       if (s.busy) return;
@@ -1345,6 +1357,13 @@
           throw Error("Save your changed answers before continuing.");
         if(action==='search-profile')await reviewSearchProfile();
         else if(action==='foundation-matches')await foundationMatches();
+        else if(action==='delete-application'||action==='restore-application'){
+          const target=s.data.applications.find(a=>a.id===id);if(!target)throw Error('Application not found. Refresh the list.');
+          if(action==='delete-application'){const deletion=dialog('Delete application workspace','<p>Delete <strong>'+esc(target.grant_program_name)+'</strong> from active applications? Its answers, documents and history remain recoverable under Deleted applications. Your Capture Pipeline is unchanged.</p>',async()=>{
+            await api('delete_application',{application_id:id,revision:target.revision,confirmation:'DELETE_APPLICATION_WORKSPACE'});if(s.app?.id===id){s.app=null;s.unsaved={};}s.tab='applications';await refresh();message('Application deleted. You can restore it under Deleted applications.');
+          });deletion.querySelector('[type="submit"]').textContent='Delete application';}
+          else{await api('restore_application',{application_id:id,revision:target.revision});await refresh();message('Application restored with its saved answers and sources.');}
+        }
         else if(action==='pipeline-picker'){
           await pipelinePicker();
         }else if(action==='funder-history'){
@@ -1356,6 +1375,15 @@
           });
         }else if(action==='prepare-first-draft'){
           await prepareFirstDraft();
+        }else if(action==='retry-application-import'){
+          const a=s.app.content,selection=a.application_import?.last_retry?.source_selection||a.application_import?.source_selection||{};
+          const program=selection.grant_program_name||a.source_identity_review?.grant_program_name||(a.source_metadata?.program_identity_unresolved?'':a.grant_program_name);
+          const retryDialog=dialog('Retry the application source','<p>Choose the specific funder program and current cycle. A general grants directory may contain several different applications. Saved answers remain unchanged; replacement questions require a repair review.</p>'+field('url','Correct official application / program link',selection.url||'','url')+field('grant_program_name','Specific funder grant program',program)+field('application_cycle','Application cycle (leave blank if unknown)',selection.application_cycle||a.application_cycle||'')+check('source_reviewed','I checked that this source belongs to the intended grant program and cycle.')+'<p class="gf-note">Use a public link without credentials. For a protected portal, upload the complete application instead. No AI allowance is used by this retry.</p>',async f=>{
+            if(Object.keys(s.unsaved).some(id=>s.unsaved[id]!==s.app.answers.find(x=>x.question_id===id)?.draft_text))throw Error('Save your changed answers before retrying the source.');
+            await mutate('retry_application_import',{url:f.get('url'),grant_program_name:f.get('grant_program_name'),application_cycle:f.get('application_cycle'),source_reviewed:f.has('source_reviewed')});
+            message(s.app.content.reconciliation_preview?'Source imported. Review the proposed repairs before applying them.':'Source check completed. Review the application source result.');
+          });
+          retryDialog.querySelector('[type="submit"]').textContent='Check source';
         }else if(action==='attach-application'){
           dialog('Upload the complete application', '<p>Use the full application, including portal fields, instructions and attachments.</p><label>Application file (PDF, DOCX or text; maximum 3 MB)<input type="file" name="file" accept=".pdf,.docx,.txt"></label>'+area('text','Or paste all application questions')+'<p>Saved answers remain in place. If fields change, review the repair preview before applying it.</p>' ,async f=>{
             const file=f.get('file');const payload=file?.size?await filePayload(file):{text:f.get('text')};
@@ -2253,7 +2281,7 @@
       s.app=await api('import_pipeline',{pipeline_item_id:itemId});
       s.tab='applications';s.appTab='questions';s.unsaved={};await refresh();
       if(draft&&s.app.questions.length&&!s.app.answers.some(a=>a.draft_text?.trim()))await prepareFirstDraft();
-      else message(!s.app.questions.length?'Application workspace opened. Upload the complete application from the funder portal to continue.':'Application workspace opened. Your saved answers are preserved.');
+      else message(!s.app.questions.length?'Application workspace opened. Review the source result, then correct its link or upload the complete application.':'Application workspace opened. Your saved answers are preserved.');
     }
     async function pipelinePicker(offset=0) {
       const page=await api('pipeline_candidates',{offset});

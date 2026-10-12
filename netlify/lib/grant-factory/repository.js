@@ -251,18 +251,28 @@ function repository(env = process.env, fetcher = fetch, db = createDb(env, fetch
       });
       return { items: rows.slice(0,100), has_more: rows.length > 100, offset };
     },
-    async pipelineItem(ctx, pipelineId) {
+    async pipelineItem(ctx, pipelineId, { requireEligible = true } = {}) {
       const [item] = await db.select("pipeline_items", { org_id: "eq." + ctx.org_id, id: "eq." + id(pipelineId), limit: 1 });
       if (!item) fail("Pipeline item not found in this organization",404);
-      if (!["Qualified","Planning"].includes(item.stage)) fail("Import applications from Qualified or Planning.",409);
+      if (requireEligible && !["Qualified","Planning"].includes(item.stage)) fail("Import applications from Qualified or Planning.",409);
       const [opportunity] = await db.select("opportunities", { id: "eq." + id(item.opportunity_id), limit: 1 });
       if (!opportunity) fail("The opportunity behind this pipeline item is unavailable",404);
-      return { ...item, opportunity };
+      // Follow only the records linked to this organization's owned pipeline item.
+      const [funding_program] = opportunity.funding_program_id ? await db.select("funding_programs", {
+        id:"eq."+id(opportunity.funding_program_id),select:"id,source_name,canonical_program_name,source_url,application_url,review_status,last_verified_at",limit:1,
+      }) : [];
+      const [funding_cycle] = opportunity.source_cycle_id && opportunity.funding_program_id ? await db.select("funding_cycles", {
+        id:"eq."+id(opportunity.source_cycle_id),program_id:"eq."+id(opportunity.funding_program_id),select:"id,cycle_key,deadline,status",limit:1,
+      }) : [];
+      return { ...item, opportunity, funding_program, funding_cycle };
     },
     async listApps(ctx) {
       return (await db.all("gf_applications", { org_id: "eq." + ctx.org_id }))
         .map(flatten)
-        .sort((a, b) => b.updated_at.localeCompare(a.updated_at));
+        .sort((a, b) => new Date(b.updated_at)-new Date(a.updated_at));
+    },
+    async canCollectSources(ctx){
+      try{const rows=await db.select('admins',{profile_id:'eq.'+ctx.user_id,select:'profile_id',limit:1});return rows.length===1;}catch{return false;}
     },
     async storage(path, { method = "GET", bytes, mime } = {}) {
       if (!/^[0-9a-f-]+\/[0-9a-f-]+\/[a-zA-Z0-9_.-]+$/.test(path))
