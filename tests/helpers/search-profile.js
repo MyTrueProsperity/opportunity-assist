@@ -1,7 +1,7 @@
 "use strict";
 const fs=require("node:fs"),path=require("node:path"),C=require("../../netlify/lib/grant-factory/core");
 const {createTestRepo,ORG,OTHER,OWNER,MANAGER,OUTSIDER}=require("./grant-db");
-const sql=fs.readFileSync(path.join(__dirname,"../../docs/local-proposals/organization-search-profile.sql"),"utf8");
+const sql=fs.readFileSync(path.join(__dirname,"../../supabase/migrations/20261012025223_organization_search_profile.sql"),"utf8");
 function fact(fields={}){return {fact_key:"target_populations",display_name:"Target populations",value:"Youth ages 12–18",verification_status:"APPROVED",sensitivity_level:"PUBLIC",grant_use_allowed:true,external_use_allowed:true,source_reference:"Public program report",source_locator:"Audience",...fields};}
 async function setup(){
   const fixture=await createTestRepo(),{pg,repo,owner}=fixture;

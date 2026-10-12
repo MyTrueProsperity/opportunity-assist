@@ -26,9 +26,11 @@ Bill's [shared Young Futures questions](https://chatgpt.com/share/6ac84f46-e720-
 
 ## Database prerequisite and rollout
 
-This is a draft PR only. The atomic transfer RPC is provided for review in [local-proposals/organization-search-profile.sql](local-proposals/organization-search-profile.sql). It updates the existing Organization row and writes provenance to existing `gf_history` in one transaction, using workspace/profile locks and optimistic comparisons. It is SECURITY INVOKER and executable only by the existing server service role; it additionally requires GF executive + OA organization membership. It does not expand browser permissions or alter existing RLS policies.
+The atomic transfer RPC is versioned in [20261012025223_organization_search_profile.sql](../supabase/migrations/20261012025223_organization_search_profile.sql), generated with Supabase CLI 2.120.0. It updates the existing Organization row and writes provenance to existing `gf_history` in one transaction, using workspace/profile locks and optimistic comparisons. It is SECURITY INVOKER and executable only by the existing server service role; it additionally requires GF executive + OA organization membership. It does not expand browser permissions or alter existing RLS policies.
 
-Before an authorized deployment, create a real migration with `supabase migration new`, include the reviewed SQL, and apply it through the normal reviewed migration process. No production SQL was applied here. If code runs before the RPC is installed, transfer returns a clear setup-needed error with no profile writes. Cached matching and manual collection use existing schema. No production data or paid API calls are needed to validate this PR.
+Install that migration before publishing the application code. It replaces the original review proposal and requests a Data API schema-cache refresh. The transfer tests load the exact migration, including its role permissions and idempotent function definition. If code runs before the RPC is installed, transfer returns a clear setup-needed error with no profile writes. Cached matching and manual collection use existing schema.
+
+Production verification should check the function's role permissions and run an empty-patch transfer under the server role using an existing executive's current snapshot. This verifies the save path without changing organization facts or history. Compare source-engine/state settings and research-cycle counts before and after rollout. Do not start research, collection jobs or fact transfers as a deployment check.
 
 ## Limits
 
