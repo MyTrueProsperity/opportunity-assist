@@ -912,6 +912,13 @@
     }
     function proposalView(locked){const r=s.app.proposal_analysis||{},saved=s.app.content.proposal_review;return '<section class="gf-card"><h3>Review the whole proposal</h3><p>Check the funding case across all answers, the shared budget and actual funder criteria. This review does not calculate eligibility, a funder score or funding probability.</p>'+(!locked&&s.data.role==='OWNER'?btn('proposal-review','Review criteria & complete proposal'):'')+'<p>'+esc(saved?.reviewed&&saved.signature===r.signature?'Whole-proposal review is current.':'Whole-proposal review is unresolved or stale.')+'</p>'+[...(r.issues||[]),...(r.warnings||[])].map(i=>'<p class="gf-note">'+esc(i.message)+'</p>').join('')+'<h4>Supplied funder criteria</h4>'+(r.criteria||[]).map(c=>'<blockquote>'+esc(c.text)+'</blockquote><p>'+esc(c.source_locator||'Compare with original')+'</p>').join('')+(!(r.criteria||[]).length?'<p>No funder rubric supplied. The following is an editorial checklist, not invented funder scoring.</p>':'')+(r.editorial_checklist||[]).map(x=>'<p>'+esc(x)+'</p>').join('')+'</section>';}
     function showProposalReview(){const r=s.app.proposal_analysis||{};dialog('Whole-proposal review','<p>Read the complete proposal and original criteria. A suggested match is not proof that a criterion is answered.</p>'+(r.criteria||[]).map((c,i)=>'<section class="gf-card"><blockquote>'+esc(c.text)+'</blockquote><label>Answers addressing this criterion<select multiple name="criterion'+i+'">'+options(s.app.questions.map(q=>[q.id,q.question_text.split('\n')[0]]),'')+'</select></label>'+area('criterion_note'+i,'How the answers satisfy this criterion')+'</section>').join('')+(r.issues||[]).map(i=>'<p class="gf-note">'+esc(i.message)+'</p>').join('')+area('note','Whole-proposal finding, evidence applicability and remaining limitations')+check('reviewed','I reviewed the whole proposal, costed scope and applicable funder criteria'),async f=>mutate('review_proposal',{reviewed:f.has('reviewed'),note:f.get('note'),criteria:(r.criteria||[]).map((c,i)=>({id:c.id,status:'COVERED',question_ids:f.getAll('criterion'+i),note:f.get('criterion_note'+i)}))}));}
+    function applicationImportView(locked){
+      const a=s.app.content,m=a.application_import;if(!m)return '';
+      const publicLink=value=>{try{const u=new URL(value);if(!/^https?:$/.test(u.protocol)||u.username||u.password||[...u.searchParams.keys()].some(k=>/^(?:access_token|token|api_key|key|secret|session|authorization|auth|code|signature|sig)$/i.test(k)))return '';return '<a href="'+esc(u.href)+'" target="_blank" rel="noopener">Open captured source</a>';}catch{return '';}};
+      const receipt=(r,retry=false)=>'<div><strong>'+esc(retry?'Latest retry: ':'')+esc(r.diagnosis?.title||label(r.status))+'</strong> '+publicLink(r.url)+(r.diagnosis?'<p>'+esc(r.diagnosis.message)+'</p>':(r.warnings||[]).map(w=>'<p class="gf-note">'+esc(w)+'</p>').join(''))+((r.attempts||[]).length?'<details open><summary>Sources checked</summary>'+r.attempts.map(x=>'<p>'+esc(x.url||'Source URL withheld')+'<br>'+esc(x.reason||label(x.code))+'</p>').join('')+'</details>':'')+'</div>';
+      const source=a.source_metadata||{};
+      return '<section class="gf-card"><h3>Application source</h3>'+receipt(m)+(m.last_retry?receipt(m.last_retry,true):'')+'<p class="gf-note">Captured funder: '+esc(source.fields?.funder_name||'Unknown')+' · Program: '+esc(source.fields?.grant_program_name||'Unknown')+' · Cycle: '+esc(source.fields?.application_cycle||'Unknown')+' · Deadline: '+esc(source.fields?.deadline||'Unknown')+'</p><p class="gf-note">Source review: '+esc(label(source.review_status||'UNVERIFIED'))+' · Last verified: '+esc(source.verified_at||'Not recorded')+'</p>'+(source.warnings||[]).map(w=>'<p class="gf-note">'+esc(w)+'</p>').join('')+(!locked?btn('retry-application-import','Retry with corrected source')+btn('attach-application','Upload complete application'):'')+'<p class="gf-note">Retry checks at most three public pages. It uses no AI calls, preserves saved answers, and asks you to review changes to existing questions.</p></section>';
+    }
     function renderApplication(el) {
       const app = s.app,
         a = app.content;
@@ -922,7 +929,7 @@
         '<h2 style="margin-top:12px">' +
         esc(a.grant_program_name) +
         '</h2><p class="gf-meta">' +
-        esc(a.funder_name || "Funder not entered") +
+        esc(a.funder_name || a.source_metadata?.fields?.funder_name || "Funder not entered") +
         " · Revision " +
         app.revision +
         " · " +
@@ -931,7 +938,7 @@
         btn("export-docx", "Export DOCX") +
         btn("export-zip", "Funder package") +
         (s.data.role==="OWNER"?btn("export-internal_zip", "Internal review package") + btn("export-json", "Internal evidence JSON"):"") +
-        '</div></div>' + (!locked ? '<div class="gf-callout"><strong>Prepare the application: </strong>Import the complete questions, then let OA propose the best supported program and prepare the answers together. '+(s.app.ai_condition_review?.can_generate?btn('prepare-first-draft',s.firstDraftProgress?'Preparing '+s.firstDraftProgress.done+' / '+s.firstDraftProgress.total:'Prepare first draft','',true):btn('ai-conditions','Review AI conditions before drafting'))+'<p class="gf-note">Uses your workspace’s AI allowance. Saved answers are preserved. OA fills supported fields and drafts narratives; signatures, commitments and unsupported details stay in Needs My Input. Review the original questions, proposed strategy and claims before approval.</p></div>' : '') + (a.program_selection?.status==='PROPOSED'?'<div class="gf-card"><strong>Proposed program: '+esc(s.data.brain.programs.find(p=>p.id===a.primary_program_id)?.name||'Review program selection')+'</strong><p>'+esc(a.program_selection.reason)+'</p><p class="gf-note">Review this choice in Strategy &amp; eligibility before approval.</p></div>':'') + (a.application_import?'<div class="gf-card"><strong>'+esc(label(a.application_import.status))+'</strong>'+(a.application_import.url&&/^https?:\/\//i.test(a.application_import.url)?' · <a href="'+esc(a.application_import.url)+'" target="_blank" rel="noopener">Open funder application</a>':'')+(a.application_import.warnings||[]).map(w=>'<p class="gf-note">'+esc(w)+'</p>').join('')+'</div>':'') + '<div class="gf-tabs">' +
+        '</div></div>' + (!locked ? '<div class="gf-callout"><strong>Prepare the application: </strong>Import the complete questions, then let OA propose the best supported program and prepare the answers together. '+(s.app.ai_condition_review?.can_generate?btn('prepare-first-draft',s.firstDraftProgress?'Preparing '+s.firstDraftProgress.done+' / '+s.firstDraftProgress.total:'Prepare first draft','',true):btn('ai-conditions','Review AI conditions before drafting'))+'<p class="gf-note">Uses your workspace’s AI allowance. Saved answers are preserved. OA fills supported fields and drafts narratives; signatures, commitments and unsupported details stay in Needs My Input. Review the original questions, proposed strategy and claims before approval.</p></div>' : '') + (a.program_selection?.status==='PROPOSED'?'<div class="gf-card"><strong>Proposed program: '+esc(s.data.brain.programs.find(p=>p.id===a.primary_program_id)?.name||'Review program selection')+'</strong><p>'+esc(a.program_selection.reason)+'</p><p class="gf-note">Review this choice in Strategy &amp; eligibility before approval.</p></div>':'') + applicationImportView(locked) + '<div class="gf-tabs">' +
         [
           ["questions", "Questions & drafts"],
           ["requirements", "Source checklist"],
@@ -1356,6 +1363,15 @@
           });
         }else if(action==='prepare-first-draft'){
           await prepareFirstDraft();
+        }else if(action==='retry-application-import'){
+          const a=s.app.content,selection=a.application_import?.last_retry?.source_selection||a.application_import?.source_selection||{};
+          const program=selection.grant_program_name||a.source_identity_review?.grant_program_name||(a.source_metadata?.program_identity_unresolved?'':a.grant_program_name);
+          const retryDialog=dialog('Retry the application source','<p>Choose the specific funder program and current cycle. A general grants directory may contain several different applications. Saved answers remain unchanged; replacement questions require a repair review.</p>'+field('url','Correct official application / program link',selection.url||'','url')+field('grant_program_name','Specific funder grant program',program)+field('application_cycle','Application cycle (leave blank if unknown)',selection.application_cycle||a.application_cycle||'')+check('source_reviewed','I checked that this source belongs to the intended grant program and cycle.')+'<p class="gf-note">Use a public link without credentials. For a protected portal, upload the complete application instead. No AI allowance is used by this retry.</p>',async f=>{
+            if(Object.keys(s.unsaved).some(id=>s.unsaved[id]!==s.app.answers.find(x=>x.question_id===id)?.draft_text))throw Error('Save your changed answers before retrying the source.');
+            await mutate('retry_application_import',{url:f.get('url'),grant_program_name:f.get('grant_program_name'),application_cycle:f.get('application_cycle'),source_reviewed:f.has('source_reviewed')});
+            message(s.app.content.reconciliation_preview?'Source imported. Review the proposed repairs before applying them.':'Source check completed. Review the application source result.');
+          });
+          retryDialog.querySelector('[type="submit"]').textContent='Check source';
         }else if(action==='attach-application'){
           dialog('Upload the complete application', '<p>Use the full application, including portal fields, instructions and attachments.</p><label>Application file (PDF, DOCX or text; maximum 3 MB)<input type="file" name="file" accept=".pdf,.docx,.txt"></label>'+area('text','Or paste all application questions')+'<p>Saved answers remain in place. If fields change, review the repair preview before applying it.</p>' ,async f=>{
             const file=f.get('file');const payload=file?.size?await filePayload(file):{text:f.get('text')};
@@ -2253,7 +2269,7 @@
       s.app=await api('import_pipeline',{pipeline_item_id:itemId});
       s.tab='applications';s.appTab='questions';s.unsaved={};await refresh();
       if(draft&&s.app.questions.length&&!s.app.answers.some(a=>a.draft_text?.trim()))await prepareFirstDraft();
-      else message(!s.app.questions.length?'Application workspace opened. Upload the complete application from the funder portal to continue.':'Application workspace opened. Your saved answers are preserved.');
+      else message(!s.app.questions.length?'Application workspace opened. Review the source result, then correct its link or upload the complete application.':'Application workspace opened. Your saved answers are preserved.');
     }
     async function pipelinePicker(offset=0) {
       const page=await api('pipeline_candidates',{offset});
