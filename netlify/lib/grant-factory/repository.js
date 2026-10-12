@@ -269,7 +269,10 @@ function repository(env = process.env, fetcher = fetch, db = createDb(env, fetch
     async listApps(ctx) {
       return (await db.all("gf_applications", { org_id: "eq." + ctx.org_id }))
         .map(flatten)
-        .sort((a, b) => b.updated_at.localeCompare(a.updated_at));
+        .sort((a, b) => new Date(b.updated_at)-new Date(a.updated_at));
+    },
+    async canCollectSources(ctx){
+      try{const rows=await db.select('admins',{profile_id:'eq.'+ctx.user_id,select:'profile_id',limit:1});return rows.length===1;}catch{return false;}
     },
     async storage(path, { method = "GET", bytes, mime } = {}) {
       if (!/^[0-9a-f-]+\/[0-9a-f-]+\/[a-zA-Z0-9_.-]+$/.test(path))

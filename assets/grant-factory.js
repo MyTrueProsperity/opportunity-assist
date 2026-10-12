@@ -439,11 +439,11 @@
         '<div class="gf-grid">' +
         card('1', 'Add your documents', 'Keep the originals in Document Vault. Choose Read & suggest facts to process a document. You can pause and resume without losing completed sections.', 'go-vault', 'Open Document Vault', uploaded.length + ' originals saved') +
         card('2', 'Review suggested facts', 'Compare each fact with its source. Approve accurate information for grants, keep it private, or leave it for later. Plans must stay labeled as plans.', 'go-truth', 'Review facts', ready.length + ' facts usable for drafting · ' + pending.length + ' need attention') +
-        card('3', 'Start a grant application', 'Upload or paste the funder’s actual questions. The application will guide you through choosing a program, drafting answers, checking claims, and exporting.', 'new', 'Start an application', s.data.applications.length + ' saved application' + (s.data.applications.length === 1 ? '' : 's')) + '</div>' +
+        card('3', 'Start a grant application', 'Upload or paste the funder’s actual questions. The application will guide you through choosing a program, drafting answers, checking claims, and exporting.', 'new', 'Start an application', s.data.applications.filter(a=>!a.deleted_at).length + ' active applications') + '</div>' +
         '<section class="gf-card"><h3>What does each step mean?</h3><p><strong>Saved:</strong> the original file is in your private vault. <strong>Read:</strong> its text is available. <strong>Suggested:</strong> facts have been pulled out for you to check. <strong>Ready for drafting:</strong> both the fact and its source meet the grant-use rules.</p><p>Research Library contains community statistics and research. Organization Brain contains facts about your organization. Grant Factory can use relevant approved information from both.</p><p>It prepares drafts and downloads. You make the final decisions and submit through the funder’s process.</p><details><summary>Existing setup and advanced tools</summary><p>Your saved documents, facts, programs and writing voice remain in place. The seed import is only for an initial setup or missing seed records.</p>' + (s.data.role === 'OWNER' ? btn('seed', 'Import Institute seed data') + btn('voice', 'Writing voice') : '') + '</details></section>';
     }
     function renderApplications(el) {
-      const apps = s.data.applications;
+      const apps = s.data.applications.filter(a=>!a.deleted_at),deleted=s.data.applications.filter(a=>a.deleted_at);
       el.innerHTML =
         '<div class="gf-row"><h2>Your applications</h2>' +
         btn("pipeline-picker", "Import from Qualified or Planning", "", true) + btn("new", "Upload / paste application") +
@@ -463,13 +463,14 @@
                   esc(a.deadline || "Not confirmed") +
                   "</p>" +
                   btn("open", "Open workspace", a.id) +
+                  (s.data.role==='OWNER'&&!['SUBMITTED','ARCHIVED'].includes(a.status)?btn('delete-application','Delete application',a.id):'')+
                   "</article>",
               )
               .join("") +
             "</div>"
           : '<div class="gf-card gf-empty"><h3>Start with the funder’s application</h3><p>Upload a PDF, DOCX or text file, or paste the questions. Every extracted requirement stays reviewable.</p>' +
             btn("new", "Create your first application", "", true) +
-            "</div>");
+            "</div>")+(deleted.length?'<details class="gf-card"><summary>Deleted applications ('+deleted.length+')</summary><p>These workspaces are hidden from active applications. Their answers, original documents and history are retained. Restoring keeps the same workspace.</p>'+deleted.map(a=>'<p><strong>'+esc(a.grant_program_name)+'</strong> · Deleted '+esc(a.deleted_at)+(s.data.role==='OWNER'?btn('restore-application','Restore application',a.id):'<span>Executive access is required to restore.</span>')+'</p>').join('')+'</details>':'');
     }
     function renderBrain(el) {
       let facts = s.data.brain.facts.filter(f => !f.research);
@@ -922,7 +923,7 @@
     function renderApplication(el) {
       const app = s.app,
         a = app.content;
-      const locked = ["SUBMITTED", "ARCHIVED"].includes(a.status);
+      const locked = !!a.deleted_at || ["SUBMITTED", "ARCHIVED"].includes(a.status);
       el.innerHTML =
         '<div class="gf-row"><div>' +
         btn("back", "← All applications") +
@@ -1318,9 +1319,13 @@
       }:null);
       const submit=first.querySelector('[type="submit"]');if(submit)submit.textContent='Preview profile changes';
     }
-    async function foundationMatches() {
-      const result=await api('foundation_profile_matches');
-      dialog('Foundations matching your search profile','<p>Free matching against saved, approved sources. No AI call or live search. These are leads to review, not confirmed eligibility or open applications.</p><p>Topics: '+esc(result.topics.join(', ')||'None found — review Programs, Target populations and Keywords')+'</p>'+result.items.map(r=>'<article class="gf-card"><h3>'+esc(r.source_name)+'</h3><p>'+esc(r.program_name||'')+'</p><p>Matched: '+esc(r.matched_topics.join(', '))+' · '+esc(r.geographic_match)+'</p><p class="gf-meta">'+esc(r.current_status||'Status needs review')+' · Last verified '+esc(r.last_verified_at||'not recorded')+'</p><a href="'+esc(r.source_url)+'" target="_blank" rel="noopener">Review source ↗</a></article>').join('')+(!result.items.length?'<p>No matching approved sources found in this bounded lookup. This does not mean there are no suitable grants.</p>':'')+'<p class="gf-meta">Checked '+result.examined+' saved sources'+(result.limited?' (lookup limit reached)':'')+'.</p>');
+    async function foundationMatches(){
+      const result=await api('foundation_profile_matches'),orgId=s.orgId;
+      const modal=dialog('Foundations matching your search profile',window.OASourceMatches.render(result,result.can_collect_sources));
+      window.OASourceMatches.bind(modal,{orgId,currentOrg:()=>s.orgId,session:()=>sb.auth.getSession(),openOpportunity:id=>{
+        if(Object.keys(s.unsaved).some(key=>s.unsaved[key]!==s.app?.answers.find(a=>a.question_id===key)?.draft_text)){message('Save your changed answers before opening another opportunity.',true);return;}
+        modal.close();window.dispatchEvent(new CustomEvent('oa:open-opportunity',{detail:{orgId,opportunityId:id}}));
+      }});
     }
     async function perform(action, id, button) {
       if (s.busy) return;
@@ -1352,6 +1357,13 @@
           throw Error("Save your changed answers before continuing.");
         if(action==='search-profile')await reviewSearchProfile();
         else if(action==='foundation-matches')await foundationMatches();
+        else if(action==='delete-application'||action==='restore-application'){
+          const target=s.data.applications.find(a=>a.id===id);if(!target)throw Error('Application not found. Refresh the list.');
+          if(action==='delete-application')dialog('Delete application workspace','<p>Delete <strong>'+esc(target.grant_program_name)+'</strong> from active applications? Its answers, documents and history remain recoverable under Deleted applications. Your Capture Pipeline is unchanged.</p>',async()=>{
+            await api('delete_application',{application_id:id,revision:target.revision,confirmation:'DELETE_APPLICATION_WORKSPACE'});if(s.app?.id===id){s.app=null;s.unsaved={};}s.tab='applications';await refresh();message('Application deleted. You can restore it under Deleted applications.');
+          });
+          else{await api('restore_application',{application_id:id,revision:target.revision});await refresh();message('Application restored with its saved answers and sources.');}
+        }
         else if(action==='pipeline-picker'){
           await pipelinePicker();
         }else if(action==='funder-history'){

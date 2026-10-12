@@ -111,7 +111,8 @@ async function discover(db,provider,job,fetcher) {
     const states=statesFor(profile);
     if(states.length&&!states.includes(job.state_code))throw new Paused('Organization service areas changed; review the discovery state');
     const matches=await findProfileSources(db,{...profile,service_areas:STATES[job.state_code]});
-    const urls=startingUrls(matches,settings.categories);
+    if(job.payload.source_ids&&job.payload.source_ids.some(id=>!matches.items.some(r=>r.id===id)))throw new Paused('Selected sources changed; refresh the matching source list');
+    const urls=startingUrls(matches,settings.categories,job.payload.source_ids);
     if(!urls.length)throw new Paused('No matching approved source URLs; review the organization profile');
     job={...job,payload:{...job.payload,urls}};provider=null;
   }

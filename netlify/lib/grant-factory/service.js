@@ -404,7 +404,7 @@ function service(repo, ai, { dispatch = null, applicationFetch = null } = {}) {
       let app = await repo.app(ctx, job.application_id);
       if (strategyInputHash(app, brain) !== job.input_hash)
         return await fail("STALE_INPUTS", "The application's program, funder details, questions or approved facts changed after strategy generation was requested. Nothing was saved; generate again.");
-      if (["SUBMITTED", "ARCHIVED"].includes(app.content.status))
+      if (app.content.deleted_at || ["SUBMITTED", "ARCHIVED"].includes(app.content.status))
         return await fail("LOCKED", "Submitted applications are immutable.");
       const built = await strategyRequest(ctx, brain, app);
       Object.assign(result, {
@@ -697,7 +697,7 @@ function service(repo, ai, { dispatch = null, applicationFetch = null } = {}) {
       }
       if (action==="foundation_profile_matches") {
         const org=await repo.searchProfile(ctx);
-        return require("../source-intelligence/profile-discovery").findProfileSources(repo.db,org);
+        return {...await require("../source-intelligence/profile-discovery").findProfileSources(repo.db,org),can_collect_sources:repo.canCollectSources?await repo.canCollectSources(ctx):false};
       }
       let brain = await repo.brain(ctx);
       if (action === "seed") return seed(repo, ctx, brain, body.pack);
@@ -918,7 +918,9 @@ function service(repo, ai, { dispatch = null, applicationFetch = null } = {}) {
         const item=await repo.pipelineItem(ctx,body.pipeline_item_id);
         const appId=Import.pipelineApplicationId(ctx.org_id,item.id);
         const existing=(await repo.listApps(ctx)).find(a=>a.id===appId||a.pipeline_item_id===item.id);
-        if(existing)return repo.app(ctx,existing.id);
+        if(existing){if(existing.deleted_at)C.fail('This pipeline application is in Deleted applications. Restore it before reopening.',409);return repo.app(ctx,existing.id);}
+        const workflow=require('../../../assets/opportunity-workflow');
+        if(item.opportunity.source_active===false||workflow.daysUntil(item.opportunity.deadline,workflow.day(new Date(),'America/New_York'))<0)C.fail('This opportunity is closed or its deadline has passed. Verify a current cycle before importing its application.',409);
         const metadata=Import.metadata(item);
         const unresolved=!!item.funding_program&&!item.funding_program.canonical_program_name;
         const found=await Import.discover({...item.opportunity,application_url:metadata.source.application_url,identity_unresolved:unresolved},applicationFetch);
@@ -993,6 +995,20 @@ function service(repo, ai, { dispatch = null, applicationFetch = null } = {}) {
         return rows;
       }
       const app = await repo.app(ctx, body.application_id);
+      if(['delete_application','restore_application'].includes(action)){
+        owner(ctx);checkRevision(body,app);
+        if(['SUBMITTED','ARCHIVED'].includes(app.content.status))C.fail('Submitted and archived application records are permanent. Their history cannot be deleted.',409);
+        if(action==='delete_application'){
+          if(body.confirmation!=='DELETE_APPLICATION_WORKSPACE')C.fail('Confirm deleting this application workspace.');
+          if(app.content.deleted_at)return Feedback.visible(app,brain,ctx.role);
+          app.content.deleted_at=C.now();app.content.deleted_by=ctx.user_id;
+        }else{
+          if(!app.content.deleted_at)return Feedback.visible(app,brain,ctx.role);
+          app.content.deleted_at=null;app.content.deleted_by=null;app.content.restored_at=C.now();app.content.restored_by=ctx.user_id;
+        }
+        return Feedback.visible(await repo.save(ctx,app,brain,action==='delete_application'?'APPLICATION_DELETED_RECOVERABLY':'APPLICATION_RESTORED'),brain,ctx.role);
+      }
+      if(app.content.deleted_at&&action!=='get_application')C.fail('Restore this deleted application before working on it.',409);
       if (action === "get_application") {
         // Backfill the display of legacy failed imports from owned source records;
         // GET never writes application data or fetches a funder page.
