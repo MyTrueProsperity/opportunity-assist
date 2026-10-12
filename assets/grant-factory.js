@@ -119,7 +119,9 @@
   ];
   let session = null;
   function mount(main, sb, opportunities = [], launchOptions = {}) {
-    if (session && session.main === main && session.root?.isConnected) return;
+    if (session && session.main === main && session.root?.isConnected &&
+        (!launchOptions.orgId||launchOptions.orgId===session.orgId) && !launchOptions.pipelineItemId) return;
+    if(session)document.querySelector('#gf-dialog')?.close();
     const s = {
       main,
       sb,
@@ -289,6 +291,7 @@
           const error=d.querySelector('[role=alert]');
           if(session!==s||s.orgId!==dialogOrg||!s.root?.isConnected){error.hidden=false;error.textContent='The organization or page changed. Reopen this action in the current workspace.';return;}
           saving=true;s.busy=true;error.hidden=true;
+          const submitLabel=submit.textContent;submit.textContent='Working…';
           submit.disabled = true;
           const controls=[...form.querySelectorAll('input,select,textarea,button')].filter(c=>!c.disabled);
           controls.forEach(c=>c.disabled=true);
@@ -299,7 +302,7 @@
             error.hidden = false;
             error.textContent = e.message;
           } finally {
-            saving=false;s.busy=false;controls.forEach(c=>c.disabled=false);submit.disabled=false;
+            saving=false;s.busy=false;controls.forEach(c=>c.disabled=false);submit.disabled=false;submit.textContent=submitLabel;
           }
         };
       d.querySelectorAll('[data-action="history"]').forEach(

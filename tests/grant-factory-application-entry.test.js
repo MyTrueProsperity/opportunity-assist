@@ -67,7 +67,7 @@ test('earlier capture stages can start a needs-input workspace; reopening after 
     await f.pg.query("update pipeline_items set stage='Submitted' where id=$1",[p.id]);
     const select=f.repo.db.select;
     f.repo.db.select=async function(table,query){return table==='opportunities'?[]:select.call(this,table,query);};
-    const choices=await f.repo.pipelineCandidates(f.owner);assert.equal(choices.items[0].action,'open');assert.equal(choices.items[0].application_id,app.id);
+    const choices=await f.repo.pipelineCandidates(f.owner);assert.equal(choices.items[0].action,'open');assert.equal(choices.items[0].application_id,app.id);assert.equal(choices.items[0].funder_name,'Example Funder');
     const reopened=await f.svc.handle(f.owner,{action:'import_pipeline',pipeline_item_id:p.id});
     assert.equal(reopened.id,app.id);assert.equal(reopened.revision,app.revision);assert.equal(reopened.answers[0].draft_text,'Saved human answer');
     assert.equal(reopened.content.source_metadata.fields.funder_name,'Example Funder');
@@ -144,10 +144,10 @@ test('a complete standalone public application imports real fields and source me
 async function clientFixture(){
   const requests=[],window={},main={isConnected:false,innerHTML:''};let nextAuth=null,nextResponse=null;
   const code=fs.readFileSync('assets/grant-factory.js','utf8').replace('session = s;','session = s; window.entryTest={s,api};');
-  vm.runInNewContext(code,{window,console,fetch:async(_url,options)=>{requests.push(JSON.parse(options.body));return nextResponse?await nextResponse:{ok:true,json:async()=>({org_id:ORG,applications:[],brain:{facts:[],documents:[],programs:[],revision:1}})};}});
+  vm.runInNewContext(code,{window,document:{querySelector:()=>null},console,fetch:async(_url,options)=>{requests.push(JSON.parse(options.body));return nextResponse?await nextResponse:{ok:true,json:async()=>({org_id:ORG,applications:[],brain:{facts:[],documents:[],programs:[],revision:1}})};}});
   window.OAGrantFactory.mount(main,{auth:{getSession:async()=>{if(nextAuth)await nextAuth;return {data:{session:{access_token:'synthetic'}}};}}},[],{orgId:ORG});
   await new Promise(resolve=>setImmediate(resolve));requests.length=0;
-  return {...window.entryTest,requests,pauseAuth:()=>new Promise(done=>nextAuth=new Promise(resolve=>done(resolve))),pauseResponse:()=>new Promise(done=>nextResponse=new Promise(resolve=>done(resolve)))};
+  return {...window.entryTest,window,main,requests,pauseAuth:()=>new Promise(done=>nextAuth=new Promise(resolve=>done(resolve))),pauseResponse:()=>new Promise(done=>nextResponse=new Promise(resolve=>done(resolve)))};
 }
 test('client captures organization before delayed sign-in and prevents a stale create from reaching the server',async()=>{
   const f=await clientFixture(),release=await f.pauseAuth();
@@ -162,4 +162,12 @@ test('client discards a response from the previous organization or a detached wo
   await assert.rejects(pending,/organization or page changed/);
   const other=await clientFixture();other.s.root={isConnected:false};
   await assert.rejects(other.api('new_application'),/organization or page changed/);assert.equal(other.requests.length,0);
+});
+test('mounting the outer app in a different organization replaces the old Grant Factory session and invalidates its pending create',async()=>{
+  const f=await clientFixture(),release=await f.pauseAuth();f.s.root={isConnected:true};
+  const pending=f.api('new_application',{grant_program_name:'Previous organization'});
+  f.window.OAGrantFactory.mount(f.main,{auth:{getSession:async()=>({data:{session:{access_token:'synthetic'}}})}},[],{orgId:OTHER});
+  assert.notEqual(f.window.entryTest.s,f.s);release();await assert.rejects(pending,/organization or page changed/);
+  assert.equal(f.requests.filter(r=>r.action==='new_application').length,0);
+  assert.equal(f.requests.filter(r=>r.action==='bootstrap')[0].org_id,OTHER);
 });

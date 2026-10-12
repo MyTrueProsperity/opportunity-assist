@@ -247,6 +247,7 @@ function repository(env = process.env, fetcher = fetch, db = createDb(env, fetch
       if (!Number.isInteger(offset) || offset < 0 || offset > 100000) fail("Invalid pipeline page");
       const Entry = require('./application-entry');
       query = require('./core').str(query, 200);
+      stage = require('./core').str(stage, 50);
       if (stage && !Entry.STAGES.includes(stage)) fail('Invalid Capture stage');
       const rows = await db.select("pipeline_items", {
         org_id: "eq." + ctx.org_id,
@@ -265,7 +266,7 @@ function repository(env = process.env, fetcher = fetch, db = createDb(env, fetch
       return { items: items.map(p=>{
         const o=opportunities.find(o=>o.id===p.opportunity_id);
         const a=applications.find(a=>a.id===Import.pipelineApplicationId(ctx.org_id,p.id)||a.pipeline_item_id===p.id||(p.opportunity_id&&a.opportunity_id===p.opportunity_id));
-        return {...p,funder_name:programs.find(f=>f.id===o?.funding_program_id)?.source_name||'',deadline:o?.deadline||null,...Entry.availability(p,o,a)};
+        return {...p,funder_name:programs.find(f=>f.id===o?.funding_program_id)?.source_name||a?.funder_name||a?.source_metadata?.fields?.funder_name||'',deadline:o?.deadline||a?.deadline||null,...Entry.availability(p,o,a)};
       }), has_more: rows.length > 100, offset, query, stage, org_id:ctx.org_id };
     },
     async pipelineItem(ctx, pipelineId, { requireEligible = true, metadataOnly = false } = {}) {
