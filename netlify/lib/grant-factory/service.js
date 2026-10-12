@@ -129,6 +129,7 @@ function prepareParsed(app, parsed, brain) {
 const STRATEGY_FIELDS = ["funder_name", "grant_program_name", "funding_purpose", "funder_priorities", "allowable_costs", "prohibited_costs", "match_requirement", "primary_program_id", "secondary_program_ids", "request_amount", "award_min", "award_max", "grant_period", "rubric_or_scoring", "eligible_applicants", "eligible_geographies", "source_document_id", "additional_source_document_ids", "funder_history", "project_model", "deadline", "application_cycle"];
 function strategyInputHash(app, brain) {
   return C.hash({
+    ...(app.content.lifecycle_revision?{lifecycle_revision:app.content.lifecycle_revision}:{}),
     application: Object.fromEntries(STRATEGY_FIELDS.map((k) => [k, app.content[k] ?? null])),
     questions: (app.questions || []).map((q) => [q.id, q.question_text, q.question_category ?? null, q.question_type ?? null, q.limit_type, q.limit_value, q.required, q.rubric_text, q.source_quote]),
     brain_revision: brain.revision,
@@ -402,10 +403,10 @@ function service(repo, ai, { dispatch = null, applicationFetch = null } = {}) {
     try {
       const brain = await repo.brain(ctx);
       let app = await repo.app(ctx, job.application_id);
-      if (strategyInputHash(app, brain) !== job.input_hash)
-        return await fail("STALE_INPUTS", "The application's program, funder details, questions or approved facts changed after strategy generation was requested. Nothing was saved; generate again.");
       if (app.content.deleted_at || ["SUBMITTED", "ARCHIVED"].includes(app.content.status))
         return await fail("LOCKED", "Submitted applications are immutable.");
+      if (strategyInputHash(app, brain) !== job.input_hash)
+        return await fail("STALE_INPUTS", "The application was deleted/restored or its program, funder details, questions or approved facts changed after strategy generation was requested. Nothing was saved; generate again.");
       const built = await strategyRequest(ctx, brain, app);
       Object.assign(result, {
         research_eligible: built.eligible, research_ranked: built.ranked, research_selected: built.selected.length,
@@ -1002,6 +1003,7 @@ function service(repo, ai, { dispatch = null, applicationFetch = null } = {}) {
           if(body.confirmation!=='DELETE_APPLICATION_WORKSPACE')C.fail('Confirm deleting this application workspace.');
           if(app.content.deleted_at)return Feedback.visible(app,brain,ctx.role);
           app.content.deleted_at=C.now();app.content.deleted_by=ctx.user_id;
+          app.content.lifecycle_revision=(app.content.lifecycle_revision||0)+1;
         }else{
           if(!app.content.deleted_at)return Feedback.visible(app,brain,ctx.role);
           app.content.deleted_at=null;app.content.deleted_by=null;app.content.restored_at=C.now();app.content.restored_by=ctx.user_id;

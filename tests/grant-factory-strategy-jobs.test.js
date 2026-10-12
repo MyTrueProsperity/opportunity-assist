@@ -53,6 +53,11 @@ test('a queued strategy cannot spend AI allowance or overwrite a recoverably del
   const queued=await s.handle(f.ctx,{action:'strategy',application_id:a.id,revision:a.revision});const calls=ai.calls;
   a=await s.handle(f.ctx,{action:'delete_application',application_id:a.id,revision:a.revision,confirmation:'DELETE_APPLICATION_WORKSPACE'});
   const result=await s.runStrategyJob(f.ctx,queued.job.id);assert.equal(result.status,'FAILED');assert.equal(result.failure_code,'LOCKED');assert.equal(ai.calls,calls);assert.ok((await f.real.app(f.ctx,a.id)).content.deleted_at);
+  a=await s.handle(f.ctx,{action:'restore_application',application_id:a.id,revision:a.revision});
+  const requeued=await s.handle(f.ctx,{action:'strategy',application_id:a.id,revision:a.revision});
+  a=await s.handle(f.ctx,{action:'delete_application',application_id:a.id,revision:a.revision,confirmation:'DELETE_APPLICATION_WORKSPACE'});
+  a=await s.handle(f.ctx,{action:'restore_application',application_id:a.id,revision:a.revision});
+  const stale=await s.runStrategyJob(f.ctx,requeued.job.id);assert.equal(stale.status,'FAILED');assert.equal(stale.failure_code,'STALE_INPUTS');assert.equal(ai.calls,calls);
 });
 async function saveApprovedStrategy(text) {
   const a = await fresh();
