@@ -25,6 +25,9 @@ test("manual profile-based collection uses actual matched approved URLs, stays f
    insert into org_memberships values('${ORG}','${ACTOR}');`);
   await db.insert("organizations",profile);
   await db.insert("funding_programs",{...source,identity_key:"profile-fixture",normalized_program_name:"youth learning fund",normalized_url:source.source_url,website_domain:"example.org"});
+  await db.patch("funding_programs",{id:"eq."+source.id},{search_state:"NY",applicable_states:[]});
+  const elsewhere=await D.findProfileSources(db,profile);assert.equal(elsewhere.items.length,1);assert.equal(elsewhere.items[0].geographic_match,"State match");
+  await db.patch("funding_programs",{id:"eq."+source.id},{search_state:"FL",applicable_states:["FL"]});
   await db.patch("source_engine_settings",{id:"eq.true"},{engine_enabled:true,seed_completed_at:new Date().toISOString()});
   await db.patch("source_state_settings",{state_code:"eq.FL"},{discovery_enabled:true,categories:["PRIVATE_FOUNDATION"],daily_page_limit:200});
   const {handle}=require("../netlify/functions/source-intelligence-admin"),{discover,Paused}=require("../netlify/lib/source-intelligence/worker");

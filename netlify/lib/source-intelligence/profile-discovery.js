@@ -43,7 +43,7 @@ async function findProfileSources(db,profile){
   const params={review_status:"eq.APPROVED",superseded_by:"is.null",source_type:"in.("+FOUNDATION_TYPES.join(",")+")",
     select:"id,source_name,canonical_program_name,source_url,source_type,purpose,eligibility,summary,keywords,funding_categories,geography,search_state,applicable_states,current_status,last_verified_at,review_status,superseded_by",
     order:"last_verified_at.desc.nullslast,id.asc",limit:401};
-  if(states.length)params.or="(search_state.in.("+states.join(",")+"),applicable_states.ov.{"+states.join(",")+"},geography.ilike.*national*,geography.ilike.*nationwide*,geography.ilike.*all states*,geography.ilike.*United States*)";
+  if(states.length)params.or="(search_state.in.("+states.join(",")+"),applicable_states.ov.{"+states.join(",")+"},"+states.map(s=>"geography.ilike.*"+STATES[s]+"*").join(",")+",geography.ilike.*national*,geography.ilike.*nationwide*,geography.ilike.*all states*,geography.ilike.*United States*)";
   const rows=await db.select("funding_programs",params);
   return {items:rankSources(profile,rows.slice(0,400)).slice(0,20),topics,states,examined:Math.min(rows.length,400),limited:rows.length>400,paid_calls:0};
 }
