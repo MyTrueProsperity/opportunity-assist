@@ -198,8 +198,8 @@ test('C: the review screen explains manual review and publication failure withou
  const source=fs.readFileSync('assets/source-intelligence.js','utf8').replace('window.OASourceIntelligence={','window.testCard=candidateCard;window.testBoot=function(value){boot=value;};window.OASourceIntelligence={');
  vm.runInNewContext(source,context);context.window.testBoot({reasons:['OTHER']});
  const card=context.window.testCard({id:'local',version:2,status:'PENDING',discovery_method:'ZERO_TOKEN_HARVEST',quality_ready:true,automatic_approval_error:'Publication failed',proposed:{program_name:'Grant',source_url:'https://example.org',deterministic_observation:{},review_reasons:[]},duplicate_matches:[],scores:{}});
- assert.match(card.innerHTML,/Human review is required/);assert.doesNotMatch(card.innerHTML,/will retry/);
- assert.match(children[0].innerHTML,/awaits human review/);assert.doesNotMatch(children[0].innerHTML,/will process this entry/);
+ assert.match(card.innerHTML,/A person needs to review it/);assert.match(card.innerHTML,/will not be retried automatically/);assert.doesNotMatch(card.innerHTML,/will retry/);
+ assert.match(children[0].innerHTML,/Review this collected grant before approval/);assert.match(children[0].innerHTML,/selected official sources that pass every required check/);assert.doesNotMatch(children[0].innerHTML,/will process this entry/);
 });
 
 
