@@ -80,9 +80,15 @@ async function createTestRepo() {
   };
   function where(params, args) {
     return Object.entries(params)
-      .filter(([k]) => !["select", "order", "limit"].includes(k))
+      .filter(([k]) => !["select", "order", "limit", "offset"].includes(k))
       .map(([k, v]) => {
         const [op, ...rest] = String(v).split(".");
+        if(op==='in'){
+          const values=rest.join('.').slice(1,-1).split(',');
+          const positions=values.map(v=>{args.push(v);return '$'+args.length;});
+          return safe(k)+' in ('+positions.join(',')+')';
+        }
+        if(op==='ilike'){args.push(rest.join('.'));return safe(k)+' ilike $'+args.length;}
         if (op !== "eq") throw Error("Unsupported test filter");
         args.push(rest.join("."));
         return safe(k) + "=$" + args.length;
@@ -101,10 +107,10 @@ async function createTestRepo() {
         safe(table) +
         (condition ? " where " + condition : "");
       if (p.order) {
-        const [key, dir] = p.order.split(".");
-        sql += " order by " + safe(key) + (dir === "desc" ? " desc" : " asc");
+        sql += ' order by '+p.order.split(',').map(order=>{const [key,dir]=order.split('.');return safe(key)+(dir==='desc'?' desc':' asc');}).join(',');
       }
       if (p.limit) sql += " limit " + Number(p.limit);
+      if(p.offset)sql+=' offset '+Number(p.offset);
       return (await pg.query(sql, args)).rows;
     },
     async all(table, p = {}) {
@@ -156,6 +162,7 @@ async function createTestRepo() {
     async () => {
       throw Error("Unexpected network");
     },
+    db,
   );
   repo.db = db;
   // Bind the same repository semantics to the in-process PostgreSQL test adapter.
