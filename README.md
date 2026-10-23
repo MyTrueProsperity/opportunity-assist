@@ -113,6 +113,14 @@ Env vars, set in the Netlify UI with Functions access:
 
 Never put the `service_role` key in `app.html` or any other client-facing file.
 
+Fit scores are read page by page (`selectAll` in `app.html`). The API returns
+at most 1,000 rows per request; before 2026-10-23 a single select dropped the
+rest, and those scores were bought again on every visit. Unsubscribed users
+see a free keyword estimate (`OAMatching.estimate`), marked with "~", that only
+counts profile keywords found in the listing; a listing with no keyword match
+shows no number. One failed opportunity no longer fails its whole batch, and a
+lead can be re-scored on request from its detail page.
+
 ## Early Access Capture
 
 The landing page's "Request early access" button used to be a plain `mailto:`
@@ -173,6 +181,8 @@ text is a reasonable Phase 2 addition if it turns out to matter.
 ## Opportunity Sourcing: Grants.gov
 
 SAM.gov is almost entirely contract and procurement solicitations, not grants — a real limitation for a nonprofit-heavy audience. `grants-gov-crawler-background` fills that gap, using Grants.gov's public `search2` API. No API key needed, unlike SAM.gov, so this one has zero setup blocker beyond running the SQL below.
+
+**Details.** For each new listing (and each forecast that becomes posted) the crawler reads the full notice once with `fetchOpportunity`: description, award floor and ceiling, eligible applicant types and a forecast's expected application date. It records `opportunities.detail_fetched_at` so later runs neither repeat the call nor overwrite those details with bare search results. Up to 300 notices are read per run.
 
 Deliberately does not filter by Grants.gov's eligibility or funding-category codes: the sourcing on those exact values was inconsistent enough that guessing wrong risked silently filtering out every nonprofit-eligible grant. Searches by keyword only instead, and leans on the AI Fit Scoring every org already gets to sort eligibility fit per organization. Same reasoning as SAM.gov applies to skipping the full-text `fetchOpportunity` call per notice: keeps the crawl fast, title + agency + dates + a direct link is enough for AI Fit Scoring to work with.
 
