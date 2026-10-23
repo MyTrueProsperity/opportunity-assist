@@ -1,4 +1,4 @@
-/* Opportunity Assist — landing styles */
+/* Opportunity Assist landing styles */
 :root{
   --navy:#0f2e3d;
   --navy-2:#143b4d;
@@ -171,3 +171,19 @@ img{max-width:100%;height:auto}
   .footer-grid{grid-template-columns:1fr}
   .section{padding:54px 0}
 }
+
+/* Example label on the hero score card */
+.example-label{margin:0 0 .5rem;font-size:.72rem;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
+
+/* Pricing */
+.plans{margin-top:8px}
+.plan{display:flex;flex-direction:column}
+.plan h3{margin-bottom:.2rem}
+.plan .price{font-size:2rem;font-weight:700;color:var(--navy);margin:0 0 .4rem}
+.plan .price small{font-size:.95rem;font-weight:500;color:var(--muted)}
+.plan ul{margin:.6rem 0 1.2rem;padding-left:1.1rem;color:var(--muted)}
+.plan ul li{margin:.25rem 0}
+.plan .btn{margin-top:auto;align-self:flex-start}
+.plans-note{margin:18px 0 0;text-align:center;color:var(--muted);font-size:.95rem}
+.btn-outline{background:#fff;color:var(--navy);border:1px solid var(--navy)}
+.btn-outline:hover{background:var(--bg-alt);text-decoration:none}

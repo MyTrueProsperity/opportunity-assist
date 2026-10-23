@@ -1,6 +1,6 @@
 # Opportunity Assist
 
-Public marketing landing page for **Opportunity Assist**, a My True Prosperity product.
+Public marketing landing page and app for **Opportunity Assist**, a My True Prosperity product. The landing page (`index.html`) is open signup: visible pricing ($149 Professional, $249 Team, Enterprise by conversation), "Start free" links to `/app.html`, and the contact form saves to `early_access_requests`.
 *Opportunity Intelligence for Mission-Driven Growth — Stop chasing. Start choosing.*
 
 Static HTML/CSS/JavaScript app with Supabase and Netlify functions. The public-file allowlist build publishes `dist`. Source Intelligence adds the canonical funding registry, discovery, review and state-by-state rollout.

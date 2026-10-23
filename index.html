@@ -28,7 +28,7 @@
 
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%230f2e3d'/%3E%3Cpath d='M20 40 L30 28 L38 36 L48 22' fill='none' stroke='%23e0a64a' stroke-width='5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E" />
 
-  <link rel="stylesheet" href="assets/styles.css" />
+  <link rel="stylesheet" href="assets/styles.css?v=20261023" />
 
   <!-- JSON-LD: Organization -->
   <script type="application/ld+json">
@@ -65,61 +65,92 @@
       "name": "My True Prosperity"
     },
     "offers": [
-      { "@type": "Offer", "name": "Professional", "price": "149", "priceCurrency": "USD" },
-      { "@type": "Offer", "name": "Team", "price": "249", "priceCurrency": "USD" },
-      { "@type": "Offer", "name": "Enterprise", "price": "0", "priceCurrency": "USD", "description": "Custom pricing" }
+      { "@type": "Offer", "name": "Professional", "price": "149", "priceCurrency": "USD", "description": "Per month, one organization" },
+      { "@type": "Offer", "name": "Team", "price": "249", "priceCurrency": "USD", "description": "Per month, several staff on one organization's pipeline" }
     ]
   }
   </script>
 
   <!-- JSON-LD: FAQPage -->
   <script type="application/ld+json">
-  {
-    "@context": "https://schema.org",
-    "@type": "FAQPage",
-    "mainEntity": [
-      {
-        "@type": "Question",
-        "name": "What is Opportunity Assist?",
-        "acceptedAnswer": { "@type": "Answer", "text": "Opportunity Assist is an opportunity intelligence platform from My True Prosperity that helps mission-driven organizations find, score, track, and pursue funding opportunities, combining opportunity discovery, fit scoring, pursuit recommendations, contract renewal tracking, capture pipeline management, grant and RFP support, and AI-powered opportunity summaries." }
-      },
-      {
-        "@type": "Question",
-        "name": "Who is Opportunity Assist built for?",
-        "acceptedAnswer": { "@type": "Answer", "text": "It is built for workforce development organizations, youth employment providers, financial capability agencies, VITA coalitions, CRA practitioners, community-based organizations, employability programs, and small to midsize mission-driven organizations." }
-      },
-      {
-        "@type": "Question",
-        "name": "Is Opportunity Assist a grant database?",
-        "acceptedAnswer": { "@type": "Answer", "text": "No. A grant database helps you identify funders. Opportunity Assist goes further by scoring fit, recommending what to pursue, and managing the full capture pipeline across grants, contracts, RFPs, and procurement." }
-      },
-      {
-        "@type": "Question",
-        "name": "Is Opportunity Assist an AI grant writer?",
-        "acceptedAnswer": { "@type": "Answer", "text": "No. AI grant writers help draft language. Opportunity Assist helps you decide what to pursue and manage the pursuit. Proposal and grant-writing support is part of the broader capture lifecycle, not the whole product." }
-      },
-      {
-        "@type": "Question",
-        "name": "How is Opportunity Assist different from SAM.gov, BidNet, Bonfire, Instrumentl, or Candid?",
-        "acceptedAnswer": { "@type": "Answer", "text": "Bid portals show what is posted. Grant databases help identify funders. AI grant writers help draft language. Traditional GovCon tools support large contractors. Opportunity Assist is built for mission-driven organizations that need a practical way to find, score, track, and pursue the right opportunities across grants, contracts, procurement, CRA, workforce, and community funding." }
-      },
-      {
-        "@type": "Question",
-        "name": "Can Opportunity Assist help decide whether an opportunity is worth pursuing?",
-        "acceptedAnswer": { "@type": "Answer", "text": "Yes. The AI Fit Score evaluates organizational fit, past performance alignment, geographic eligibility, capacity, required partnerships, budget range, and risk, then returns a clear recommendation such as Strongly pursue or Probably pass to support bid/no-bid decisions." }
-      },
-      {
-        "@type": "Question",
-        "name": "Can small nonprofits use Opportunity Assist?",
-        "acceptedAnswer": { "@type": "Answer", "text": "Yes. Opportunity Assist is designed specifically for small and midsize mission-driven organizations, not large government contractors." }
-      },
-      {
-        "@type": "Question",
-        "name": "What is a capture pipeline?",
-        "acceptedAnswer": { "@type": "Answer", "text": "A capture pipeline is a structured way to manage funding pursuits from idea to award. In Opportunity Assist it is a Kanban board with stages: Ideas, Reviewing, Qualified, Planning, Writing, Submitted, Awarded, and Not Awarded." }
+{
+  "@context": "https://schema.org",
+  "@type": "FAQPage",
+  "mainEntity": [
+    {
+      "@type": "Question",
+      "name": "What is Opportunity Assist?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Opportunity Assist is an opportunity intelligence platform from My True Prosperity. It finds current grants and contract notices, scores how well each one fits your organization, tracks the ones you pursue, and helps you prepare the application."
       }
-    ]
-  }
+    },
+    {
+      "@type": "Question",
+      "name": "Who is Opportunity Assist built for?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "It is built for workforce development organizations, youth employment providers, financial capability agencies, VITA coalitions, CRA practitioners, community-based organizations, employability programs, and small to midsize mission-driven organizations."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Is Opportunity Assist a grant database?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "No. A grant database helps you identify funders. Opportunity Assist scores fit, recommends what to pursue, and manages the pursuit from first look to award."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Does Opportunity Assist write grant applications?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Grant Factory prepares a first draft from your organization's own documents and the funder's requirements, and flags the evidence that is still missing. Your team reviews, edits, and submits. It does not invent facts or submit for you."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "How is Opportunity Assist different from SAM.gov, BidNet, Bonfire, Instrumentl, or Candid?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Bid portals show what is posted. Grant databases help identify funders. AI grant writers help draft language. Traditional GovCon tools support large contractors. Opportunity Assist is built for mission-driven organizations that need a practical way to find, score, track, and pursue the right opportunities across grants, contracts, procurement, CRA, workforce, and community funding."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Can Opportunity Assist help decide whether an opportunity is worth pursuing?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Yes. The AI Fit Score rates organizational and program fit, target population, geography, applicant eligibility, capacity, funding fit, timing, past performance, and risk. Factors a listing does not cover are marked unknown, not scored as zero. It returns a recommendation such as Strongly pursue or Probably pass."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Can small nonprofits use Opportunity Assist?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Yes. Opportunity Assist is designed for small and midsize mission-driven organizations, not large government contractors."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "How much does Opportunity Assist cost?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Exploring is free. Professional is $149 a month and Team is $249 a month. Enterprise pricing is set with each customer."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "What is a capture pipeline?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "A capture pipeline is a structured way to manage funding pursuits from idea to award. In Opportunity Assist it is a board with stages: Ideas, Reviewing, Qualified, Planning, Writing, Submitted, Awarded, and Not Awarded."
+      }
+    }
+  ]
+}
   </script>
 </head>
 <body>
@@ -140,11 +171,10 @@
       <nav id="nav-menu" class="nav-menu" aria-label="Primary">
         <a href="#features">Features</a>
         <a href="#who">Who it serves</a>
-        <a href="#use-cases">Use cases</a>
-        <a href="#compare">Compare</a>
+        <a href="#pricing">Pricing</a>
         <a href="#faq">FAQ</a>
         <a href="/app.html">Log in</a>
-        <a class="btn btn-primary nav-cta" href="#contact">Request access</a>
+        <a class="btn btn-primary nav-cta" href="/app.html">Start free</a>
       </nav>
     </div>
   </header>
@@ -159,27 +189,28 @@
           <h1>Stop chasing. Start choosing.</h1>
           <p class="lede">
             Opportunity Assist helps workforce, financial capability, youth employment, VITA,
-            CRA, and community prosperity organizations find, score, and pursue the grants,
-            contracts, RFPs, and funding opportunities that fit their mission and capacity.
+            CRA, and community prosperity organizations find, score, and pursue the grants
+            and contracts that fit their mission and their capacity.
           </p>
           <div class="hero-actions">
-            <a class="btn btn-primary" href="#contact">Request early access</a>
-            <a class="btn btn-ghost" href="#features">See how it works</a>
+            <a class="btn btn-primary" href="/app.html">Start free</a>
+            <a class="btn btn-ghost" href="#pricing">See pricing</a>
           </div>
-          <p class="hero-note">Find the money that funds the mission.</p>
+          <p class="hero-note">Free to explore. AI Fit Scores and the application workspace start at $149 a month.</p>
         </div>
-        <div class="hero-card" aria-hidden="false">
+        <div class="hero-card">
           <div class="score-card">
+            <p class="example-label">Example AI Fit Score</p>
             <div class="score-head">
               <span>WIOA Youth Services RFP</span>
-              <span class="badge badge-good">87% Match</span>
+              <span class="badge badge-good">87% fit</span>
             </div>
             <p class="score-rec">Strongly pursue</p>
             <ul class="score-factors">
-              <li><span>Organizational fit</span><i class="bar"><b style="width:90%"></b></i></li>
-              <li><span>Geographic eligibility</span><i class="bar"><b style="width:100%"></b></i></li>
+              <li><span>Program fit</span><i class="bar"><b style="width:90%"></b></i></li>
+              <li><span>Geography</span><i class="bar"><b style="width:100%"></b></i></li>
+              <li><span>Applicant eligibility</span><i class="bar"><b style="width:85%"></b></i></li>
               <li><span>Capacity</span><i class="bar"><b style="width:78%"></b></i></li>
-              <li><span>Budget range</span><i class="bar"><b style="width:82%"></b></i></li>
             </ul>
             <div class="score-meta">
               <span>$250,000</span><span>Due in 21 days</span>
@@ -192,7 +223,7 @@
     <!-- TRUST / POSITIONING STRIP -->
     <section class="strip">
       <div class="container">
-        <p>Built for small and midsize mission-driven teams — not large government contractors. More than a grant writer. More than a bid alert.</p>
+        <p>Built for small and midsize mission-driven teams, not large government contractors. Find the money that funds the mission.</p>
       </div>
     </section>
 
@@ -201,7 +232,7 @@
       <div class="container three-up">
         <article class="card">
           <h2>What Opportunity Assist does</h2>
-          <p>It helps mission-driven organizations find, score, track, and pursue funding opportunities — combining opportunity discovery, fit scoring, pursuit recommendations, contract renewal tracking, capture pipeline management, grant and RFP support, and AI-powered opportunity summaries.</p>
+          <p>It finds current grants and contract notices, scores how well each one fits your organization, tracks the ones you pursue, and helps you prepare the application from your own documents.</p>
         </article>
         <article class="card">
           <h2>Who it is for</h2>
@@ -209,7 +240,7 @@
         </article>
         <article class="card">
           <h2>What it is not</h2>
-          <p>Not just a grant writer. Not just a bid alert tool. Not a generic government contracting database. It is designed to help mission-driven organizations make better pursuit decisions.</p>
+          <p>Not a list of every grant in the country. Not a ghostwriter that invents your track record. It helps you decide what is worth your team’s time, then do that work well.</p>
         </article>
       </div>
     </section>
@@ -219,54 +250,54 @@
       <div class="container">
         <header class="section-head">
           <p class="eyebrow">Features</p>
-          <h2>Turn scattered opportunities into a strategic pursuit pipeline</h2>
-          <p class="section-sub">Know what to pursue, what to monitor, and what to pass on.</p>
+          <h2>Turn scattered opportunities into a pursuit pipeline</h2>
+          <p class="section-sub">Know what to pursue, what to watch, and what to pass on.</p>
         </header>
         <div class="feature-grid">
           <article class="feature">
             <span class="ficon" aria-hidden="true">📡</span>
             <h3>Funding Radar</h3>
-            <p>AI scans hundreds of federal, state, local, foundation, workforce board, school district, and CRA sources and surfaces matched opportunities.</p>
+            <p>New federal grants and contract notices from Grants.gov and SAM.gov every morning, plus Florida foundation programs checked against each funder’s own website. More states are on the way.</p>
           </article>
           <article class="feature">
             <span class="ficon" aria-hidden="true">🎯</span>
             <h3>AI Fit Score</h3>
-            <p>Instead of reading 100-page RFPs, get an explainable score across fit, eligibility, capacity, budget, and risk with a clear pursue-or-pass recommendation.</p>
+            <p>Ten factors, from program and population fit to applicant eligibility, timing, and risk. What a listing does not say is marked unknown instead of guessed, and you get a clear pursue or pass call.</p>
           </article>
           <article class="feature">
             <span class="ficon" aria-hidden="true">📄</span>
             <h3>AI Opportunity Summary</h3>
-            <p>Auto-answers what it is, who can apply, how much, key deadlines, required documents, evaluation criteria, deliverables, and hidden risks.</p>
+            <p>What it is, who can apply, how much, key deadlines, required documents, evaluation criteria, deliverables, and hidden risks, in plain language.</p>
           </article>
           <article class="feature">
             <span class="ficon" aria-hidden="true">🗂️</span>
             <h3>Capture Pipeline</h3>
-            <p>A Kanban board from Ideas to Awarded. Each opportunity keeps notes, team assignments, documents, contacts, and deadlines.</p>
+            <p>A board from Ideas to Awarded. Every pursuit keeps its notes, a quick qualification checklist, its deadline, and a record of each decision.</p>
+          </article>
+          <article class="feature">
+            <span class="ficon" aria-hidden="true">✍️</span>
+            <h3>Grant Factory</h3>
+            <p>Load your organization’s documents and program facts once. Grant Factory reads the funder’s requirements, drafts from your own evidence, and shows what is still missing before you submit.</p>
           </article>
           <article class="feature">
             <span class="ficon" aria-hidden="true">⏱️</span>
             <h3>Contract Watch</h3>
-            <p>Track existing contracts, renewal dates, expected rebids, and incumbents so you prepare months before opportunities are released.</p>
+            <p>Track the contracts you already hold, their renewal dates, expected rebids, and incumbents, so you are ready months before the next release.</p>
           </article>
           <article class="feature">
             <span class="ficon" aria-hidden="true">💬</span>
             <h3>AI Opportunity Assistant</h3>
-            <p>Ask questions like “Show me Florida youth employment grants over $250,000” or “What are the biggest compliance risks?”</p>
-          </article>
-          <article class="feature">
-            <span class="ficon" aria-hidden="true">📚</span>
-            <h3>Knowledge Base</h3>
-            <p>Store past proposals, logic models, budgets, bios, and certifications. The AI uses them to answer questions and strengthen responses.</p>
+            <p>Ask “What should we pursue this week?” or “Which deadlines are coming up?” and get answers drawn from your own leads and pipeline.</p>
           </article>
           <article class="feature">
             <span class="ficon" aria-hidden="true">🔔</span>
             <h3>Alerts</h3>
-            <p>Get notified when WIOA youth, financial capability, CRA, or school district opportunities — or grants over your threshold — appear.</p>
+            <p>Save keyword or fit-score rules. New matches show up in the app and in a short morning email, along with reminders as pipeline deadlines get close.</p>
           </article>
           <article class="feature">
             <span class="ficon" aria-hidden="true">📊</span>
             <h3>Executive Dashboard</h3>
-            <p>See pipeline value, opportunities by stage, win rate, upcoming deadlines, estimated revenue, and funding mix at a glance.</p>
+            <p>Leads waiting on a decision, deadlines in the next 30 days, pipeline by stage, win rate, known pipeline value, and funding mix.</p>
           </article>
         </div>
       </div>
@@ -301,12 +332,12 @@
           <h2>Practical ways teams use Opportunity Assist</h2>
         </header>
         <div class="usecase-grid">
-          <div class="usecase"><h3>Find WIOA opportunities</h3><p>Surface youth and adult workforce funding the moment it posts.</p></div>
-          <div class="usecase"><h3>Track CTE &amp; school district RFPs</h3><p>Monitor education and training solicitations in your region.</p></div>
-          <div class="usecase"><h3>Monitor contract renewals</h3><p>Know when current agreements expire and likely rebid.</p></div>
+          <div class="usecase"><h3>Find WIOA opportunities</h3><p>See new youth and adult workforce funding each morning.</p></div>
+          <div class="usecase"><h3>Follow education and CTE grants</h3><p>Watch Education and Labor notices that match your programs.</p></div>
+          <div class="usecase"><h3>Monitor contract renewals</h3><p>Know when current agreements expire and are likely to rebid.</p></div>
           <div class="usecase"><h3>Score grant fit</h3><p>Decide quickly whether an opportunity is worth your team’s time.</p></div>
-          <div class="usecase"><h3>Build a teaming strategy</h3><p>Identify where partners strengthen a competitive response.</p></div>
-          <div class="usecase"><h3>Prepare a proposal response</h3><p>Pull requirements, deadlines, and evaluation criteria into one place.</p></div>
+          <div class="usecase"><h3>Pass with a purpose</h3><p>Record why you passed, and offer good leads to other practitioners through NationalFinCap.org.</p></div>
+          <div class="usecase"><h3>Prepare a proposal response</h3><p>Pull requirements, deadlines, and evaluation criteria into one place, then draft from your own documents.</p></div>
         </div>
       </div>
     </section>
@@ -323,27 +354,74 @@
           <div class="compare-row"><span class="compare-label">Grant databases</span><span>Help identify funders.</span></div>
           <div class="compare-row"><span class="compare-label">AI grant writers</span><span>Help draft language.</span></div>
           <div class="compare-row"><span class="compare-label">Traditional GovCon tools</span><span>Support large contractors.</span></div>
-          <div class="compare-row compare-highlight"><span class="compare-label">Opportunity Assist</span><span>Helps mission-driven organizations find, score, track, and pursue the right opportunities across grants, contracts, procurement, CRA, workforce, and community funding.</span></div>
+          <div class="compare-row compare-highlight"><span class="compare-label">Opportunity Assist</span><span>Finds and scores the opportunities that fit, tracks the pursuit, and helps you prepare the application from your own evidence.</span></div>
         </div>
       </div>
     </section>
 
+    <!-- PRICING -->
+    <section class="section section-alt" id="pricing">
+      <div class="container">
+        <header class="section-head">
+          <p class="eyebrow">Pricing</p>
+          <h2>Start free. Pay when it earns its keep.</h2>
+          <p class="section-sub">Explore leads, your pipeline, alerts, and Contract Watch at no cost. A plan adds AI Fit Scores, AI summaries, the AI Assistant, and Grant Factory.</p>
+        </header>
+        <div class="three-up plans">
+          <article class="card plan">
+            <h3>Professional</h3>
+            <p class="price">$149<small> / month</small></p>
+            <p>For one organization.</p>
+            <ul>
+              <li>AI Fit Scores and summaries for current leads</li>
+              <li>AI Opportunity Assistant</li>
+              <li>Grant Factory application workspace</li>
+            </ul>
+            <a class="btn btn-primary" href="/app.html">Start free</a>
+          </article>
+          <article class="card plan">
+            <h3>Team</h3>
+            <p class="price">$249<small> / month</small></p>
+            <p>For organizations with several people working the pipeline.</p>
+            <ul>
+              <li>Everything in Professional</li>
+              <li>Access for each teammate, set up with you</li>
+              <li>One shared pipeline, set of alerts, and decision record</li>
+            </ul>
+            <a class="btn btn-primary" href="/app.html">Start free</a>
+          </article>
+          <article class="card plan">
+            <h3>Enterprise</h3>
+            <p class="price">Custom</p>
+            <p>For networks, coalitions, and funders supporting several organizations.</p>
+            <ul>
+              <li>Separate workspaces for each organization</li>
+              <li>Pricing set with you</li>
+            </ul>
+            <a class="btn btn-outline" href="#contact">Talk with us</a>
+          </article>
+        </div>
+        <p class="plans-note">No credit card needed to explore. Subscribe from the Organization page once you are inside.</p>
+      </div>
+    </section>
+
     <!-- FAQ -->
-    <section class="section section-alt" id="faq">
+    <section class="section" id="faq">
       <div class="container narrow">
         <header class="section-head">
           <p class="eyebrow">FAQ</p>
           <h2>Questions buyers ask</h2>
         </header>
         <div class="faq">
-          <details><summary>What is Opportunity Assist?</summary><p>Opportunity Assist is an opportunity intelligence platform from My True Prosperity that helps mission-driven organizations find, score, track, and pursue funding opportunities — combining discovery, fit scoring, pursuit recommendations, contract renewal tracking, capture pipeline management, grant and RFP support, and AI-powered summaries.</p></details>
+          <details><summary>What is Opportunity Assist?</summary><p>An opportunity intelligence platform from My True Prosperity. It finds current grants and contract notices, scores how well each one fits your organization, tracks the ones you pursue, and helps you prepare the application.</p></details>
           <details><summary>Who is Opportunity Assist built for?</summary><p>Workforce development organizations, youth employment providers, financial capability agencies, VITA coalitions, CRA practitioners, community-based organizations, employability programs, and small to midsize mission-driven organizations.</p></details>
-          <details><summary>Is Opportunity Assist a grant database?</summary><p>No. A grant database helps you identify funders. Opportunity Assist scores fit, recommends what to pursue, and manages the full capture pipeline across grants, contracts, RFPs, and procurement.</p></details>
-          <details><summary>Is Opportunity Assist an AI grant writer?</summary><p>No. AI grant writers help draft language. Opportunity Assist helps you decide what to pursue and manage the pursuit. Proposal support is part of the broader capture lifecycle, not the whole product.</p></details>
+          <details><summary>Is Opportunity Assist a grant database?</summary><p>No. A grant database helps you identify funders. Opportunity Assist scores fit, recommends what to pursue, and manages the pursuit from first look to award.</p></details>
+          <details><summary>Does it write grant applications?</summary><p>Grant Factory prepares a first draft from your organization’s own documents and the funder’s requirements, and flags the evidence that is still missing. Your team reviews, edits, and submits. It does not invent facts or submit for you.</p></details>
           <details><summary>How is it different from SAM.gov, BidNet, Bonfire, Instrumentl, or Candid?</summary><p>Bid portals show what is posted. Grant databases help identify funders. AI grant writers help draft language. Traditional GovCon tools support large contractors. Opportunity Assist is built for mission-driven organizations that need a practical way to find, score, track, and pursue the right opportunities.</p></details>
-          <details><summary>Can it help decide whether an opportunity is worth pursuing?</summary><p>Yes. The AI Fit Score evaluates fit, past performance, geography, capacity, partnerships, budget, and risk, then returns a clear recommendation to support bid/no-bid decisions.</p></details>
-          <details><summary>Can small nonprofits use Opportunity Assist?</summary><p>Yes. It is designed specifically for small and midsize mission-driven organizations, not large government contractors.</p></details>
-          <details><summary>What does “Stop chasing. Start choosing.” mean?</summary><p>It means spending less energy reacting to every posting and more on the opportunities that genuinely fit your mission and capacity.</p></details>
+          <details><summary>Can it help decide whether an opportunity is worth pursuing?</summary><p>Yes. The AI Fit Score rates organizational and program fit, target population, geography, applicant eligibility, capacity, funding fit, timing, past performance, and risk. Factors a listing does not cover are marked unknown, not scored as zero. You get a recommendation such as Strongly pursue or Probably pass.</p></details>
+          <details><summary>Can small nonprofits use Opportunity Assist?</summary><p>Yes. It is designed for small and midsize mission-driven organizations, not large government contractors.</p></details>
+          <details><summary>What does it cost?</summary><p>Exploring is free. Professional is $149 a month and Team is $249 a month. Enterprise pricing is set with you.</p></details>
+          <details><summary>What does “Stop chasing. Start choosing.” mean?</summary><p>Spend less energy reacting to every posting and more on the opportunities that actually fit your mission and capacity.</p></details>
         </div>
       </div>
     </section>
@@ -351,28 +429,28 @@
     <!-- CTA / CONTACT -->
     <section class="section cta" id="contact">
       <div class="container narrow center">
-        <h2>Find the money that funds the mission.</h2>
-        <p>Opportunity Assist is rolling out to a founding cohort of mission-driven organizations. Request early access and we’ll be in touch.</p>
+        <h2>Questions first? Talk with us.</h2>
+        <p>Tell us about your organization and what you need funded, and we will follow up.</p>
 
         <form id="eaForm" class="ea-form" novalidate>
           <div class="ea-field"><input type="text" id="ea_name" placeholder="Your name" autocomplete="name" /></div>
           <div class="ea-field"><input type="email" id="ea_email" placeholder="Email address *" required autocomplete="email" /></div>
           <div class="ea-field"><input type="text" id="ea_org" placeholder="Organization" autocomplete="organization" /></div>
-          <div class="ea-field"><textarea id="ea_message" rows="2" placeholder="What are you hoping to find funding for? (optional)"></textarea></div>
+          <div class="ea-field"><textarea id="ea_message" rows="2" placeholder="What do you need funding for? (optional)"></textarea></div>
           <!-- Honeypot: hidden from real visitors, most bots fill every field -->
           <div class="ea-hp" aria-hidden="true"><input type="text" id="ea_website" tabindex="-1" autocomplete="off" /></div>
           <div id="eaMsg" class="ea-msg" role="status"></div>
-          <button class="btn btn-primary btn-lg" type="submit" id="eaBtn">Request early access</button>
+          <button class="btn btn-primary btn-lg" type="submit" id="eaBtn">Send</button>
         </form>
 
-        <p class="cta-sub">Or call <a href="tel:+13212094377">321-209-4377</a>, or email <a href="mailto:bill@mytrueprosperity.com?subject=Opportunity%20Assist%20early%20access">bill@mytrueprosperity.com</a> directly.</p>
+        <p class="cta-sub">Ready now? <a href="/app.html">Create a free account</a>. Or call <a href="tel:+13212094377">321-209-4377</a>, or email <a href="mailto:bill@mytrueprosperity.com?subject=Opportunity%20Assist">bill@mytrueprosperity.com</a>.</p>
       </div>
     </section>
 
   </main>
 
   <style>
-    /* Early access form — self-contained so it doesn't depend on assets/styles.css conventions not visible here. */
+    /* Contact form: self-contained so it doesn't depend on assets/styles.css conventions not visible here. */
     .ea-form{max-width:420px;margin:1.4rem auto 0;text-align:left}
     .ea-field{margin-bottom:.7rem}
     .ea-form input,.ea-form textarea{width:100%;box-sizing:border-box;padding:.65rem .8rem;border:1px solid #d7dee1;border-radius:9px;font:inherit;font-size:.95rem;color:#16242c}
@@ -420,7 +498,7 @@
             }
             form.reset();
             msg.className = "ea-msg ok";
-            msg.textContent = "Thanks — we'll be in touch soon.";
+            msg.textContent = "Thanks. We'll be in touch soon.";
           }).catch(function () {
             btn.disabled = false;
             msg.className = "ea-msg err";
