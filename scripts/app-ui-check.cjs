@@ -250,6 +250,19 @@ function fixtures({ subscribed = true, big = false } = {}) {
     await page.waitForSelector('#pf');
     assert.equal(await page.$$eval('a[href*="buy.stripe.com"]', (a) => a.length), 2);
     ok('signed-in unsubscribed users still see both plans');
+    assert.equal(await page.isChecked('#emailDigest'), true, 'daily email is on by default');
+    await page.uncheck('#emailDigest');
+    await page.waitForFunction(() => /off/.test(document.querySelector('#emailDigestMsg').textContent));
+    const upd = (await page.evaluate(() => window.__calls)).find((c) => c.table === 'profiles' && c.op === 'update');
+    assert.deepEqual(upd.payload, { email_digest: false });
+    ok('each person can turn the daily email off on the Organization page');
+    await ctx.close();
+  }
+  {
+    const { page, ctx } = await open({ guest: true, subscribed: false });
+    await page.click('[data-v="profile"]');
+    await page.waitForSelector('#pf');
+    assert.equal(await page.$('#emailDigest'), null, 'guests have no email to send to');
     await ctx.close();
   }
 

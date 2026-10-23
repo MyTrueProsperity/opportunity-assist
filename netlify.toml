@@ -23,6 +23,10 @@
 [functions."foundation-scan-background"]
   schedule = "0 10 * * *"
 
+# Daily email digest, 7:35 am Eastern daylight time (6:35 standard time).
+[functions."notifications-digest-background"]
+  schedule = "35 11 * * *"
+
 [[headers]]
   for = "/*"
   [headers.values]

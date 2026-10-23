@@ -162,7 +162,7 @@ input[type="checkbox"]{width:auto;flex:0 0 auto}
 <body>
   <div id="app"><div class="boot">Loading Opportunity Assist…</div></div>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-  <script src="/assets/page-guidance.js?v=20261023"></script>
+  <script src="/assets/page-guidance.js?v=20261023b"></script>
   <script src="/assets/source-intelligence.js?v=20261012"></script>
   <script src="/assets/fincap-review.js?v=20261012"></script>
   <link rel="stylesheet" href="/assets/grant-factory.css?v=20260923">
@@ -1549,6 +1549,11 @@ window.OA_CONFIG = {
       '<div class="topbar"><div><h1>Organization</h1><p class="sub">Updates here re-score your opportunities</p></div></div>' +
       pageGuide('profile') +
       renderBillingCard() +
+      (state.user.is_anonymous || !state.user.email ? "" :
+        '<div class="card" style="max-width:680px;margin-bottom:18px"><h2 style="margin-bottom:.3rem">Email</h2>' +
+        '<label style="display:flex;gap:8px;align-items:flex-start"><input type="checkbox" id="emailDigest"' + (state.profile && state.profile.email_digest === false ? "" : " checked") + ' style="margin-top:4px" />' +
+        '<span>Send me a daily email when new leads match our alert rules or a Capture Pipeline deadline is 14, 7, 3 or 1 days away. Nothing is sent on days with nothing new.</span></label>' +
+        '<p class="hint" id="emailDigestMsg" style="margin:.4rem 0 0">Goes to ' + esc(state.user.email) + '. This setting is yours alone; teammates choose for themselves.</p></div>') +
       '<div class="card" style="max-width:680px"><form id="pf">' +
       field("p_name", "Organization name", o.name) +
       '<div class="two-col">' + field("p_areas", "Service areas", o.service_areas) + field("p_pops", "Target populations", o.target_populations) + "</div>" +
@@ -1560,6 +1565,17 @@ window.OA_CONFIG = {
       '<button class="btn btn-primary" id="pfBtn" type="submit">Save changes</button>' +
       "</form></div>";
 
+    var digest = main.querySelector("#emailDigest");
+    if (digest) digest.addEventListener("change", function () {
+      var on = digest.checked, note = main.querySelector("#emailDigestMsg");
+      digest.disabled = true;
+      sb.from("profiles").update({ email_digest: on }).eq("id", state.user.id).then(function (r) {
+        digest.disabled = false;
+        if (r.error) { digest.checked = !on; note.textContent = "Could not save: " + r.error.message; return; }
+        if (state.profile) state.profile.email_digest = on;
+        note.textContent = on ? "Daily email is on." : "Daily email is off.";
+      });
+    });
     main.querySelector("#pf").addEventListener("submit", function (e) {
       e.preventDefault();
       var btn = main.querySelector("#pfBtn"); var msg = main.querySelector("#pfMsg");

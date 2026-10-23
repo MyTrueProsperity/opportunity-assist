@@ -126,8 +126,10 @@ lead can be re-scored on request from its detail page.
 The landing page's "Request early access" button used to be a plain `mailto:`
 link. It now submits to `request-early-access`, which saves each submission
 to Supabase instead of relying on catching every email. A honeypot field
-filters out most bots without adding a CAPTCHA. No email notification is
-wired up yet — check new rows in Supabase's Table Editor, or run:
+filters out most bots without adding a CAPTCHA. Once email is set up (see
+Email notifications below), each request is also emailed to `NOTIFY_EMAIL`
+(default bill@mytrueprosperity.com) with Reply-To set to the requester. The
+rows stay in Supabase either way:
 
 ```sql
 select * from early_access_requests order by created_at desc;
@@ -139,8 +141,31 @@ Setup:
 2. **Env vars**: `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY` — both already
    needed for billing and the crawler above, nothing new to add here.
 
-Worth adding later if volume picks up: a Resend or similar integration so a
-new request emails Bill directly instead of requiring a manual check.
+## Email notifications (Resend)
+
+`netlify/lib/notifications/email.js` sends through Resend's HTTP API. Until
+`RESEND_API_KEY` is set every send is skipped and logged, and nothing is
+recorded as sent.
+
+- **Early-access requests** are emailed to `NOTIFY_EMAIL`.
+- **Daily digest** (`notifications-digest-background`, 11:35 UTC): for each
+  organization, members with an email address and `profiles.email_digest`
+  on receive new current leads that match the organization's alert rules
+  and reminders for open Capture Pipeline items due in 14, 7, 3 or 1 days.
+  `notification_log` makes sure a lead or a reminder is sent once. Nothing
+  is sent on a day with nothing new.
+- **Opting out**: a checkbox on the Organization page, or the one-click link
+  in every digest (`notifications-unsubscribe`, an HMAC of the user id keyed
+  with the service role key; also sent as a List-Unsubscribe header).
+
+Setup:
+
+1. Create a Resend account and verify the `opportunityassist.com` domain
+   (Resend shows the DNS records to add).
+2. Create an API key and add `RESEND_API_KEY` in Netlify with Functions access.
+3. Optional: `EMAIL_FROM` (default `Opportunity Assist <notifications@opportunityassist.com>`),
+   `NOTIFY_EMAIL`, `APP_URL` (default `https://opportunityassist.com`).
+4. Apply `supabase/opportunity-assist/*_email_digest.sql`, then deploy.
 
 ## Opportunity Crawler
 
