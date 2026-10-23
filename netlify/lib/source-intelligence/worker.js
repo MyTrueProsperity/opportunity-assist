@@ -167,7 +167,12 @@ async function runWorker({db=createDb(),provider=null,fetcher=fetchPage,maxJobs=
       else if(job.kind==='IMPORT')result=await importBatch(db,job);
       else if(job.kind==='API_IMPORT')result=await importExternalBatch(db,job);
       else if(job.kind==='DISCOVER')result=await discover(db,provider,job,fetcher);
-      else if(job.kind==='VALIDATE')result=await inspect(db,provider,job,job.payload.url,job.payload.name,null,fetcher);
+      else if(job.kind==='VALIDATE'){
+        // A candidate decided since this check was queued needs no page fetch;
+        // skipping it keeps the daily page budget for undecided sources.
+        const [decided]=job.payload.candidate_id?await db.select('source_candidates',{id:'eq.'+job.payload.candidate_id,status:'in.(APPROVED,MERGED,UPDATED,REJECTED)',select:'id,status'}):[];
+        result=decided?{skipped:'candidate '+decided.status.toLowerCase()}:await inspect(db,provider,job,job.payload.url,job.payload.name,null,fetcher);
+      }
       else if(job.kind==='MONITOR'){const [p]=await db.select('funding_programs',{id:'eq.'+job.payload.program_id});if(!p||p.superseded_by)throw new Error('Program is missing or superseded');result=await inspect(db,provider,job,p.source_url,p.source_name,p,fetcher);}
       await db.rpc('source_finish_job',{p_job:job.id,p_token:job.lease_token,p_status:'COMPLETED'});
       if(result?.partial)await db.patch('source_discovery_runs',{id:'eq.'+job.run_id},{status:'PARTIAL'});
