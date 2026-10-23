@@ -121,11 +121,47 @@
     return { headline: headline, confidence: confidence, recommendation: recommendation, factors: factors, caps: caps.map(function (c) { return c.why; }) };
   }
 
+  // Free keyword estimate, shown before (or instead of) a paid AI score.
+  // It only measures how many of the organization's own keywords appear in
+  // the listing (a keyword in the title counts double). It has no hidden
+  // constants: the old preview added fixed budget/risk values that put every
+  // listing at 60% or more. A listing with no keyword match gets no number
+  // rather than a low one, because many listings are too short to judge by
+  // keywords; checked against AI scores, about half of the strongest leads
+  // matched no profile keyword. So this is never used to skip AI scoring.
+  function estimate(org, opp) {
+    org = org || {}; opp = opp || {};
+    var seen = {};
+    var kws = (org.keywords || []).map(function (k) { return String(k || "").toLowerCase().trim(); }).filter(function (k) {
+      if (k.length < 2 || seen[k]) return false;
+      seen[k] = true;
+      return true;
+    });
+    var title = String(opp.title || "").toLowerCase();
+    var body = [opp.summary, opp.category, opp.requirements].map(function (x) { return String(x || "").toLowerCase(); }).join(" ");
+    function has(text, k) { return new RegExp("(^|[^a-z0-9])" + escapeRe(k) + "($|[^a-z0-9])").test(text); }
+    var matched = [], points = 0;
+    kws.forEach(function (k) {
+      if (has(title, k)) { matched.push(k); points += 2; }
+      else if (has(body, k)) { matched.push(k); points += 1; }
+    });
+    if (!kws.length) {
+      return { estimate: true, relevant: null, headline: null, rec: "Add keywords to estimate", matched: [],
+        factors: [{ label: "Keyword match", val: null, reason: "Add keywords to your organization profile to get a free estimate." }] };
+    }
+    var headline = points ? Math.round(30 + 60 * Math.min(1, points / 4)) : null;
+    var rec = points >= 4 ? "Strong keyword match" : points >= 2 ? "Some keyword match" : points ? "Weak keyword match" : "No keyword match";
+    return {
+      estimate: true, relevant: points > 0, headline: headline, rec: rec, matched: matched,
+      factors: [{ label: "Keyword match", val: headline, reason: matched.length ? "Matched " + matched.length + " of your keywords: " + matched.slice(0, 6).join(", ") + (matched.length > 6 ? ", and more" : "") + "." : "None of your profile keywords appear in this listing's text. Short listings often miss keywords; read the source or get an AI Fit Score before passing." }]
+    };
+  }
+
   // Strong only when AI-scored under the current rubric, not ineligible, and
   // confident enough. Local keyword estimates never count as strong.
   function isStrong(fit) {
     return !!fit && !fit.estimate && !fit.pending && !fit.ineligible && fit.rubric_version === RUBRIC_VERSION && fit.headline != null && fit.headline >= STRONG && (fit.confidence == null || fit.confidence >= 0.6);
   }
 
-  return { RUBRIC_VERSION: RUBRIC_VERSION, STRONG: STRONG, REVIEW: REVIEW, FACTORS: FACTORS, STATES: STATES, statesIn: statesIn, eligibility: eligibility, computeHeadline: computeHeadline, isStrong: isStrong };
+  return { RUBRIC_VERSION: RUBRIC_VERSION, STRONG: STRONG, REVIEW: REVIEW, FACTORS: FACTORS, STATES: STATES, statesIn: statesIn, eligibility: eligibility, computeHeadline: computeHeadline, isStrong: isStrong, estimate: estimate };
 });

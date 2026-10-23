@@ -3,8 +3,8 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Opportunity Assist — App</title>
-  <meta name="description" content="Opportunity Assist app — find, score, and pursue funding opportunities." />
+  <title>Opportunity Assist</title>
+  <meta name="description" content="Opportunity Assist app: find, score, and pursue funding opportunities." />
   <meta name="robots" content="noindex, nofollow" />
   <link rel="stylesheet" href="/assets/source-intelligence.css?v=20261012" />
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%230f2e3d'/%3E%3Cpath d='M20 40 L30 28 L38 36 L48 22' fill='none' stroke='%23e0a64a' stroke-width='5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E" />
@@ -168,11 +168,11 @@ input[type="checkbox"]{width:auto;flex:0 0 auto}
   <link rel="stylesheet" href="/assets/grant-factory.css?v=20260923">
   <script src="/assets/grant-factory-limits.js?v=20260917"></script>
   <script src="/assets/grant-factory-reading.js?v=20260923"></script>
-  <script src="/assets/source-matches.js?v=20261012"></script>
+  <script src="/assets/source-matches.js?v=20261023"></script>
   <script src="/assets/grant-factory.js?v=20261012c"></script>
-  <script src="/assets/matching.js?v=20260925"></script>
+  <script src="/assets/matching.js?v=20261023"></script>
   <script src="/assets/alerts.js?v=20261023"></script>
-  <script src="/assets/opportunity-workflow.js?v=20261012"></script>
+  <script src="/assets/opportunity-workflow.js?v=20261023"></script>
   <script>
 // Opportunity Assist — Supabase client config
 // These are PUBLIC client keys (safe to expose). All data access is protected
@@ -235,6 +235,9 @@ window.OA_CONFIG = {
     professional: "https://buy.stripe.com/6oU6oI9KD3xo4oV0cTfYY09",
     team: "https://buy.stripe.com/fZueVe7Cv8RI7B76BhfYY0a"
   };
+  // Stripe customer portal login link (Stripe Dashboard > Settings > Billing >
+  // Customer portal). When set, subscribers manage or cancel their own plan.
+  var BILLING_PORTAL_URL = "";
   function billingLinkFor(planKey) {
     var base = PLAN_LINKS[planKey];
     if (!base) return null;
@@ -250,7 +253,7 @@ window.OA_CONFIG = {
     });
   }
   function money(n) {
-    if (n == null) return "—";
+    if (n == null) return "Amount not stated";
     return "$" + Number(n).toLocaleString();
   }
   function daysUntil(d) {
@@ -278,36 +281,12 @@ window.OA_CONFIG = {
   function scoreClass(v) { return v >= 75 ? "s-good" : v >= 55 ? "s-mid" : "s-low"; }
   function el(html) { var t = document.createElement("template"); t.innerHTML = html.trim(); return t.content.firstChild; }
 
-  /* ---------- fit score (preview heuristic from org profile) ---------- */
+  /* ---------- free keyword estimate (see OAMatching.estimate) ---------- */
+  // Never shown as a real score or counted as a strong match. The old preview
+  // added fixed budget/risk/capacity values that kept every listing at 60% or
+  // higher; this one only reflects the organization's own keywords.
   function computeFit(org, opp) {
-    var text = ((opp.title || "") + " " + (opp.summary || "") + " " + (opp.category || "") + " " + (opp.requirements || "")).toLowerCase();
-    var kws = (org.keywords || []).map(function (k) { return (k || "").toLowerCase().trim(); }).filter(Boolean);
-    var hits = kws.filter(function (k) { return text.indexOf(k) !== -1; }).length;
-    var orgFit = kws.length ? Math.round(40 + 60 * Math.min(1, hits / Math.max(3, kws.length))) : 60;
-
-    var geo = (opp.geography || "").toLowerCase();
-    var areas = (org.service_areas || "").toLowerCase();
-    var geoScore = 60;
-    if (geo.indexOf("national") !== -1) geoScore = 100;
-    else if (areas && geo && (areas.indexOf(geo) !== -1 || geo.split(/[ ,/]+/).some(function (g) { return g.length > 3 && areas.indexOf(g) !== -1; }))) geoScore = 100;
-    else if (areas) geoScore = 65;
-
-    var cap = (org.past_performance && org.past_performance.length > 40) ? 85 : 70;
-    var budget = 80;
-    var risk = 75;
-
-    var headline = Math.round(orgFit * 0.35 + geoScore * 0.25 + cap * 0.18 + budget * 0.12 + risk * 0.10);
-    var rec = headline >= 75 ? "Strongly pursue" : headline >= 55 ? "Worth reviewing" : "Probably pass";
-    // A local keyword estimate is never shown as a real score or counted as a strong match.
-    return {
-      estimate: true, headline: headline, rec: rec, factors: [
-        { label: "Organizational fit", val: orgFit },
-        { label: "Geographic eligibility", val: geoScore },
-        { label: "Capacity", val: cap },
-        { label: "Budget range", val: budget },
-        { label: "Risk profile", val: risk }
-      ]
-    };
+    return window.OAMatching.estimate(org, opp);
   }
 
   /* ---------- data ---------- */
@@ -359,11 +338,12 @@ window.OA_CONFIG = {
     var orgId=state.org.id;
     // One row per decision (append-only log -- see migration notes), newest first;
     // keep only the latest decision per opportunity for dashboard/gate purposes.
-    return sb.from("pursue_decisions").select("*").eq("org_id",orgId).order("decided_at", { ascending: false })
-      .then(function (r) {
-        if(r.error)throw r.error;if(state.org.id!==orgId)return;
+    return selectAll("pursue_decisions", orgId, "id")
+      .then(function (data) {
+        if(state.org.id!==orgId)return;
         var latest = {};
-        (r.data || []).forEach(function (row) { if (!latest[row.opportunity_id]) latest[row.opportunity_id] = row; });
+        (data || []).slice().sort(function (a, b) { return String(b.decided_at).localeCompare(String(a.decided_at)); })
+          .forEach(function (row) { if (!latest[row.opportunity_id]) latest[row.opportunity_id] = row; });
         state.pursueDecisions = latest;
       });
   }
@@ -394,6 +374,20 @@ window.OA_CONFIG = {
       missingIds.push(o.id);
     });
     return missingIds;
+  }
+  // Scores one lead on request (subscribers only), for example after a
+  // background scoring attempt failed.
+  function scoreOnRequest(o, button) {
+    var f = state.fit[o.id];
+    if (!f || !f.estimate || f.pending) return;
+    if (state.user.is_anonymous || !isSubscribed()) { f.paywalled = true; paintScores(); return; }
+    if (button) button.disabled = true;
+    f.pending = true; paintScores();
+    sb.auth.getSession().then(function (s) {
+      var token = s.data.session && s.data.session.access_token;
+      if (!token) { f.pending = false; paintScores(); return; }
+      return scoreChunk([o.id], token);
+    });
   }
   function fitFromScore(row) {
     var ineligible = row.eligibility_status === "INELIGIBLE";
@@ -461,6 +455,7 @@ window.OA_CONFIG = {
       return r.json();
     }).then(function (data) {
       if (!data) return;
+      if (data.error) console.error("AI scoring failed:", data.error);
       (data.results || []).forEach(function (res) {
         state.fit[res.opportunity_id] = fitFromScore(res);
         if (res.ai_summary) {
@@ -468,17 +463,36 @@ window.OA_CONFIG = {
           if (o) o.ai_summary = res.ai_summary;
         }
       });
+      // Anything the server could not score keeps its estimate instead of
+      // showing "Scoring…" forever; it is retried on the next load.
+      ids.forEach(function (id) { if (state.fit[id] && state.fit[id].pending) state.fit[id].pending = false; });
       paintScores();
     }).catch(function (err) {
       console.error("AI scoring failed:", err);
       ids.forEach(function (id) { if (state.fit[id]) state.fit[id].pending = false; });
     });
   }
+  // Reads every row of an org-scoped table. The API returns at most 1,000
+  // rows per request, so a single select silently dropped the rest: fit
+  // scores past the first 1,000 looked missing and were bought again on every
+  // visit (about 570 paid re-scores per Bright Minds session).
+  function selectAll(table, orgId, orderCol) {
+    var rows = [], PAGE = 1000;
+    function page(from) {
+      return sb.from(table).select("*").eq("org_id", orgId).order(orderCol).range(from, from + PAGE - 1).then(function (r) {
+        if (r.error) throw r.error;
+        rows = rows.concat(r.data || []);
+        if ((r.data || []).length === PAGE) return page(from + PAGE);
+        return rows;
+      });
+    }
+    return page(0);
+  }
   function loadFitScores() {
     var orgId=state.org.id;
-    return sb.from("fit_scores").select("*").eq("org_id",orgId).then(function (r) {
-      if(r.error)throw r.error;if(state.org.id!==orgId)return;
-      (r.data || []).forEach(function (row) {
+    return selectAll("fit_scores", orgId, "opportunity_id").then(function (data) {
+      if(state.org.id!==orgId)return;
+      (data || []).forEach(function (row) {
         // Stale scores (profile or opportunity changed) and scores from an older
         // rubric are not shown as current; they are re-scored.
         if (row.source_stale || row.rubric_version !== window.OAMatching.RUBRIC_VERSION) { delete state.fit[row.opportunity_id]; return; }
@@ -637,7 +651,7 @@ window.OA_CONFIG = {
     root.innerHTML = "";
     var card = el(
       '<div class="auth-wrap"><div class="auth-card" style="max-width:560px">' +
-      '<div class="auth-brand"><span class="brand-mark">OA</span><div><strong>Set up your organization</strong><small>One-time setup — powers your Fit Scores</small></div></div>' +
+      '<div class="auth-brand"><span class="brand-mark">OA</span><div><strong>Set up your organization</strong><small>One-time setup that powers your Fit Scores</small></div></div>' +
       pageGuide('setup') +
       '<form id="orgForm">' +
       '<div class="field"><label>Organization name *</label><input id="o_name" required /></div>' +
@@ -710,7 +724,7 @@ window.OA_CONFIG = {
       state.org = null; state.fit = {}; state.opps = []; state.pipeline = []; state.contracts = []; state.alertRules = [];
       state.requirements = []; state.pursueDecisions = {}; state.currentOpp = null; state.currentPipelineItem = null;
       state.pipelineOpps = {}; state.notesDraft = {}; state.fincapShares = {};
-      state.chat = []; state.subscription = null; state.view = "dashboard";
+      state.chat = []; state.subscription = null; state.view = "dashboard"; state.radarView = null;
       boot();
     });
   }
@@ -796,10 +810,19 @@ window.OA_CONFIG = {
   function renderDashboard(main) {
     var byStage = {};
     state.pipeline.forEach(function (p) { byStage[p.stage] = (byStage[p.stage] || 0) + 1; });
-    var pipelineValue = state.pipeline.reduce(function (s, p) {
-      return s + (p.opportunities && p.opportunities.funding_amount ? Number(p.opportunities.funding_amount) : 0);
-    }, 0);
-    var awarded = byStage["Awarded"] || 0;
+    function amountOf(p) { return p.opportunities && p.opportunities.funding_amount != null ? Number(p.opportunities.funding_amount) : null; }
+    // Pipeline value counts open pursuits only (not Awarded or Not Awarded),
+    // and says how many items actually state an amount, since most listings
+    // do not. Summing unknowns as $0 made the total look precise.
+    var openItems = state.pipeline.filter(function (p) { return p.stage !== "Awarded" && p.stage !== "Not Awarded"; });
+    var openWithAmount = openItems.filter(function (p) { return amountOf(p) != null; });
+    var pipelineValue = openWithAmount.reduce(function (s, p) { return s + amountOf(p); }, 0);
+    var awarded = byStage["Awarded"] || 0, notAwarded = byStage["Not Awarded"] || 0, decided = awarded + notAwarded;
+    var awardedValue = state.pipeline.filter(function (p) { return p.stage === "Awarded" && amountOf(p) != null; }).reduce(function (s, p) { return s + amountOf(p); }, 0);
+    var mix = {};
+    openItems.forEach(function (p) { var c = (p.opportunities && p.opportunities.category) || "Uncategorized"; mix[c] = (mix[c] || 0) + 1; });
+    var mixText = Object.keys(mix).sort(function (a, b) { return mix[b] - mix[a]; }).map(function (c) { return c + " " + mix[c]; }).join(" · ");
+    var stageText = STAGES.filter(function (st) { return byStage[st]; }).map(function (st) { return st + " " + byStage[st]; }).join(" · ");
     var leads=currentLeads();
     var strong = leads.filter(function (o) { return window.OAMatching.isStrong(currentFit(o)); }).length;
     var eligibleCount = leads.length;
@@ -810,14 +833,20 @@ window.OA_CONFIG = {
     var alertMatchCount = window.OAAlerts.matchingOpportunities(state.alertRules, leads, currentFit).length;
 
     main.innerHTML =
-      '<div class="topbar"><div><h1>Dashboard</h1><p class="sub">What needs your attention</p></div><button class="btn btn-ghost btn-sm" id="refreshLeads">Refresh lists — free</button></div>' +
+      '<div class="topbar"><div><h1>Dashboard</h1><p class="sub">What needs your attention</p></div><button class="btn btn-ghost btn-sm" id="refreshLeads">Refresh lists (free)</button></div>' +
       pageGuide('dashboard') +
       '<div class="grid tiles">' +
       tile(eligibleCount, "Current leads on Funding Radar") +
       tile(strong, "Strong matches (75%+)") +
-      tile(state.pipeline.length, "In capture pipeline") +
-      tile(money(pipelineValue), "Pipeline value") +
+      tile(openItems.length, "Open in Capture Pipeline") +
+      tile(openWithAmount.length ? money(pipelineValue) : "Not stated", "Known pipeline value (" + openWithAmount.length + " of " + openItems.length + " state an amount)") +
       "</div>" +
+      (state.pipeline.length
+        ? '<div class="card" style="margin-top:12px"><p style="margin:0"><strong>Pipeline by stage:</strong> ' + esc(stageText) + "</p>" +
+          '<p style="margin:.4rem 0 0"><strong>Win rate:</strong> ' + (decided ? Math.round(100 * awarded / decided) + "% (" + awarded + " awarded of " + decided + " decided" + (awardedValue ? ", " + money(awardedValue) + " awarded" : "") + ")" : "No awards or declines recorded yet") + "</p>" +
+          (mixText ? '<p style="margin:.4rem 0 0"><strong>Funding mix (open items):</strong> ' + esc(mixText) + "</p>" : "") +
+          "</div>"
+        : "") +
       '<p class="hint">These are leads to review, not confirmed eligible grants. Passed, expired and known ineligible opportunities are excluded. Unknown dates still need verification. Funding Radar and Foundation Leads draw from the same catalog.</p>' +
       '<h2 class="section-title">Needs your decision</h2><p class="hint">Current, undecided leads that are not already in your pipeline. You can review free estimates without buying an AI score. The next lead appears after each decision.</p>' +
       (needsDecision.length ? '<div class="opp-list" id="needsDecision"></div>' : '<div class="empty">No current leads need a first decision. Existing decisions, captured opportunities, and low scored matches remain available in Funding Radar. Refresh the lists to check for new published grants.</div>') +
@@ -908,7 +937,7 @@ window.OA_CONFIG = {
       return sb.from('pursue_decisions').insert(decisionPayload).select().single().then(function(r){
         if(r.error)throw Error((pipelineItem?'The pipeline item was saved, but its decision could not be recorded. Open Capture Pipeline to review it. ':'')+r.error.message);
         if(state.org.id===orgId)state.pursueDecisions[o.id]=r.data;
-        return logActivity({org_id:orgId,opportunity_id:o.id,pipeline_item_id:pipelineItem?.id||null,action:'pursue_decision',detail:decision==='pursue'?'Marked Pursue — added to Capture Pipeline':'Marked Pass'});
+        return logActivity({org_id:orgId,opportunity_id:o.id,pipeline_item_id:pipelineItem?.id||null,action:'pursue_decision',detail:decision==='pursue'?'Marked Pursue: added to Capture Pipeline':'Marked Pass'});
       });
     }).then(function(){if(state.org.id===orgId){if(onDone)onDone(pipelineItem);else paint();}return pipelineItem;}).finally(function(){delete recordDecision.pending[key];});
     recordDecision.pending[key]=chain;return chain;
@@ -985,7 +1014,7 @@ window.OA_CONFIG = {
   /* ---------- funding radar ---------- */
   function renderRadar(main) {
     main.innerHTML =
-      '<div class="topbar"><div><h1>Funding Radar</h1><p class="sub">'+currentLeads().length+' current leads for '+esc(state.org.name)+' · '+state.opps.length+' catalog records including closed and historical sources</p></div><button class="btn btn-ghost btn-sm" id="refreshLeads">Refresh lists — free</button></div>' +
+      '<div class="topbar"><div><h1>Funding Radar</h1><p class="sub">'+currentLeads().length+' current leads for '+esc(state.org.name)+' · '+state.opps.length+' catalog records including closed and historical sources</p></div><button class="btn btn-ghost btn-sm" id="refreshLeads">Refresh lists (free)</button></div>' +
       pageGuide('radar') +
       '<div class="filters">' +
       '<input id="q" placeholder="Search opportunities…" />' +
@@ -1001,7 +1030,23 @@ window.OA_CONFIG = {
     var catSel = main.querySelector("#cat");
     Object.keys(cats).sort().forEach(function (c) { catSel.appendChild(el('<option value="' + esc(c) + '">' + esc(c) + "</option>")); });
 
+    // Real AI scores rank above free estimates; within each, higher first.
+    function fitRank(f) {
+      if (!f || f.ineligible || f.headline == null) return -1;
+      return f.estimate || f.pending ? f.headline / 1000 : 1 + f.headline;
+    }
+    // Rendering every lead (well over a thousand, each with action buttons)
+    // makes the page slow; show a page at a time.
+    var PAGE = 100, saved = state.radarView || {}, shown = saved.shown || PAGE;
+    // Background scoring repaints this screen as results arrive; keep what the
+    // user typed and chose instead of resetting the filters each time.
+    main.querySelector("#q").value = saved.q || "";
+    if (saved.cat && cats[saved.cat]) catSel.value = saved.cat;
+    if (saved.sort) main.querySelector("#sort").value = saved.sort;
+    main.querySelector("#showIneligible").checked = !!saved.showIneligible;
+    main.querySelector("#showPassed").checked = !!saved.showPassed;
     function draw() {
+      state.radarView = { q: main.querySelector("#q").value, cat: catSel.value, sort: main.querySelector("#sort").value, showIneligible: main.querySelector("#showIneligible").checked, showPassed: main.querySelector("#showPassed").checked, shown: shown };
       var q = main.querySelector("#q").value.toLowerCase();
       var cat = catSel.value;
       var sort = main.querySelector("#sort").value;
@@ -1014,21 +1059,33 @@ window.OA_CONFIG = {
       });
       rows.sort(function (a, b) {
         if (sort === "deadline") return new Date(a.deadline || "2999") - new Date(b.deadline || "2999");
-        if (sort === "amount") return (b.funding_amount || 0) - (a.funding_amount || 0);
-        var fa = state.fit[a.id], fb = state.fit[b.id];
-        var va = fa && !fa.ineligible && fa.headline != null ? fa.headline : -1, vb = fb && !fb.ineligible && fb.headline != null ? fb.headline : -1;
-        return vb - va;
+        // Amount sort (below) puts listings without a stated amount last.
+        return fitRank(currentFit(b)) - fitRank(currentFit(a));
+      });
+      if (sort === "amount") rows.sort(function (a, b) {
+        var va = a.funding_amount != null ? Number(a.funding_amount) : -1, vb = b.funding_amount != null ? Number(b.funding_amount) : -1;
+        return vb - va || fitRank(currentFit(b)) - fitRank(currentFit(a));
       });
       var list = main.querySelector("#list");
       list.innerHTML = "";
       if (!rows.length) { list.innerHTML = '<div class="empty">No matching opportunities.</div>'; return; }
-      rows.forEach(function (o) { list.appendChild(oppRow(o)); });
+      if (sort === "amount") {
+        var stated = rows.filter(function (o) { return o.funding_amount != null; }).length;
+        list.appendChild(el('<p class="hint">' + stated + " of " + rows.length + " listed leads state an award amount; the rest follow in fit order.</p>"));
+      }
+      rows.slice(0, shown).forEach(function (o) { list.appendChild(oppRow(o)); });
+      if (rows.length > shown) {
+        var more = el('<button type="button" class="btn btn-ghost btn-sm" style="margin:12px auto;display:block">Show ' + Math.min(PAGE, rows.length - shown) + " more of " + (rows.length - shown) + " remaining</button>");
+        more.addEventListener("click", function () { shown += PAGE; draw(); });
+        list.appendChild(more);
+      }
     }
-    main.querySelector("#q").addEventListener("input", draw);
-    catSel.addEventListener("change", draw);
-    main.querySelector("#sort").addEventListener("change", draw);
-    main.querySelector("#showIneligible").addEventListener("change", draw);
-    main.querySelector('#showPassed').onchange=draw;
+    function redraw() { shown = PAGE; draw(); }
+    main.querySelector("#q").addEventListener("input", redraw);
+    catSel.addEventListener("change", redraw);
+    main.querySelector("#sort").addEventListener("change", redraw);
+    main.querySelector("#showIneligible").addEventListener("change", redraw);
+    main.querySelector('#showPassed').onchange=redraw;
     main.querySelector('#refreshLeads').onclick=function(){refreshOpportunityLists(this);};
     draw();
   }
@@ -1036,11 +1093,15 @@ window.OA_CONFIG = {
   function scoreLabel(f) {
     if (f.pending) return "Scoring…";
     if (f.ineligible) return "Not eligible";
-    if (f.paywalled) return "Estimate — upgrade for AI";
-    if (f.estimate) return "Estimate";
+    if (f.estimate) return f.rec || "Estimate";
     return f.rec;
   }
-  function scoreNum(f) { return f.ineligible || f.headline == null ? "—" : f.headline + "%"; }
+  // Estimates carry a "~" so they are never read as an AI Fit Score.
+  function scoreNum(f) { return f.ineligible || f.headline == null ? "n/a" : (f.estimate ? "~" : "") + f.headline + "%"; }
+  function leadDeadlineText(o, d) {
+    if (d != null) return d < 0 ? "Closed · " + o.deadline : d === 0 ? "Due today" : "Due in " + d + " days";
+    return o.category === "Forecasted Grant" ? "Forecast · not yet open" : "Deadline unknown · verify current cycle";
+  }
   function oppRow(o) {
     var f = currentFit(o);
     var d = daysUntil(o.deadline);
@@ -1051,7 +1112,7 @@ window.OA_CONFIG = {
       (state.fincapShares[o.id] ? '<span class="tag">FinCap: ' + esc({ pending_review: "pending review", approved: "published", rejected: "not accepted", withdrawn: "withdrawn" }[state.fincapShares[o.id].status] || state.fincapShares[o.id].status) + "</span>" : "") +
       "<span>" + esc(o.funding_amount_label || money(o.funding_amount)) + "</span>" +
       "<span>" + esc(o.geography || "") + "</span>" +
-      (d != null ? "<span>" + (d < 0 ? "Closed · "+esc(o.deadline) : d===0?'Due today':"Due in " + d + " days") + "</span>" : "<span>Deadline unknown — verify current cycle</span>") +
+      "<span>" + esc(leadDeadlineText(o, d)) + "</span>" +
       "</div>" +
       '<p class="summary">' + esc(o.summary || "") + "</p></div>" +
       '<div class="score-badge ' + (f.ineligible || f.headline == null ? "s-low" : scoreClass(f.headline)) + '"><div class="score-num">' + scoreNum(f) + "</div><div class=\"score-rec\">" + esc(scoreLabel(f)) + "</div></div>" +
@@ -1077,13 +1138,13 @@ window.OA_CONFIG = {
     return qa.map(function (x) { return '<div><div class="q">' + esc(x[0]) + '</div><div class="a">' + esc(x[1]) + "</div></div>"; }).join("");
   }
   function fitDetailHtml(f) {
-    return '<div class="score-badge ' + (f.ineligible || f.headline == null ? "s-low" : scoreClass(f.headline)) + '" style="margin:6px 0 4px"><div class="score-num" style="font-size:2.4rem">' + scoreNum(f) + '</div><div class="score-rec">' + esc(f.paywalled ? "Estimate only" : scoreLabel(f)) + "</div></div>" +
-      (f.confidence != null && !f.ineligible ? '<p class="hint">Confidence ' + Math.round(f.confidence * 100) + "% — share of the rubric the available information could judge.</p>" : "") +
+    return '<div class="score-badge ' + (f.ineligible || f.headline == null ? "s-low" : scoreClass(f.headline)) + '" style="margin:6px 0 4px"><div class="score-num" style="font-size:2.4rem">' + scoreNum(f) + '</div><div class="score-rec">' + esc(scoreLabel(f)) + "</div></div>" +
+      (f.confidence != null && !f.ineligible ? '<p class="hint">Confidence ' + Math.round(f.confidence * 100) + "%, the share of the rubric the available information could judge.</p>" : "") +
       ((f.reasons || []).length ? '<ul class="hint" style="padding-left:18px">' + f.reasons.map(function (r) { return "<li>" + esc(r) + "</li>"; }).join("") + "</ul>" : "") +
       '<ul class="factors" style="padding:0">' +
       (f.factors || []).map(function (fc) {
-        if (fc.val == null) return "<li>" + esc(fc.label) + " — Unknown" + (fc.required ? " (required)" : "") + (fc.reason ? '<br><span class="hint">' + esc(fc.reason) + "</span>" : "") + "</li>";
-        return "<li>" + esc(fc.label) + " — " + fc.val + "%" + (fc.state ? " · " + esc(fc.state.toLowerCase()) : "") + '<i class="bar"><b style="width:' + fc.val + '%"></b></i>' + (fc.reason ? '<span class="hint">' + esc(fc.reason) + "</span>" : "") + "</li>";
+        if (fc.val == null) return "<li>" + esc(fc.label) + ": unknown" + (fc.required ? " (required)" : "") + (fc.reason ? '<br><span class="hint">' + esc(fc.reason) + "</span>" : "") + "</li>";
+        return "<li>" + esc(fc.label) + ": " + fc.val + "%" + (fc.state ? " · " + esc(fc.state.toLowerCase()) : "") + '<i class="bar"><b style="width:' + fc.val + '%"></b></i>' + (fc.reason ? '<span class="hint">' + esc(fc.reason) + "</span>" : "") + "</li>";
       }).join("") +
       "</ul>";
   }
@@ -1102,15 +1163,22 @@ window.OA_CONFIG = {
       summaryQaHtml(qa) +
       (o.source_url ? '<div><a href="' + esc(o.source_url) + '" target="_blank" rel="noopener">View source ↗</a></div>' : "") +
       "</div></div>" +
-      '<div class="card score-side"><h2>AI Fit Score</h2>' +
+      '<div class="card score-side"><h2>' + (f.estimate ? "Free estimate" : "AI Fit Score") + '</h2>' +
       fitDetailHtml(f) +
+      (f.estimate && !f.ineligible && !f.pending && !f.paywalled && !state.user.is_anonymous && isSubscribed()
+        ? '<button type="button" class="btn btn-primary btn-sm" id="scoreNow" style="margin:.4rem 0 .6rem">Get AI Fit Score</button>'
+        : "") +
       '<div id="oppActions"></div>'+
-      (f.paywalled
-        ? '<p class="hint" style="margin-top:.6rem">This is a free estimate. <a href="#" data-nav="profile">Upgrade your plan</a> for the full AI Fit Score and Opportunity Summary.</p>'
+      (f.paywalled || (f.estimate && (state.user.is_anonymous || !isSubscribed()))
+        ? '<p class="hint" style="margin-top:.6rem">This is a free keyword estimate. <a href="#" data-nav="profile">Upgrade your plan</a> for the full AI Fit Score and Opportunity Summary.</p>'
+        : f.estimate
+        ? '<p class="hint" style="margin-top:.6rem">The free estimate only counts how many of your profile keywords appear in the listing. The AI Fit Score rates ten factors from your profile and the opportunity.</p>'
         : '<p class="hint" style="margin-top:.6rem">The model rates each factor from your organization profile and this opportunity; the score is calculated from those ratings. Unknown factors are left out rather than scored as zero. Scores refresh when the profile or opportunity changes.</p>') +
       "</div></div>";
 
     main.querySelector("#back").addEventListener("click", function () { state.currentOpp = null; paint(); });
+    var scoreNow = main.querySelector("#scoreNow");
+    if (scoreNow) scoreNow.addEventListener("click", function () { scoreOnRequest(o, scoreNow); });
     var upgradeLink = main.querySelector('[data-nav="profile"]');
     if (upgradeLink) upgradeLink.addEventListener("click", function (e) { e.preventDefault(); state.view = "profile"; state.currentOpp = null; paint(); });
     main.querySelector('#oppActions').appendChild(opportunityActions(o));
@@ -1225,6 +1293,7 @@ window.OA_CONFIG = {
     var complete = applicable.filter(function (rq) { return rq.status === "Complete"; }).length;
     var readiness = applicable.length ? Math.round(100 * complete / applicable.length) : null;
     var inReview = REVIEW_STAGES.indexOf(p.stage) !== -1;
+    var factoryStage = ["Qualified", "Planning", "Writing", "Submitted"].indexOf(p.stage) !== -1;
     // Known barriers (inactive source, passed deadline, geography) matter at
     // every stage, so they are shown whether or not the card is in review.
     var barriers = o.id ? window.OAMatching.eligibility(state.org, o).reasons : [];
@@ -1261,7 +1330,7 @@ window.OA_CONFIG = {
 
     var decisionLine = decision
       ? '<p class="hint" style="margin-top:.8rem">Decision: <strong>' + esc(decision.decision) + "</strong> on " + esc(new Date(decision.decided_at).toLocaleDateString()) +
-        (decision.system_recommendation ? " \u2014 system recommended \u201c" + esc(decision.system_recommendation) + "\u201d" + (decision.system_confidence != null ? " at " + esc(decision.system_confidence) + "%" : "") : "") + "</p>"
+        (decision.system_recommendation ? ", system recommended \u201c" + esc(decision.system_recommendation) + "\u201d" + (decision.system_confidence != null ? " at " + esc(decision.system_confidence) + "%" : "") : "") + "</p>"
       : "";
     decisionLine += shareLine(p.opportunity_id);
 
@@ -1277,10 +1346,16 @@ window.OA_CONFIG = {
       reviewCard +
       (['Qualified','Planning'].indexOf(p.stage)!==-1 ? '<div class="card"><h2>Prepare this application</h2><p class="hint">Find or upload the complete current application in Grant Factory. Importing does not start paid drafting; choose Prepare first draft when ready.</p><button type="button" class="btn btn-primary" id="pipelineToGrantFactory">Open in Grant Factory</button></div>' : '') +
       summaryCard +
-      '<div class="card"><h2>Requirements' + (readiness != null ? ' <span class="tag">' + readiness + '% ready</span>' : "") + '</h2>' +
-      '<div id="reqList" style="margin-top:10px"></div>' +
-      '<div class="row" style="margin-top:10px;gap:8px"><input id="newReq" placeholder="Add a requirement\u2026" style="flex:1" /><button class="btn btn-primary btn-sm" id="addReq">Add</button></div>' +
-      "</div>" +
+      // Once an item is qualified, Grant Factory reads the application's own
+      // requirements and documents; a second hand-kept checklist here would
+      // drift from it. Items that already have checklist rows keep them.
+      (factoryStage && !reqs.length
+        ? '<div class="card"><h2>Requirements</h2><p class="hint" style="margin:0 0 .6rem">Requirements, attachments and readiness for this application are tracked in Grant Factory, from the application documents themselves.</p><button type="button" class="btn btn-ghost btn-sm" id="reqToFactory">Open requirements in Grant Factory</button></div>'
+        : '<div class="card"><h2>Pre-qualification checklist' + (readiness != null ? ' <span class="tag">' + readiness + '% ready</span>' : "") + '</h2>' +
+          '<p class="hint" style="margin:0">Quick checks before you qualify this lead, such as registrations, partners or match. Full application requirements are tracked in Grant Factory.</p>' +
+          '<div id="reqList" style="margin-top:10px"></div>' +
+          '<div class="row" style="margin-top:10px;gap:8px"><input id="newReq" placeholder="Add a check\u2026" style="flex:1" /><button class="btn btn-primary btn-sm" id="addReq">Add</button></div>' +
+          "</div>") +
       '<div class="card"><h2>Notes</h2>' +
       '<textarea id="notes" rows="4" placeholder="Contacts, open questions, what it would take to apply\u2026">' + esc(draft != null ? draft : (p.notes || "")) + "</textarea>" +
       '<div class="row" style="margin-top:8px;align-items:center"><button class="btn btn-ghost btn-sm" id="saveNotes">Save notes</button><span class="hint" id="notesMsg" style="margin:0"></span></div>' +
@@ -1304,7 +1379,7 @@ window.OA_CONFIG = {
         qualifyFactory.disabled=true;var orgId=state.org.id;
         var r=await sb.from('pipeline_items').update({stage:'Qualified',updated_at:new Date().toISOString()}).eq('id',p.id).eq('org_id',orgId);
         if(r.error){qualifyFactory.disabled=false;return toast(r.error.message,true);}if(state.org.id!==orgId)return;p.stage='Qualified';
-        await logActivity({org_id:orgId,opportunity_id:p.opportunity_id,pipeline_item_id:p.id,action:'stage_changed',detail:'Qualified after review — opening Grant Factory'});openPipelineInGrantFactory(p,false);
+        await logActivity({org_id:orgId,opportunity_id:p.opportunity_id,pipeline_item_id:p.id,action:'stage_changed',detail:'Qualified after review, opening Grant Factory'});openPipelineInGrantFactory(p,false);
       };
       main.querySelector("#passItem").addEventListener("click", function () { passPipelineItem(p, f, this); });
       main.querySelector("#shareItem").addEventListener("click", function () {
@@ -1333,9 +1408,12 @@ window.OA_CONFIG = {
       });
     });
 
+    var reqToFactory = main.querySelector("#reqToFactory");
+    if (reqToFactory) reqToFactory.addEventListener("click", function () { openPipelineInGrantFactory(p); });
     var reqList = main.querySelector("#reqList");
+    if (!reqList) { loadPipelineActivity(p.id); return; }
     if (!reqs.length) {
-      reqList.innerHTML = '<p class="hint">No requirements tracked yet.</p>';
+      reqList.innerHTML = '<p class="hint">No checks added yet.</p>';
     } else {
       reqs.forEach(function (rq) {
         var row = el(
@@ -1439,19 +1517,30 @@ window.OA_CONFIG = {
     if (sub.status === "active") {
       return '<div class="card" style="max-width:680px;margin-bottom:18px">' +
         '<h2 style="margin-bottom:.3rem">Plan &amp; Billing</h2>' +
-        '<p class="hint" style="margin:0 0 .8rem">Active — ' + esc(planLabel(sub.plan)) + ' plan. AI Fit Scoring and Opportunity Summaries are unlocked.</p>' +
-        '<p class="hint">To change or cancel your plan, email <a href="mailto:bill@mytrueprosperity.com">bill@mytrueprosperity.com</a>.</p>' +
+        '<p class="hint" style="margin:0 0 .8rem">Active: ' + esc(planLabel(sub.plan)) + ' plan. AI Fit Scoring and Opportunity Summaries are unlocked.</p>' +
+        (BILLING_PORTAL_URL
+          ? '<a class="btn btn-ghost btn-sm" href="' + esc(BILLING_PORTAL_URL + (state.user.email ? "?prefilled_email=" + encodeURIComponent(state.user.email) : "")) + '" target="_blank" rel="noopener">Manage billing</a>' +
+            '<p class="hint" style="margin-top:.6rem">Change your plan, update your card, download invoices or cancel. Questions: <a href="mailto:bill@mytrueprosperity.com">bill@mytrueprosperity.com</a>.</p>'
+          : '<p class="hint">To change or cancel your plan, email <a href="mailto:bill@mytrueprosperity.com">bill@mytrueprosperity.com</a>.</p>') +
+        "</div>";
+    }
+    // Guest sessions disappear when the browser forgets them, so a payment made
+    // from one could not be recovered. Ask for an account first.
+    if (state.user.is_anonymous) {
+      return '<div class="card" style="max-width:680px;margin-bottom:18px">' +
+        '<h2 style="margin-bottom:.3rem">Plan &amp; Billing</h2>' +
+        '<p class="hint" style="margin:0">You are exploring as a guest. Log out and create a free account to subscribe; plans start at $149 a month.</p>' +
         "</div>";
     }
     return '<div class="card" style="max-width:680px;margin-bottom:18px">' +
       '<h2 style="margin-bottom:.3rem">Plan &amp; Billing</h2>' +
       '<p class="hint" style="margin:0 0 .8rem">' +
-      (sub.status === "past_due" ? "Payment past due — AI Fit Scoring is paused until this is resolved." : "Fit Scores currently show a free estimate only. Upgrade to unlock real AI Fit Scoring and Opportunity Summaries.") +
+      (sub.status === "past_due" ? "Payment past due. AI Fit Scoring is paused until this is resolved." : "Fit Scores currently show a free keyword estimate only. Upgrade to unlock real AI Fit Scoring and Opportunity Summaries.") +
       "</p>" +
       '<div class="row">' +
-      '<a class="btn btn-primary btn-sm" href="' + esc(billingLinkFor("professional") || "#") + '" target="_blank" rel="noopener">Professional — $149/mo</a>' +
-      '<a class="btn btn-teal btn-sm" href="' + esc(billingLinkFor("team") || "#") + '" target="_blank" rel="noopener">Team — $249/mo</a>' +
-      '<a class="btn btn-ghost btn-sm" href="mailto:bill@mytrueprosperity.com?subject=Opportunity%20Assist%20Enterprise">Enterprise — Contact us</a>' +
+      '<a class="btn btn-primary btn-sm" href="' + esc(billingLinkFor("professional") || "#") + '" target="_blank" rel="noopener">Professional · $149/mo</a>' +
+      '<a class="btn btn-teal btn-sm" href="' + esc(billingLinkFor("team") || "#") + '" target="_blank" rel="noopener">Team · $249/mo</a>' +
+      '<a class="btn btn-ghost btn-sm" href="mailto:bill@mytrueprosperity.com?subject=Opportunity%20Assist%20Enterprise">Enterprise · Contact us</a>' +
       "</div></div>";
   }
   function renderProfile(main) {
@@ -1663,7 +1752,7 @@ window.OA_CONFIG = {
     if (!mentioned) return "";
     return verified
       ? ' <span style="color:var(--good);font-size:.78rem">\u2713 verified</span>'
-      : ' <span style="color:var(--warn);font-size:.78rem">\u26a0 unverified \u2014 check source</span>';
+      : ' <span style="color:var(--warn);font-size:.78rem">\u26a0 unverified, check source</span>';
   }
   function foundationRow(lead) {
     var row=oppRow(lead),source=window.OASourceMatches.url(lead.source_url);
@@ -1672,7 +1761,7 @@ window.OA_CONFIG = {
   }
   function renderFoundationLeads(main){
     var foundations=state.opps.filter(function(o){return o.source==='Foundation Scan';});
-    main.innerHTML='<div class="topbar"><div><h1>Foundation Leads</h1><p class="sub">Funding leads found on funder websites</p></div><button class="btn btn-ghost btn-sm" id="refreshLeads">Refresh lists — free</button></div>'+pageGuide('foundations')+'<div class="card"><button class="btn btn-ghost btn-sm" id="foundationProfileBtn">Find sources matching our profile — free</button><div id="foundationProfileMatches"></div></div><label class="hint lead-filter"><input type="checkbox" id="foundationClosed"> Include closed, passed and known ineligible leads</label><div class="opp-list" id="foundationList"></div>';
+    main.innerHTML='<div class="topbar"><div><h1>Foundation Leads</h1><p class="sub">Funding leads found on funder websites</p></div><button class="btn btn-ghost btn-sm" id="refreshLeads">Refresh lists (free)</button></div>'+pageGuide('foundations')+'<div class="card"><button class="btn btn-ghost btn-sm" id="foundationProfileBtn">Find sources matching our profile (free)</button><div id="foundationProfileMatches"></div></div><label class="hint lead-filter"><input type="checkbox" id="foundationClosed"> Include closed, passed and known ineligible leads</label><div class="opp-list" id="foundationList"></div>';
     function draw(){var rows=foundations.filter(function(o){return main.querySelector('#foundationClosed').checked||(window.OAOpportunityWorkflow.current(state.org,o,state.fit[o.id])&&state.pursueDecisions[o.id]?.decision!=='pass');});var list=main.querySelector('#foundationList');list.innerHTML='';if(!rows.length)list.innerHTML='<div class="empty">No current foundation leads. Refresh published opportunities or collect from a matching approved source within the existing limits.</div>';rows.forEach(function(o){list.appendChild(foundationRow(o));});}
     main.querySelector('#foundationClosed').onchange=draw;main.querySelector('#refreshLeads').onclick=function(){refreshOpportunityLists(this);};draw();
     main.querySelector('#foundationProfileBtn').onclick=async function(){

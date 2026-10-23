@@ -192,7 +192,14 @@ function makeHandler({ env = process.env, fetcher = (...a) => fetch(...a), today
       if (!sub || sub.status !== "active") return json(402, { error: "Active subscription required for AI Fit Scoring.", paywall: true });
       const opps = await sbSelect("opportunities", { id: "in.(" + ids.join(",") + ")", select: "*" }, token);
       if (!opps.length) return json(404, { error: "No matching opportunities found." });
-      const scored = await Promise.all(opps.map((opp) => scoreOne(opp, org, token)));
+      // One model or parse failure must not discard the rest of the batch.
+      const settled = await Promise.allSettled(opps.map((opp) => scoreOne(opp, org, token)));
+      const scored = [], failed = [];
+      settled.forEach((s, i) => {
+        if (s.status === "fulfilled") scored.push(s.value);
+        else { failed.push(opps[i].id); console.error("score-opportunities: could not score", opps[i].id, s.reason && s.reason.message); }
+      });
+      if (!scored.length && failed.length) throw settled.find((s) => s.status === "rejected").reason;
       if (SERVICE_KEY) {
         const aiScored = scored.filter((r) => r.eligibility_status !== "INELIGIBLE");
         const totals = aiScored.reduce((acc, r) => { acc.input_tokens += r.usage.input_tokens || 0; acc.output_tokens += r.usage.output_tokens || 0; return acc; }, { input_tokens: 0, output_tokens: 0 });
@@ -201,7 +208,7 @@ function makeHandler({ env = process.env, fetcher = (...a) => fetch(...a), today
           await sbInsert("ai_usage_logs", [{ org_id: org.id, model: MODEL, opportunity_count: aiScored.length, input_tokens: totals.input_tokens, output_tokens: totals.output_tokens }], SERVICE_KEY).catch((err) => console.error("usage log insert failed:", err.message));
       }
       const results = scored.map(({ usage, ...r }) => r);
-      return json(200, { results, org_id: org.id, rubric_version: M.RUBRIC_VERSION, service_role_configured: !!SERVICE_KEY });
+      return json(200, { results, failed, org_id: org.id, rubric_version: M.RUBRIC_VERSION, service_role_configured: !!SERVICE_KEY });
     } catch (err) {
       console.error("score-opportunities error:", err);
       return json(500, { error: err.message || "Scoring failed." });
