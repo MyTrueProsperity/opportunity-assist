@@ -75,12 +75,13 @@ else's) is a button click, not a SQL script each time.
 already hold, separate from discovering new opportunities. Dashboard shows a
 count renewing in the next 60 days.
 
-**Alerts.** Keyword or fit-score-threshold rules, matched client-side
-against whatever's already loaded in the Funding Radar — no push
-infrastructure, no separate notifications table. The Dashboard shows a
-running match count. This is intentionally the light version: real-time
-push alerts would need a different architecture (a queue, a way to reach
-someone outside the app) and isn't built here.
+**Alerts.** Keyword or fit-score-threshold rules stored in the live
+`alert_rules` table (`name`, `keywords`, `min_score`, `active`; see
+`assets/alerts.js` and the 2026-10-23 migration). Rules match current leads
+only, and a fit-score rule counts real AI scores, never free estimates. The
+Dashboard shows how many current leads match. The table definitions in
+`docs/admin-and-features-setup.sql` now match production; an earlier version
+described columns that never existed, so no rule could be saved.
 
 **AI Assistant.** `netlify/functions/ai-assistant.js` is a context-aware
 Q&A endpoint, not a full tool-calling agent — it injects a bounded slice of

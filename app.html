@@ -162,7 +162,7 @@ input[type="checkbox"]{width:auto;flex:0 0 auto}
 <body>
   <div id="app"><div class="boot">Loading Opportunity Assist…</div></div>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-  <script src="/assets/page-guidance.js?v=20261012"></script>
+  <script src="/assets/page-guidance.js?v=20261023"></script>
   <script src="/assets/source-intelligence.js?v=20261012"></script>
   <script src="/assets/fincap-review.js?v=20261012"></script>
   <link rel="stylesheet" href="/assets/grant-factory.css?v=20260923">
@@ -171,6 +171,7 @@ input[type="checkbox"]{width:auto;flex:0 0 auto}
   <script src="/assets/source-matches.js?v=20261012"></script>
   <script src="/assets/grant-factory.js?v=20261012c"></script>
   <script src="/assets/matching.js?v=20260925"></script>
+  <script src="/assets/alerts.js?v=20261023"></script>
   <script src="/assets/opportunity-workflow.js?v=20261012"></script>
   <script>
 // Opportunity Assist — Supabase client config
@@ -496,7 +497,7 @@ window.OA_CONFIG = {
       '<div class="auth-tabs"><button data-m="login">Log in</button><button data-m="signup">Sign up</button></div>' +
       '<form id="authForm">' +
       '<div class="field"><label>Email</label><input type="email" id="email" required autocomplete="email" /></div>' +
-      '<div class="field"><label>Password</label><input type="password" id="password" required minlength="6" autocomplete="current-password" /></div>' +
+      '<div class="field"><label>Password</label><input type="password" id="password" required minlength="8" autocomplete="current-password" /><p class="hint" id="pwHint" hidden>At least 8 characters.</p></div>' +
       '<p class="auth-help"><a href="#" id="forgotPassword">Forgot password?</a></p>' +
       '<div id="authMsg"></div>' +
       '<button class="btn btn-primary" style="width:100%" type="submit" id="authBtn">Continue</button>' +
@@ -514,6 +515,11 @@ window.OA_CONFIG = {
       card.querySelector("#authBtn").textContent = m === "signup" ? "Create account" : "Log in";
       card.querySelector("#password").setAttribute("autocomplete", m === "signup" ? "new-password" : "current-password");
       card.querySelector(".auth-help").hidden = m !== "login";
+      card.querySelector("#pwHint").hidden = m !== "signup";
+      // Existing accounts may predate the 8-character minimum; only new
+      // passwords are held to it.
+      if (m === "signup") card.querySelector("#password").setAttribute("minlength", "8");
+      else card.querySelector("#password").removeAttribute("minlength");
       card.querySelector("#authMsg").innerHTML = "";
     }
     card.querySelectorAll(".auth-tabs button").forEach(function (b) {
@@ -559,7 +565,8 @@ window.OA_CONFIG = {
       sb.auth.signInAnonymously().then(function (res) {
         if (res.error) {
           guestBtn.disabled = false;
-          msg.innerHTML = '<p class="error">Guest mode is not enabled yet. (Turn on "Allow anonymous sign-ins" in Supabase.)</p>';
+          console.error("Guest sign-in failed:", res.error.message);
+          msg.innerHTML = '<p class="error">Guest mode isn’t available right now. Please create a free account instead.</p>';
           return;
         }
         state.user = res.data.user;
@@ -800,7 +807,7 @@ window.OA_CONFIG = {
     var closing = leads.filter(function (o) { var d = daysUntil(o.deadline); return d != null && d >= 0 && d <= 30; })
       .sort(function (a, b) { return new Date(a.deadline) - new Date(b.deadline); }).slice(0, 5);
     var renewing = state.contracts.filter(function (c) { var d = daysUntil(c.renewal_date); return d != null && d >= 0 && d <= 60; }).length;
-    var alertMatches = state.alertRules.reduce(function (sum, rule) { return sum + state.opps.filter(function (o) { return matchesRule(rule, o); }).length; }, 0);
+    var alertMatchCount = window.OAAlerts.matchingOpportunities(state.alertRules, leads, currentFit).length;
 
     main.innerHTML =
       '<div class="topbar"><div><h1>Dashboard</h1><p class="sub">What needs your attention</p></div><button class="btn btn-ghost btn-sm" id="refreshLeads">Refresh lists — free</button></div>' +
@@ -816,7 +823,7 @@ window.OA_CONFIG = {
       (needsDecision.length ? '<div class="opp-list" id="needsDecision"></div>' : '<div class="empty">No current leads need a first decision. Existing decisions, captured opportunities, and low scored matches remain available in Funding Radar. Refresh the lists to check for new published grants.</div>') +
       (state.alertRules.length || state.contracts.length
         ? '<div class="row" style="margin-top:14px">' +
-          (state.alertRules.length ? '<div class="card" style="flex:1;min-width:220px">🔔 <strong>' + alertMatches + '</strong> opportunit' + (alertMatches === 1 ? "y matches" : "ies match") + ' your alert rules</div>' : "") +
+          (state.alertRules.length ? '<div class="card" style="flex:1;min-width:220px">🔔 <strong>' + alertMatchCount + '</strong> current lead' + (alertMatchCount === 1 ? " matches" : "s match") + ' your alert rules</div>' : "") +
           (state.contracts.length ? '<div class="card" style="flex:1;min-width:220px">📄 <strong>' + renewing + '</strong> contract' + (renewing === 1 ? "" : "s") + ' renewing in the next 60 days</div>' : "") +
           "</div>"
         : "") +
@@ -1566,36 +1573,40 @@ window.OA_CONFIG = {
   }
 
   /* ---------- alerts ---------- */
+  // Rules match current leads only (closed, known ineligible and passed leads
+  // never count). A fit-score rule only counts real AI scores, never estimates.
   function matchesRule(rule, o) {
-    if (rule.type === "keyword") {
-      var kw = (rule.keyword || "").toLowerCase();
-      if (!kw) return false;
-      var hay = ((o.title || "") + " " + (o.summary || "") + " " + (o.category || "")).toLowerCase();
-      return hay.indexOf(kw) !== -1;
-    }
-    if (rule.type === "score") {
-      var f = state.fit[o.id];
-      return f && !f.pending && f.headline >= (rule.min_score || 0);
-    }
-    return false;
+    return window.OAAlerts.matches(rule, o, currentFit(o));
+  }
+  function alertMatches(rule) {
+    return currentLeads().filter(function (o) { return matchesRule(rule, o); });
   }
   function renderAlerts(main) {
     main.innerHTML =
-      '<div class="topbar"><div><h1>Alerts</h1><p class="sub">Watch topics and fit scores in the funding catalog</p></div><button class="btn btn-primary" id="aAdd">Add alert rule</button></div>' +
+      '<div class="topbar"><div><h1>Alerts</h1><p class="sub">Watch topics and fit scores among your current leads</p></div><button class="btn btn-primary" id="aAdd">Add alert rule</button></div>' +
       pageGuide('alerts') +
       (state.alertRules.length ? '<div class="opp-list" id="aList"></div>' : '<div class="empty">No alert rules yet. Add one to track keywords or high fit scores.</div>');
     if (state.alertRules.length) {
       var wrap = main.querySelector("#aList");
       state.alertRules.forEach(function (rule) {
-        var count = state.opps.filter(function (o) { return matchesRule(rule, o); }).length;
-        var label = rule.type === "keyword" ? 'Keyword: "' + rule.keyword + '"' : "Fit score \u2265 " + rule.min_score + "%";
+        var hits = alertMatches(rule);
+        var count = hits.length;
         var row = el(
           '<div class="opp">' +
-          '<div><h3>' + esc(label) + "</h3>" +
-          '<p class="summary">' + count + (count === 1 ? " match" : " matches") + " in your current Funding Radar</p></div>" +
-          '<button class="btn btn-ghost btn-sm" data-del="' + rule.id + '">Remove</button>' +
+          '<div><h3>' + esc(window.OAAlerts.label(rule)) + "</h3>" +
+          '<p class="summary">' + count + (count === 1 ? " current lead matches" : " current leads match") + "</p>" +
+          '<div class="alert-hits"></div></div>' +
+          '<button class="btn btn-ghost btn-sm" data-del="' + esc(rule.id) + '">Remove</button>' +
           "</div>"
         );
+        var hitsEl = row.querySelector(".alert-hits");
+        hits.slice(0, 5).forEach(function (o) {
+          var link = el('<a href="#" class="hint" style="display:block;margin-top:4px"></a>');
+          link.textContent = o.title;
+          link.addEventListener("click", function (e) { e.preventDefault(); state.currentOpp = o; paint(); });
+          hitsEl.appendChild(link);
+        });
+        if (count > 5) hitsEl.appendChild(el('<span class="hint">and ' + (count - 5) + " more in Funding Radar</span>"));
         row.querySelector("[data-del]").addEventListener("click", function () {
           sb.from("alert_rules").delete().eq("id", rule.id).then(function (r) {
             if (r.error) { alert(r.error.message); return; }
@@ -1615,8 +1626,8 @@ window.OA_CONFIG = {
       pageGuide('alert-new') +
       '<div class="card" style="max-width:480px"><form id="aForm">' +
       '<div class="field"><label>Rule type</label><select id="a_type"><option value="keyword">Keyword match</option><option value="score">Fit score threshold</option></select></div>' +
-      '<div id="a_kw_wrap">' + field("a_keyword", "Keyword", "") + "</div>" +
-      '<div id="a_score_wrap" style="display:none">' + field("a_score", "Minimum fit score (0-100)", "75") + "</div>" +
+      '<div id="a_kw_wrap">' + field("a_keyword", "Keywords (comma separated, any one matches)", "") + "</div>" +
+      '<div id="a_score_wrap" style="display:none">' + field("a_score", "Minimum AI Fit Score (0-100)", "75") + '<p class="hint">Counts real AI Fit Scores only, not free estimates.</p></div>' +
       '<div id="aMsg"></div>' +
       '<button class="btn btn-primary" type="submit">Save rule</button>' +
       "</form></div>";
@@ -1629,14 +1640,11 @@ window.OA_CONFIG = {
     main.querySelector("#aForm").addEventListener("submit", function (e) {
       e.preventDefault();
       var msg = main.querySelector("#aMsg");
-      var type = typeSel.value;
-      var payload = { org_id: state.org.id, type: type };
-      if (type === "keyword") {
-        payload.keyword = main.querySelector("#a_keyword").value.trim();
-        if (!payload.keyword) { msg.innerHTML = '<p class="error">Enter a keyword.</p>'; return; }
-      } else {
-        payload.min_score = Number(main.querySelector("#a_score").value) || 0;
-      }
+      var payload;
+      try {
+        payload = window.OAAlerts.ruleFromForm({ type: typeSel.value, keywords: main.querySelector("#a_keyword").value, minScore: main.querySelector("#a_score").value });
+      } catch (err) { msg.innerHTML = '<p class="error">' + esc(err.message) + "</p>"; return; }
+      payload.org_id = state.org.id;
       sb.from("alert_rules").insert(payload).select().single().then(function (r) {
         if (r.error) { msg.innerHTML = '<p class="error">' + esc(r.error.message) + "</p>"; return; }
         state.alertRules.push(r.data);
