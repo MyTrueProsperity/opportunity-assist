@@ -95,7 +95,10 @@ async function handle(event, deps) {
   if (event.httpMethod === "OPTIONS") return { statusCode: 204, headers: CORS, body: "" };
   if (event.httpMethod !== "GET") return reply(405, { error: "Method not allowed." });
   if (!deps.url || !deps.key) { console.error("fincap-feed misconfigured: missing Supabase env vars."); return reply(500, { error: "Server misconfigured." }); }
-  const q = event.queryStringParameters || {};
+  const q = Object.assign({}, event.queryStringParameters || {});
+  // /api/fincap/newsletter is a rewrite alias. If the platform hands over the
+  // original path without the alias's ?view=, the path still says which view.
+  if (!q.view && /\/api\/fincap\/newsletter\/?$/.test(String(event.path || ""))) q.view = "newsletter";
   try {
     if (q.view === "newsletter") {
       if (!/^\d{4}-\d{2}-\d{2}$/.test(q.issue || "") || Number.isNaN(Date.parse(q.issue))) return reply(400, { error: "Use issue=YYYY-MM-DD." });

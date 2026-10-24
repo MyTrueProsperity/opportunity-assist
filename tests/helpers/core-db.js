@@ -1,7 +1,7 @@
 "use strict";
 // Minimal replica of the production Opportunity Assist core schema that the
 // organization-switching and fit-score migrations depend on: organizations,
-// profiles, opportunities, fit_scores, subscriptions, current_org_id() and the
+// profiles, opportunities, fit_scores, subscriptions, alert_rules, current_org_id() and the
 // production row-level-security policies for those tables (copied from
 // pg_policies on 2026-09-25). Then applies supabase/opportunity-assist/*.sql.
 const { PGlite } = require("@electric-sql/pglite");
@@ -29,12 +29,15 @@ create table public.profiles(id uuid primary key, email text, full_name text, or
 create table public.opportunities(id uuid primary key default gen_random_uuid(), source text, external_id text, title text, summary text, ai_summary jsonb, funding_amount numeric, funding_amount_label text, deadline date, requirements text, geography text, category text, source_url text, source_active boolean, created_at timestamptz default now());
 create table public.fit_scores(id uuid primary key default gen_random_uuid(), org_id uuid not null references public.organizations(id) on delete cascade, opportunity_id uuid not null references public.opportunities(id) on delete cascade, headline_score integer, recommendation text, factors jsonb, created_at timestamptz not null default now(), source_stale boolean not null default false, unique(org_id, opportunity_id));
 create table public.subscriptions(org_id uuid primary key references public.organizations(id), status text);
+create table public.alert_rules(id uuid primary key default gen_random_uuid(), org_id uuid not null references public.organizations(id) on delete cascade, name text not null, keywords text[], geography text, min_amount numeric, category text, active boolean default true, created_at timestamptz not null default now());
 create function public.current_org_id() returns uuid language sql stable security definer set search_path to 'public' as $$ select org_id from public.profiles where id = auth.uid() $$;
 alter table public.organizations enable row level security;
 alter table public.profiles enable row level security;
 alter table public.opportunities enable row level security;
 alter table public.fit_scores enable row level security;
 alter table public.subscriptions enable row level security;
+alter table public.alert_rules enable row level security;
+create policy alerts_all_org on public.alert_rules for all using (org_id = (select current_org_id())) with check (org_id = (select current_org_id()));
 create policy orgs_insert_authed on public.organizations for insert with check ((select auth.uid()) is not null);
 create policy orgs_select_member on public.organizations for select using (id = (select current_org_id()));
 create policy orgs_update_member on public.organizations for update using (id = (select current_org_id()));

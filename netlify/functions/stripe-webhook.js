@@ -76,7 +76,10 @@ async function handleCheckoutCompleted(session) {
     console.error("checkout.session.completed with no client_reference_id — can't link this payment to an organization.");
     return;
   }
-  const plan = AMOUNT_TO_PLAN[session.amount_total] || null;
+  // amount_subtotal is the list price before discounts and tax, so a coupon or
+  // sales tax does not leave the plan unrecognized (amount_total would).
+  const plan = planForSession(session);
+  if (!plan) console.warn("checkout.session.completed: no plan for amount", session.amount_subtotal, session.amount_total, "org", orgId);
   await sbUpsert(
     "subscriptions",
     [{
@@ -89,6 +92,10 @@ async function handleCheckoutCompleted(session) {
     }],
     "org_id"
   );
+}
+
+function planForSession(session) {
+  return AMOUNT_TO_PLAN[session.amount_subtotal] || AMOUNT_TO_PLAN[session.amount_total] || null;
 }
 
 async function handleSubscriptionUpdated(sub) {
@@ -140,10 +147,12 @@ async function patchByCustomer(stripeCustomerId, patch) {
 
 function verifyStripeSignature(rawBody, sigHeader, secret) {
   if (!sigHeader) return false;
-  const parts = Object.fromEntries(sigHeader.split(",").map((p) => p.split("=")));
-  const timestamp = parts.t;
-  const v1 = parts.v1;
-  if (!timestamp || !v1) return false;
+  // Stripe can send several v1 signatures (for example while a secret is
+  // being rotated); accept the event if any of them verifies.
+  const pairs = sigHeader.split(",").map((p) => { const i = p.indexOf("="); return [p.slice(0, i).trim(), p.slice(i + 1).trim()]; });
+  const timestamp = (pairs.find(([k]) => k === "t") || [])[1];
+  const signatures = pairs.filter(([k]) => k === "v1").map(([, v]) => v);
+  if (!timestamp || !signatures.length) return false;
 
   // Reject anything older than 5 minutes to guard against replay.
   const age = Math.abs(Date.now() / 1000 - Number(timestamp));
@@ -152,9 +161,13 @@ function verifyStripeSignature(rawBody, sigHeader, secret) {
   const signedPayload = timestamp + "." + rawBody;
   const expected = crypto.createHmac("sha256", secret).update(signedPayload, "utf8").digest("hex");
 
-  try {
-    return crypto.timingSafeEqual(Buffer.from(expected, "hex"), Buffer.from(v1, "hex"));
-  } catch (e) {
-    return false; // length mismatch, malformed header, etc.
-  }
+  return signatures.some((v1) => {
+    try {
+      return crypto.timingSafeEqual(Buffer.from(expected, "hex"), Buffer.from(v1, "hex"));
+    } catch (e) {
+      return false; // length mismatch, malformed header, etc.
+    }
+  });
 }
+
+exports._test = { verifyStripeSignature, planForSession };

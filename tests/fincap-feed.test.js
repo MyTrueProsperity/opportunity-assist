@@ -59,3 +59,18 @@ test('only GET is accepted and missing configuration fails closed', async () => 
   assert.equal((await get({ view: 'opportunities' }, { url: '', key: '', fetch: async () => { throw new Error('should not call'); } })).statusCode, 500);
   assert.equal((await get({ view: 'nope' }, deps([]))).statusCode, 400);
 });
+test('the /api/fincap/newsletter alias still selects the newsletter view without ?view=', async () => {
+  const calls = [];
+  const raw = { issue_date: '2026-10-10', items: [], held_for_recheck: [], previously_included_count: 0 };
+  const r = await handle({ httpMethod: 'GET', path: '/api/fincap/newsletter', queryStringParameters: { issue: '2026-10-10' } }, deps(raw, calls));
+  assert.equal(r.statusCode, 200);
+  assert.match(calls[0].url, /rpc\/fincap_newsletter_export$/);
+  const list = await handle({ httpMethod: 'GET', path: '/api/fincap/opportunities', queryStringParameters: {} }, deps([]));
+  assert.ok(Array.isArray(JSON.parse(list.body).opportunities));
+});
+test('the build publishes the /api/fincap aliases as a _redirects file', () => {
+  require('node:child_process').execFileSync(process.execPath, ['scripts/build.js']);
+  const rules = require('node:fs').readFileSync('dist/_redirects', 'utf8');
+  assert.match(rules, /^\/api\/fincap\/opportunities\s+\/\.netlify\/functions\/fincap-feed\?view=opportunities\s+200$/m);
+  assert.match(rules, /^\/api\/fincap\/newsletter\s+\/\.netlify\/functions\/fincap-feed\?view=newsletter\s+200$/m);
+});

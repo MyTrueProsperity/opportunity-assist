@@ -1,6 +1,6 @@
 # Opportunity Assist
 
-Public marketing landing page for **Opportunity Assist**, a My True Prosperity product.
+Public marketing landing page and app for **Opportunity Assist**, a My True Prosperity product. The landing page (`index.html`) is open signup: visible pricing ($149 Professional, $249 Team, Enterprise by conversation), "Start free" links to `/app.html`, and the contact form saves to `early_access_requests`.
 *Opportunity Intelligence for Mission-Driven Growth — Stop chasing. Start choosing.*
 
 Static HTML/CSS/JavaScript app with Supabase and Netlify functions. The public-file allowlist build publishes `dist`. Source Intelligence adds the canonical funding registry, discovery, review and state-by-state rollout.
@@ -75,12 +75,13 @@ else's) is a button click, not a SQL script each time.
 already hold, separate from discovering new opportunities. Dashboard shows a
 count renewing in the next 60 days.
 
-**Alerts.** Keyword or fit-score-threshold rules, matched client-side
-against whatever's already loaded in the Funding Radar — no push
-infrastructure, no separate notifications table. The Dashboard shows a
-running match count. This is intentionally the light version: real-time
-push alerts would need a different architecture (a queue, a way to reach
-someone outside the app) and isn't built here.
+**Alerts.** Keyword or fit-score-threshold rules stored in the live
+`alert_rules` table (`name`, `keywords`, `min_score`, `active`; see
+`assets/alerts.js` and the 2026-10-23 migration). Rules match current leads
+only, and a fit-score rule counts real AI scores, never free estimates. The
+Dashboard shows how many current leads match. The table definitions in
+`docs/admin-and-features-setup.sql` now match production; an earlier version
+described columns that never existed, so no rule could be saved.
 
 **AI Assistant.** `netlify/functions/ai-assistant.js` is a context-aware
 Q&A endpoint, not a full tool-calling agent — it injects a bounded slice of
@@ -112,13 +113,23 @@ Env vars, set in the Netlify UI with Functions access:
 
 Never put the `service_role` key in `app.html` or any other client-facing file.
 
+Fit scores are read page by page (`selectAll` in `app.html`). The API returns
+at most 1,000 rows per request; before 2026-10-23 a single select dropped the
+rest, and those scores were bought again on every visit. Unsubscribed users
+see a free keyword estimate (`OAMatching.estimate`), marked with "~", that only
+counts profile keywords found in the listing; a listing with no keyword match
+shows no number. One failed opportunity no longer fails its whole batch, and a
+lead can be re-scored on request from its detail page.
+
 ## Early Access Capture
 
 The landing page's "Request early access" button used to be a plain `mailto:`
 link. It now submits to `request-early-access`, which saves each submission
 to Supabase instead of relying on catching every email. A honeypot field
-filters out most bots without adding a CAPTCHA. No email notification is
-wired up yet — check new rows in Supabase's Table Editor, or run:
+filters out most bots without adding a CAPTCHA. Once email is set up (see
+Email notifications below), each request is also emailed to `NOTIFY_EMAIL`
+(default bill@mytrueprosperity.com) with Reply-To set to the requester. The
+rows stay in Supabase either way:
 
 ```sql
 select * from early_access_requests order by created_at desc;
@@ -130,8 +141,31 @@ Setup:
 2. **Env vars**: `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY` — both already
    needed for billing and the crawler above, nothing new to add here.
 
-Worth adding later if volume picks up: a Resend or similar integration so a
-new request emails Bill directly instead of requiring a manual check.
+## Email notifications (Resend)
+
+`netlify/lib/notifications/email.js` sends through Resend's HTTP API. Until
+`RESEND_API_KEY` is set every send is skipped and logged, and nothing is
+recorded as sent.
+
+- **Early-access requests** are emailed to `NOTIFY_EMAIL`.
+- **Daily digest** (`notifications-digest-background`, 11:35 UTC): for each
+  organization, members with an email address and `profiles.email_digest`
+  on receive new current leads that match the organization's alert rules
+  and reminders for open Capture Pipeline items due in 14, 7, 3 or 1 days.
+  `notification_log` makes sure a lead or a reminder is sent once. Nothing
+  is sent on a day with nothing new.
+- **Opting out**: a checkbox on the Organization page, or the one-click link
+  in every digest (`notifications-unsubscribe`, an HMAC of the user id keyed
+  with the service role key; also sent as a List-Unsubscribe header).
+
+Setup:
+
+1. Create a Resend account and verify the `opportunityassist.com` domain
+   (Resend shows the DNS records to add).
+2. Create an API key and add `RESEND_API_KEY` in Netlify with Functions access.
+3. Optional: `EMAIL_FROM` (default `Opportunity Assist <notifications@opportunityassist.com>`),
+   `NOTIFY_EMAIL`, `APP_URL` (default `https://opportunityassist.com`).
+4. Apply `supabase/opportunity-assist/*_email_digest.sql`, then deploy.
 
 ## Opportunity Crawler
 
@@ -173,6 +207,8 @@ text is a reasonable Phase 2 addition if it turns out to matter.
 
 SAM.gov is almost entirely contract and procurement solicitations, not grants — a real limitation for a nonprofit-heavy audience. `grants-gov-crawler-background` fills that gap, using Grants.gov's public `search2` API. No API key needed, unlike SAM.gov, so this one has zero setup blocker beyond running the SQL below.
 
+**Details.** For each new listing (and each forecast that becomes posted) the crawler reads the full notice once with `fetchOpportunity`: description, award floor and ceiling, eligible applicant types and a forecast's expected application date. It records `opportunities.detail_fetched_at` so later runs neither repeat the call nor overwrite those details with bare search results. Up to 300 notices are read per run.
+
 Deliberately does not filter by Grants.gov's eligibility or funding-category codes: the sourcing on those exact values was inconsistent enough that guessing wrong risked silently filtering out every nonprofit-eligible grant. Searches by keyword only instead, and leans on the AI Fit Scoring every org already gets to sort eligibility fit per organization. Same reasoning as SAM.gov applies to skipping the full-text `fetchOpportunity` call per notice: keeps the crawl fast, title + agency + dates + a direct link is enough for AI Fit Scoring to work with.
 
 No new SQL migration needed — this reuses the `external_id` column and unique index already added by `docs/sam-gov-crawler-setup.sql`. Reuses the same `SUPABASE_SERVICE_ROLE_KEY` env var as the SAM.gov crawler; nothing new to add there either.
@@ -188,6 +224,8 @@ The canonical registry uses `funding_organizations` and `funding_programs`. Veri
 The database `funder_watchlist` introduced in commit 5904ac3 remains supported. Daily reconciliation imports new list rows without changing scanner code. The complete earlier repository list is preserved in `data/legacy-watchlist.json` for migration provenance. Missing facts remain unknown until verified.
 
 The Source Intelligence admin screen includes verification and duplicate queues, registry and health views, county/category coverage, run and decision history, optional manual review, five-column import/export, budgets, automatic approval controls, and independent state discovery/monitoring/publication switches. Automatic decisions use a system audit identity; explicit human decisions are preserved. All states start off. Florida validation is required before another state can be enabled individually.
+
+**Review order and re-checks (2026-10-23).** The review queue shows the most promising candidates first (`source_candidates.review_priority`: funding mechanism, named program, deadline, Florida or national eligibility, award, completed check); "Newest first" is still available. Candidates already checked whose open question needs a person are re-fetched every 30 days instead of every 7, and a queued check for a candidate decided since is completed without a fetch, so the daily page budget goes to unchecked sources. 414 candidates whose pages were checked and showed no funding mechanism (or were scholarships or loans) were rejected as an automatic, reversible cleanup; their decision notes start with "Bulk cleanup 2026-10-23".
 
 Read [the production architecture audit](docs/source-intelligence-audit.md) and [installation and operations](docs/source-intelligence-operations.md). Apply the dated migrations in `supabase/migrations` in order before deploying. The old `docs/foundation-scan-setup.sql` is historical and does not install this system.
 

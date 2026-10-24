@@ -43,15 +43,16 @@ create policy "Admins can view all subscriptions"
 -- ============================================================
 -- CONTRACT WATCH
 -- ============================================================
+-- Matches the live table, which the original schema created first (this
+-- "if not exists" never replaced it). Columns are what app.html writes.
 create table if not exists contracts (
   id uuid primary key default gen_random_uuid(),
   org_id uuid not null references organizations(id) on delete cascade,
-  title text not null,
-  agency text,
-  contract_number text,
-  start_date date,
-  end_date date,
-  value numeric,
+  name text not null,
+  renewal_date date,
+  expected_rebid date,
+  incumbent text,
+  status text,
   notes text,
   created_at timestamptz not null default now()
 );
@@ -73,12 +74,20 @@ create policy "Org members can delete their contracts"
 -- ============================================================
 -- ALERT RULES
 -- ============================================================
+-- Matches the live table. An earlier version of this file described type /
+-- keyword / min_score columns that never existed in production, which is why
+-- alert rules could not be saved. min_score comes from
+-- supabase/opportunity-assist/20261023210313_alert_rules_fit_threshold.sql.
 create table if not exists alert_rules (
   id uuid primary key default gen_random_uuid(),
   org_id uuid not null references organizations(id) on delete cascade,
-  type text not null check (type in ('keyword', 'score')),
-  keyword text,
-  min_score integer,
+  name text not null,
+  keywords text[],
+  geography text,
+  min_amount numeric,
+  category text,
+  active boolean default true,
+  min_score integer check (min_score is null or min_score between 0 and 100),
   created_at timestamptz not null default now()
 );
 alter table alert_rules enable row level security;

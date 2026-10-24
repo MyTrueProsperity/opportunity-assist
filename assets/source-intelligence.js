@@ -1,6 +1,6 @@
 (function(){
   'use strict';
-  var root,sb,boot,view='queue',state='FL',offset=0,search='',category='',requestId=0;
+  var root,sb,boot,view='queue',state='FL',offset=0,search='',category='',sort='priority',requestId=0;
   var tabs=[['queue','Review new sources'],['registry','Known funding sources'],['duplicates','Possible duplicates'],['health','Website health'],['coverage','Search coverage'],['runs','Collection activity'],['decisions','Review history'],['rejected','Rejected sources'],['import','Add / export sources'],['credentials','Connected tools'],['settings','Search settings']];
   function esc(s){return String(s==null?'':s).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];});}
   function label(s){var names={ZERO_TOKEN_HARVEST:'Website collection',LEGACY_UNVERIFIED:'Older source · needs verification',HUMAN_REVIEW:'Needs a person’s review',ACTIVE_OPEN:'Open for applications',ACTIVE_CLOSED:'Applications closed',DISCONTINUED:'Program ended',UNVERIFIED:'Not yet verified',SEMANTIC_REVIEW:'Needs comparison',PARTIAL:'Partly completed'};return names[s]||String(s||'Unknown').replace(/_/g,' ').toLowerCase().replace(/^./,function(c){return c.toUpperCase();});}
@@ -41,6 +41,7 @@
       (window.OAPageGuidance?window.OAPageGuidance.render('sources-'+view):'')+
       '<div class="si-controls"><label>State<select id="si-state"><option value="">All states / unresolved</option>'+choices(boot.states.map(function(s){return [s.state_code,s.state_name+(s.discovery_enabled?' · enabled':'')];}),state)+'</select></label>'+
       (['queue','duplicates','registry','health','rejected'].includes(view)?'<label>Find a source<input id="si-search" value="'+esc(search)+'" placeholder="Name contains…"></label><button class="btn btn-ghost" id="si-find">Search</button>':'')+
+      (view==='queue'?'<label>Order<select id="si-sort">'+choices([['priority','Most promising first'],['newest','Newest first']],sort)+'</select></label>':'')+
       (view==='coverage'?'<label>Category<select id="si-category"><option value="">All categories</option>'+choices(boot.categories,category)+'</select></label>':'')+'</div><div id="si-content" aria-live="polite"><p class="si-progress">Loading…</p></div><div id="si-pages"></div></section>';
     root.querySelector('#si-refresh').onclick=render;
     root.querySelector('#si-process').onclick=async function(){this.disabled=true;try{var r=await fetch('/.netlify/functions/source-intelligence-run-background',{method:'POST',headers:{Authorization:'Bearer '+await token()}});if(!r.ok)throw new Error('Could not start queued checks');notice('Processing requested. Check Collection activity for completion, pauses, and errors.');}catch(e){notice(e.message,true);}finally{this.disabled=false;}};
@@ -48,8 +49,9 @@
     root.querySelector('#si-state').onchange=function(e){state=e.target.value;offset=0;render();};
     var find=root.querySelector('#si-find');if(find){find.onclick=function(){search=root.querySelector('#si-search').value;offset=0;render();};root.querySelector('#si-search').onkeydown=function(e){if(e.key==='Enter')find.click();};}
     var cat=root.querySelector('#si-category');if(cat)cat.onchange=function(e){category=e.target.value;render();};
+    var order=root.querySelector('#si-sort');if(order)order.onchange=function(e){sort=e.target.value;offset=0;render();};
     if(view==='settings')return renderSettings();if(view==='import')return renderImport();if(view==='credentials')return renderCredentials();if(view==='coverage')return renderCoverage(ticket);
-    var data=await api({view,state,offset,search});if(ticket!==requestId)return;var content=root.querySelector('#si-content');content.innerHTML='';
+    var data=await api({view,state,offset,search,sort});if(ticket!==requestId)return;var content=root.querySelector('#si-content');content.innerHTML='';
     if(!data.rows.length)content.innerHTML='<div class="si-empty"><h2>No records in this view</h2><p>Try another state or choose “All states / unresolved”. Discovery results appear here as jobs finish.</p></div>';
     else if(['queue','duplicates','rejected'].includes(view)){content.className='si-cards';data.rows.forEach(function(c){content.appendChild(candidateCard(c));});}
     else if(['registry','health'].includes(view)){content.className='si-cards';data.rows.forEach(function(p){content.appendChild(programCard(p));});}

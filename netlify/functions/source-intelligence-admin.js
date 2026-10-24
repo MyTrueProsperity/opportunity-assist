@@ -48,7 +48,8 @@ async function handle(event,db=createDb()) {
     const table=tables[q.view];if(!table)throw new HttpError(400,'Unknown view');
     const offset=Math.max(0,Math.min(100000,Number(q.offset)||0));
     const params={limit:51,offset,order:q.view==='coverage'?'state_code.asc,id.asc':q.view==='registry'||q.view==='health'?'source_name.asc,id.asc':q.view==='queue'||q.view==='duplicates'||q.view==='rejected'?'first_seen_at.desc,id.desc':'created_at.desc,id.desc'};
-    if(q.view==='queue')params.status='in.(PENDING,INVESTIGATING)';
+    // Most promising first (see review_priority); newest first is still available.
+    if(q.view==='queue'){params.status='in.(PENDING,INVESTIGATING)';if(q.sort!=='newest')params.order='review_priority.desc,first_seen_at.desc,id.desc';}
     if(q.view==='duplicates'){params.duplicate_outcome='in.(POSSIBLE_DUPLICATE_REVIEW,EXISTING,MATERIAL_DISTINCT_TRACK)';params.status='in.(PENDING,INVESTIGATING,MATCHED)';}
     if(q.view==='rejected')params.status='eq.REJECTED';
     if(q.view==='registry'||q.view==='health')params.superseded_by='is.null';
