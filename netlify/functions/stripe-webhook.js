@@ -71,6 +71,10 @@ exports.handler = async (event) => {
 };
 
 async function handleCheckoutCompleted(session) {
+  // This Stripe account also serves the separate MTP registration site.
+  // Its client_reference_id is a registration ID, never an OA organization ID.
+  // Acknowledge those signed events without touching OA subscriptions.
+  if (session.metadata && session.metadata.registration_id) return;
   const orgId = session.client_reference_id;
   if (!orgId) {
     console.error("checkout.session.completed with no client_reference_id — can't link this payment to an organization.");
