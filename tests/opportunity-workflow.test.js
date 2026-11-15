@@ -17,11 +17,18 @@ test('decision queue includes free estimates and unknown dates honestly, refills
  assert.ok(!W.candidates(org,opps,scores,decisions,TODAY).some(o=>['passed','expired'].includes(o.id)));
 });
 function appHarness(response){
+ // Keep the real application and workflow on the same explicit fixture clock.
+ class FixtureDate extends Date {
+  constructor(...args){super(...(args.length?args:[TODAY+'T12:00:00Z']));}
+  static now(){return Date.parse(TODAY+'T12:00:00Z');}
+ }
+ const workflowContext={module:{exports:{}},require:()=>require('../assets/matching'),Date:FixtureDate};
+ vm.runInNewContext(fs.readFileSync('assets/opportunity-workflow.js','utf8'),workflowContext);
  const code=fs.readFileSync('app.html','utf8').match(/\/\* Opportunity Assist — MVP app[\s\S]*?<\/script>/)[0].replace(/<\/script>$/,'').replace(/\n  boot\(\);\n\}\)\(\);\s*$/,`\n  window.testApp={state,needsDecisionList,recordDecision,opportunityActions,renderRadar,renderFoundationLeads,openPipelineInGrantFactory};\n})();`);
  const makeElement=()=>({innerHTML:'',content:{get firstChild(){return {innerHTML:'',addEventListener(){},appendChild(){},querySelector(){return {addEventListener(){},onclick:null};}};}}});
  const sb={from(table){const query={select(){return this;},insert(value){this.value=value;return this;},single(){return Promise.resolve(response(table,this.value));},then(resolve){return Promise.resolve(response(table,this.value)).then(resolve);}};return query;}};
- const window={OAOpportunityWorkflow:W,OAMatching:require('../assets/matching'),OA_CONFIG:{},supabase:{createClient:()=>sb},addEventListener(){}};
- const context={window,document:{getElementById(){return {};},createElement:makeElement},console,Date,Promise,Set,alert(){}};vm.runInNewContext(code,context);const state=window.testApp.state;state.org=org;state.user={id:'actor'};state.opps=[opportunity('lead')];state.fit={lead:{headline:80,estimate:true}};return window.testApp;
+ const window={OAOpportunityWorkflow:workflowContext.module.exports,OAMatching:require('../assets/matching'),OA_CONFIG:{},supabase:{createClient:()=>sb},addEventListener(){}};
+ const context={window,document:{getElementById(){return {};},createElement:makeElement},console,Date:FixtureDate,Promise,Set,alert(){}};vm.runInNewContext(code,context);const state=window.testApp.state;state.org=org;state.user={id:'actor'};state.opps=[opportunity('lead')];state.fit={lead:{headline:80,estimate:true}};return window.testApp;
 }
 test('the real application writes each choice once, stops on persistence errors and guards stale closed opportunities',async()=>{
  const writes=[];const h=appHarness((table,value)=>{writes.push({table,value});return {data:{id:'saved',...value}};});const o=h.state.opps[0];
